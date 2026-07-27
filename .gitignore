@@ -1,0 +1,35 @@
+# Binarios y artefactos de compilación
+/bin/
+/dist/
+/build/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Cobertura y perfiles
+coverage.out
+*.coverprofile
+*.prof
+
+# Cachés y temporales
+.tmp/
+.cache/
+*.tmp
+*.log
+
+# Configuración local y secretos
+.env
+.env.*
+!.env.example
+
+# IDE / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Pruebas manuales generadas por el agente/CLI
+/pruebas-tools/
