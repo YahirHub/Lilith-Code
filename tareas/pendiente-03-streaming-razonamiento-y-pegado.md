@@ -1,7 +1,7 @@
 # Tarea 03 — Streaming, razonamiento y pegado del chat
 
 ## Estado
-En proceso.
+Pendiente de validación local.
 
 ## Objetivo
 Corregir tres problemas del chat TUI:

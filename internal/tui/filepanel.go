@@ -24,14 +24,13 @@ type FilePanel struct {
 	// anterior). Se dibuja colapsado y con la nota "reintentado" en vez
 	// de dejar el shimmer "escribiendo…" para siempre.
 	Superseded bool
-	Result   string
+	Result     string
 	// Expanded muestra el archivo completo. Por defecto el panel está en
-	// vista previa (ventana pequeña de alto fijo) y nunca se pliega solo.
+	// vista previa: crece con el contenido hasta el límite y nunca se pliega solo.
 	Expanded bool
 }
 
-// previewLines es el alto fijo de la vista previa. Mantenerlo constante evita
-// que el transcript salte mientras el modelo escribe.
+// previewLines conserva el límite máximo histórico de la vista previa.
 const previewLines = 12
 
 // IsFileTool indica si una herramienta se representa como ventana de archivo.
@@ -203,21 +202,14 @@ func (p *FilePanel) renderBody(s Styles, inner int) string {
 		return strings.Join(out, "\n")
 	}
 
-	// Vista previa: ventana deslizante de alto fijo. Se rellena con líneas
-	// vacías para que el panel no cambie de altura entre fotogramas y el
-	// transcript no dé saltos mientras el modelo escribe.
-	hidden := 0
-	if len(out) > previewLines {
-		hidden = len(out) - previewLines
-		out = out[hidden:]
-	}
-	for len(out) < previewLines {
-		out = append(out, " ")
-	}
+	// Vista previa adaptativa: con poco contenido ocupa únicamente las filas
+	// necesarias; al alcanzar el límite conserva una ventana de las líneas más
+	// recientes y reserva una fila para indicar cuánto quedó oculto.
+	view, hidden := cappedTailPreview(out, previewLines)
 	if hidden > 0 {
-		out = append([]string{ctx.Render(fmt.Sprintf("… %d more lines above (ctrl+o to expand)", hidden))}, out[1:]...)
+		view = append([]string{ctx.Render(fmt.Sprintf("… %d more lines above (ctrl+o to expand)", hidden))}, view...)
 	}
-	return strings.Join(out, "\n")
+	return strings.Join(view, "\n")
 }
 
 func clip(s string, max int) string {

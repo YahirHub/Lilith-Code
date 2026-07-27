@@ -8,16 +8,15 @@ import (
 )
 
 // ThinkingPanel muestra el resumen de razonamiento del modelo (reasoning
-// summary) con ventana de alto fijo y toggle expandir/plegar como los file
-// panels. Se mantiene con altura fija para que el transcript no salte
-// mientras el modelo piensa.
+// summary) con una vista compacta que crece con el contenido hasta su límite
+// histórico y conserva el toggle expandir/plegar como los file panels.
 type ThinkingPanel struct {
 	Content  string
 	Done     bool
 	Expanded bool
 }
 
-// thinkingPreviewLines: alto fijo de la vista previa del panel.
+// thinkingPreviewLines limita la altura máxima del contenido visible.
 const thinkingPreviewLines = 6
 
 func (p *ThinkingPanel) Append(s string) { p.Content += s }
@@ -50,18 +49,10 @@ func (p *ThinkingPanel) View(s Styles, width int, selected bool) string {
 
 	lines := wrapThinking(p.Content, inner)
 	body := head
-	if p.Expanded {
-		view := lines
-		hidden := 0
-		if len(view) > thinkingPreviewLines {
-			hidden = len(view) - thinkingPreviewLines
-			view = view[hidden:]
-		}
-		for len(view) < thinkingPreviewLines {
-			view = append(view, " ")
-		}
+	if p.Expanded && len(lines) > 0 {
+		view, hidden := cappedTailPreview(lines, thinkingPreviewLines)
 		if hidden > 0 {
-			view[0] = s.Muted.Render("… " + strconv.Itoa(hidden) + " líneas más arriba")
+			view = append([]string{s.Muted.Render("… " + strconv.Itoa(hidden) + " líneas más arriba")}, view...)
 		}
 		muted := lipgloss.NewStyle().Foreground(t.Muted).Italic(true)
 		body += "\n" + muted.Render(strings.Join(view, "\n"))

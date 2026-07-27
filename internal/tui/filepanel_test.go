@@ -58,20 +58,26 @@ func TestFinishNoPliegaLasCreacionesLargas(t *testing.T) {
 	}
 }
 
-func TestVistaPreviaTieneAlturaFija(t *testing.T) {
+func TestVistaPreviaCreceHastaSuLimite(t *testing.T) {
 	s := NewStyles(DefaultTheme())
 	p := &FilePanel{Tool: "write_file", Path: "a.txt"}
 	medir := func() int {
 		return len(splitLines(p.renderBody(s, 60)))
 	}
+
 	p.Content = "una\ndos\n"
-	corto := medir()
+	if got := medir(); got != 2 {
+		t.Fatalf("la vista previa corta debe ocupar solo su contenido: got=%d want=2", got)
+	}
+
+	p.Content = ""
 	for i := 0; i < 80; i++ {
 		p.Content += "linea\n"
 	}
-	if largo := medir(); largo != corto || largo != previewLines {
-		t.Fatalf("la vista previa debe medir %d líneas siempre: %d vs %d", previewLines, corto, largo)
+	if got := medir(); got != previewLines {
+		t.Fatalf("la vista previa larga debe respetar el máximo de %d líneas: got=%d", previewLines, got)
 	}
+
 	p.Expanded = true
 	if medir() <= previewLines {
 		t.Fatalf("expandido debe mostrar todo el contenido")

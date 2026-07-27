@@ -47,7 +47,7 @@ type ChatMessage struct {
 	// run_terminal_command con estado (azul/verde/rojo) y streaming.
 	Command *CommandPanel
 	// Thinking se usa en MsgThinking: resumen de razonamiento del modelo,
-	// con toggle expandir/plegar y alto fijo en vista previa.
+	// con toggle expandir/plegar y altura adaptativa hasta un máximo.
 	Thinking *ThinkingPanel
 }
 

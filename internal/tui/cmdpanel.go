@@ -12,27 +12,28 @@ import (
 
 // CommandPanel is the live terminal-style window used for
 // run_terminal_command tool calls. It mirrors the bash-like UX from pi.dev:
-//   * BLUE  border/title while the model is still streaming the command or
+//   - BLUE  border/title while the model is still streaming the command or
 //     while the shell is running (pending / executing).
-//   * GREEN border once the process exits with code 0.
-//   * RED   border on non-zero exit codes, timeouts, or transport errors.
+//   - GREEN border once the process exits with code 0.
+//   - RED   border on non-zero exit codes, timeouts, or transport errors.
+//
 // Output (stdout + stderr) is shown compactly with a preview window and a
 // "N earlier lines" hint so long runs don't blow up the transcript.
 type CommandPanel struct {
-	CallID    string
-	Index     int
-	Command   string // streamed from the tool call arguments
-	Timeout   int    // seconds, if the model set it
-	Done      bool
-	Failed    bool
+	CallID     string
+	Index      int
+	Command    string // streamed from the tool call arguments
+	Timeout    int    // seconds, if the model set it
+	Done       bool
+	Failed     bool
 	Superseded bool
-	ExitCode  int
-	Stdout    string
-	Stderr    string
-	TimedOut  bool
-	StartedAt time.Time
-	Elapsed   time.Duration
-	Expanded  bool
+	ExitCode   int
+	Stdout     string
+	Stderr     string
+	TimedOut   bool
+	StartedAt  time.Time
+	Elapsed    time.Duration
+	Expanded   bool
 }
 
 // IsCommandTool reports the tools rendered with a CommandPanel.
@@ -115,7 +116,7 @@ func extractBlock(text, header string) string {
 	return strings.TrimRight(rest[:end], "\n")
 }
 
-// cmdPreviewLines is the fixed height of the output preview inside the panel.
+// cmdPreviewLines preserves the historical maximum output preview height.
 const cmdPreviewLines = 10
 
 // View renders the panel. `selected` shows the ctrl+o hint.
@@ -239,15 +240,11 @@ func (p *CommandPanel) renderOutput(s Styles, inner int) string {
 	if p.Expanded {
 		return strings.Join(lines, "\n")
 	}
-	hidden := 0
-	if len(lines) > cmdPreviewLines {
-		hidden = len(lines) - cmdPreviewLines
-		lines = lines[hidden:]
-	}
+	view, hidden := cappedTailPreview(lines, cmdPreviewLines)
 	if hidden > 0 {
-		lines = append([]string{s.Muted.Render(fmt.Sprintf("… %d earlier lines (ctrl+o to expand)", hidden))}, lines[1:]...)
+		view = append([]string{s.Muted.Render(fmt.Sprintf("… %d earlier lines (ctrl+o to expand)", hidden))}, view...)
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(view, "\n")
 }
 
 func humanizeDur(d time.Duration) string {
