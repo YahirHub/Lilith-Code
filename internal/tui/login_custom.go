@@ -18,7 +18,6 @@ const (
 	stepURL
 	stepKey
 	stepModels
-	stepDone
 )
 
 // CustomLoginModel is the sequential form for adding a custom OpenAI-compatible provider.
@@ -32,8 +31,6 @@ type CustomLoginModel struct {
 	err   string
 	// fetching indica que se está consultando {baseUrl}/models.
 	fetching bool
-	// discovered guarda los modelos obtenidos del endpoint para confirmarlos.
-	discovered []providers.Model
 }
 
 // modelsFetchedMsg transporta el resultado de consultar /models.
@@ -70,15 +67,7 @@ func (m CustomLoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err.Error()
 			return m, nil
 		}
-		m.discovered = msg.models
-		ids := make([]string, 0, len(msg.models))
-		for _, mod := range msg.models {
-			ids = append(ids, mod.ID)
-		}
-		m.input.SetValue(strings.Join(ids, ", "))
-		m.input.CursorEnd()
-		m.err = ""
-		return m, nil
+		return m.finish(msg.models)
 	case tea.KeyMsg:
 		if m.fetching {
 			if msg.String() == "ctrl+c" {
@@ -119,7 +108,7 @@ func (m *CustomLoginModel) updateInputForStep() {
 		m.input.EchoMode = textinput.EchoPassword
 		m.input.EchoCharacter = '•'
 	case stepModels:
-		m.input.Placeholder = "Enter vacío = consultar /models  ·  o: gpt-4o, deepseek-v4-pro=1000000"
+		m.input.Placeholder = "opcional · modelo, otro=1000000 · Enter vacío = consultar /models"
 		m.input.EchoMode = textinput.EchoNormal
 	}
 }
@@ -161,20 +150,27 @@ func (m CustomLoginModel) advance() (tea.Model, tea.Cmd) {
 			m.err = err.Error()
 			return m, nil
 		}
-		p, err := providers.Upsert(m.ctx.ConfigDir, providers.UpsertParams{
-			Name:        m.name,
-			BaseURL:     m.url,
-			APIKeyInput: m.key,
-			Models:      models,
-		})
-		if err != nil {
-			m.err = err.Error()
-			return m, nil
-		}
-		_ = m.ctx.ReloadProviders()
-		return m, switchToChatWithSystem(fmt.Sprintf("Proveedor %q activo (%d modelos).", p.Name, len(p.Models)))
+		return m.finish(models)
 	}
 	return m, nil
+}
+
+func (m CustomLoginModel) finish(models []providers.Model) (tea.Model, tea.Cmd) {
+	p, err := providers.Upsert(m.ctx.ConfigDir, providers.UpsertParams{
+		Name:        m.name,
+		BaseURL:     m.url,
+		APIKeyInput: m.key,
+		Models:      models,
+	})
+	if err != nil {
+		m.err = err.Error()
+		return m, nil
+	}
+	if err := m.ctx.ReloadProviders(); err != nil {
+		m.err = err.Error()
+		return m, nil
+	}
+	return m, switchToChatWithSystem(fmt.Sprintf("Proveedor %q activo (%d modelos).", p.Name, len(p.Models)))
 }
 
 func (m CustomLoginModel) View() string {
@@ -206,12 +202,10 @@ func (m CustomLoginModel) View() string {
 		title = "API key (opcional)"
 		hint = "Déjalo vacío si el endpoint no la necesita. También admite env:NOMBRE_VAR."
 	case stepModels:
-		title = "Modelos disponibles"
-		hint = "Pulsa Enter con el campo vacío para consultar " + m.url + "/models."
+		title = "Modelos y contexto (opcional)"
+		hint = "Vacío: consulta " + m.url + "/models. Manual: modelo, otro=1000000 (contexto en tokens)."
 		if m.fetching {
 			hint = "Consultando " + m.url + "/models…"
-		} else if len(m.discovered) > 0 {
-			hint = fmt.Sprintf("%d modelos detectados. Edita la lista si quieres y pulsa Enter.", len(m.discovered))
 		}
 	}
 
