@@ -2,7 +2,7 @@
 
 ## Estado
 
-en-proceso
+pendiente
 
 ## Objetivo
 

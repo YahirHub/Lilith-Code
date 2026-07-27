@@ -18,9 +18,9 @@ type Env struct {
 	Root string
 	// Materialize adds tool names to the active set (used by tool_search).
 	Materialize func(names []string)
-	// Seen marks the files already read (o escritos) en esta sesión. Sirve
-	// para impedir que el modelo sobrescriba a ciegas un archivo existente
-	// en lugar de editarlo con str_replace.
+	// Seen marks files already read (or created) in this session. Mutating
+	// edit tools use it to require a current read before changing an existing
+	// file, avoiding blind edits against stale content.
 	Seen map[string]bool
 }
 

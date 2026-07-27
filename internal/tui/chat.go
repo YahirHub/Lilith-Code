@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -83,7 +82,8 @@ type ChatModel struct {
 	store   *session.Store
 	sess    *session.Session
 	project string
-	// seen marca los archivos leídos/escritos: evita reescrituras a ciegas.
+	// seen marca archivos leídos/creados para que las herramientas de edición
+	// puedan exigir una lectura actual antes de modificar contenido existente.
 	seen map[string]bool
 
 	// Paneles de archivo en vivo (creación/edición con diff plegable).
@@ -94,8 +94,8 @@ type ChatModel struct {
 	// sea falso, ctrl+o actúa siempre sobre la última ventana abierta.
 	panelPinned bool
 	// Paneles de comando en vivo (run_terminal_command con streaming).
-	cmdPanels  map[int]*CommandPanel
-	cmdByCall  map[string]*CommandPanel
+	cmdPanels map[int]*CommandPanel
+	cmdByCall map[string]*CommandPanel
 
 	thinkingFrame int
 	thinking      bool
@@ -136,6 +136,31 @@ type ChatModel struct {
 	// si un Enter llega < 25ms tras la tecla anterior se trata como salto
 	// de línea dentro del textarea en vez de enviar el mensaje.
 	lastKeyAt time.Time
+
+	// Caché del prefijo estable del transcript. Durante un turno sólo cambia
+	// la cola a partir del último mensaje del usuario; mantener renderizado el
+	// historial anterior evita volver a pasar cientos de mensajes por Glamour
+	// en cada delta SSE.
+	transcriptPrefix      string
+	transcriptPrefixCount int
+	transcriptPrefixWidth int
+	transcriptPrefixValid bool
+
+	// Los deltas de streaming pueden llegar mucho más rápido de lo que una
+	// terminal puede pintar. Agrupamos refrescos del viewport para no ejecutar
+	// SetContent por cada token, sin perder ningún texto acumulado.
+	lastTranscriptRefresh       time.Time
+	transcriptRefreshPending    bool
+	transcriptRefreshAutoBottom bool
+
+	// La barra de contexto se dibuja en cada View(). Antes su cálculo recorría
+	// todo el historial y releía configuración/skills en cada frame.
+	contextUsedCache     int
+	contextMaxCache      int
+	contextCacheDirty    bool
+	contextCacheProvider string
+	contextCacheModel    string
+	contextCacheTools    bool
 }
 
 // chatStreamMsg is emitted by the streaming pump for each SSE chunk.
@@ -163,8 +188,19 @@ type toolResultsMsg struct {
 // tirones).
 type cmdElapsedTickMsg struct{}
 
+// transcriptRefreshTickMsg aplica un refresco de viewport agrupado por
+// refreshTranscriptStreaming.
+type transcriptRefreshTickMsg struct{}
+
+const (
+	transcriptRefreshInterval         = 50 * time.Millisecond
+	transcriptScrolledRefreshInterval = 250 * time.Millisecond
+)
+
 func cmdElapsedTick() tea.Cmd {
-	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return cmdElapsedTickMsg{} })
+	// CommandPanel muestra segundos enteros; refrescar dos veces por segundo
+	// reconstruía el viewport sin aportar información visible adicional.
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return cmdElapsedTickMsg{} })
 }
 
 // hasRunningCommand devuelve true si algún CommandPanel sigue vivo.
@@ -218,14 +254,15 @@ func NewChat(ctx *AppContext) ChatModel {
 
 	project, _ := os.Getwd()
 	m := ChatModel{
-		ctx:      ctx,
-		viewport: vp,
-		textarea: ta,
-		mode:     ModeDefault,
-		store:    session.NewStore(ctx.ConfigDir),
-		project:  project,
-		sess:     session.New(project),
-		seen:     map[string]bool{},
+		ctx:               ctx,
+		viewport:          vp,
+		textarea:          ta,
+		mode:              ModeDefault,
+		store:             session.NewStore(ctx.ConfigDir),
+		project:           project,
+		sess:              session.New(project),
+		seen:              map[string]bool{},
+		contextCacheDirty: true,
 	}
 	return m
 }
@@ -240,6 +277,18 @@ func (m *ChatModel) persist() {
 	_ = m.store.Save(m.sess)
 }
 
+func (m *ChatModel) invalidateContextUsage() {
+	m.contextCacheDirty = true
+}
+
+func (m *ChatModel) appendHistory(msgs ...openai.Message) {
+	if len(msgs) == 0 {
+		return
+	}
+	m.history = append(m.history, msgs...)
+	m.invalidateContextUsage()
+}
+
 // LoadSession reemplaza la conversación activa por una guardada y reconstruye
 // el transcript visible a partir del historial real. Las tool calls de
 // archivo (write_file / str_replace) se rehidratan como FilePanel para que
@@ -252,6 +301,7 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 	m.Clear()
 	m.sess = s
 	m.history = s.Messages
+	m.invalidateContextUsage()
 	m.livePanels = map[int]*FilePanel{}
 	m.panelByCall = map[string]*FilePanel{}
 	m.cmdPanels = map[int]*CommandPanel{}
@@ -322,7 +372,9 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 	if panels := m.panels(); len(panels) > 0 {
 		m.panelSel = len(panels) - 1
 	}
-	m.AddSystem("Sesión reanudada: " + s.Title)
+	// Añadimos el aviso antes de un único refresh: AddSystem refrescaría por sí
+	// solo y en una sesión larga eso duplicaría el render completo al reanudar.
+	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: "Sesión reanudada: " + s.Title, Time: time.Now()})
 	m.refreshTranscript(true)
 }
 
@@ -360,6 +412,7 @@ func (m *ChatModel) AddError(text string) {
 func (m *ChatModel) Clear() {
 	m.messages = nil
 	m.history = nil
+	m.invalidateContextUsage()
 	m.activeTools = nil
 	m.pendingCall = nil
 	m.toolSteps = 0
@@ -400,6 +453,7 @@ func (m *ChatModel) lastAssistantIndex() int {
 // applyToolCalls crea o refresca las ventanas en vivo (archivo o comando)
 // con los argumentos (posiblemente parciales) que el modelo lleva emitidos.
 func (m *ChatModel) applyToolCalls(calls []openai.ToolCall) {
+	previousPanelSel := m.panelSel
 	if m.livePanels == nil {
 		m.livePanels = map[int]*FilePanel{}
 	}
@@ -486,6 +540,9 @@ func (m *ChatModel) applyToolCalls(calls []openai.ToolCall) {
 			cp.Update(c.Function.Arguments)
 		}
 	}
+	if m.panelSel != previousPanelSel {
+		m.invalidateTranscriptCache()
+	}
 }
 
 // renderHeader dibuja el bloque superior fijo estilo Codewolf: logo compacto,
@@ -510,87 +567,206 @@ func (m *ChatModel) renderHeader() string {
 	return lipgloss.JoinVertical(lipgloss.Left, logo, "", tag, dir, "")
 }
 
-func (m *ChatModel) renderTranscript() string {
+func (m *ChatModel) selectedFilePanel() *FilePanel {
+	all := m.panels()
+	if m.panelSel < 0 || m.panelSel >= len(all) {
+		return nil
+	}
+	return all[m.panelSel]
+}
+
+func (m *ChatModel) renderMessage(msg ChatMessage, width int, selectedPanel *FilePanel) string {
 	s := m.ctx.Styles
+	ts := msg.Time.Format("15:04")
+	stamp := s.Muted.Render("[" + ts + "]")
+	var b strings.Builder
+
+	switch msg.Kind {
+	case MsgUser:
+		b.WriteString(stamp + " " + s.MessageUser.Render("tú"))
+		b.WriteString("\n")
+		b.WriteString(indent(msg.Content, "  "))
+	case MsgAssistant:
+		b.WriteString(stamp + " " + s.Accent.Render("» lilith"))
+		b.WriteString("\n")
+		rendered := RenderMarkdown(msg.Content, width-2)
+		if rendered == "" {
+			rendered = msg.Content
+		}
+		b.WriteString(indent(rendered, "  "))
+	case MsgSystem:
+		b.WriteString(s.Muted.Render("· ") + s.MessageSystem.Render(msg.Content))
+	case MsgError:
+		b.WriteString(s.MessageError.Render("!! ") + s.Danger.Render(msg.Content))
+	case MsgTool:
+		// Tool messages already start with "$ " (see describeCall) or "  ↳"
+		// for results, so we render them verbatim in a muted terminal-ish tone.
+		style := lipgloss.NewStyle().Foreground(s.Theme.Muted)
+		if strings.HasPrefix(msg.Content, "$ ") {
+			head := s.Accent.Render("$")
+			rest := style.Render(strings.TrimPrefix(msg.Content, "$"))
+			b.WriteString(head + rest)
+		} else {
+			b.WriteString(style.Render(msg.Content))
+		}
+	case MsgFile:
+		if msg.Panel != nil {
+			b.WriteString(msg.Panel.View(s, width, selectedPanel == msg.Panel))
+		}
+	case MsgCommand:
+		if msg.Command != nil {
+			b.WriteString(msg.Command.View(s, width, false))
+		}
+	case MsgThinking:
+		if msg.Thinking != nil {
+			b.WriteString(msg.Thinking.View(s, width, false))
+		}
+	}
+	return b.String()
+}
+
+// renderTranscriptRange renderiza un tramo del transcript. El encabezado sólo
+// se incluye para el prefijo inicial; así refreshTranscript puede conservar un
+// bloque ya renderizado y recalcular únicamente el turno activo.
+func (m *ChatModel) renderTranscriptRange(start, end int, includeHeader bool) string {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(m.messages) {
+		end = len(m.messages)
+	}
+	if end < start {
+		end = start
+	}
+
 	w := m.ctx.Width - 4
 	if w < 20 {
 		w = 60
 	}
+	selectedPanel := m.selectedFilePanel()
 	var b strings.Builder
-	b.WriteString(m.renderHeader())
-	b.WriteString("\n")
-	for i, msg := range m.messages {
-		ts := msg.Time.Format("15:04")
-		stamp := s.Muted.Render("[" + ts + "]")
-		switch msg.Kind {
-		case MsgUser:
-			b.WriteString(stamp + " " + s.MessageUser.Render("tú"))
+	if includeHeader {
+		b.WriteString(m.renderHeader())
+		if start < end {
 			b.WriteString("\n")
-			b.WriteString(indent(msg.Content, "  "))
-		case MsgAssistant:
-			b.WriteString(stamp + " " + s.Accent.Render("» lilith"))
-			b.WriteString("\n")
-			rendered := RenderMarkdown(msg.Content, w-2)
-			if rendered == "" {
-				rendered = msg.Content
-			}
-			b.WriteString(indent(rendered, "  "))
-
-		case MsgSystem:
-			b.WriteString(s.Muted.Render("· ") + s.MessageSystem.Render(msg.Content))
-		case MsgError:
-			b.WriteString(s.MessageError.Render("!! ") + s.Danger.Render(msg.Content))
-		case MsgTool:
-			// Tool messages already start with "$ " (see describeCall) or "  ↳"
-			// for results, so we render them verbatim in a muted terminal-ish
-			// tone without stacking another glyph on top.
-			style := lipgloss.NewStyle().Foreground(s.Theme.Muted)
-			if strings.HasPrefix(msg.Content, "$ ") {
-				head := s.Accent.Render("$")
-				rest := style.Render(strings.TrimPrefix(msg.Content, "$"))
-				b.WriteString(head + rest)
-			} else {
-				b.WriteString(style.Render(msg.Content))
-			}
-		case MsgFile:
-			selected := false
-			if all := m.panels(); len(all) > 0 && m.panelSel >= 0 && m.panelSel < len(all) {
-				selected = all[m.panelSel] == msg.Panel
-			}
-			b.WriteString(msg.Panel.View(s, w, selected))
-		case MsgCommand:
-			if msg.Command != nil {
-				b.WriteString(msg.Command.View(s, w, false))
-			}
-		case MsgThinking:
-			if msg.Thinking != nil {
-				b.WriteString(msg.Thinking.View(s, w, false))
-			}
 		}
-		if i < len(m.messages)-1 {
+	}
+	for i := start; i < end; i++ {
+		b.WriteString(m.renderMessage(m.messages[i], w, selectedPanel))
+		if i < end-1 {
 			b.WriteString("\n\n")
 		}
 	}
-	// Nota: el shimmer "Trabajando…/Pensando…" NO se pinta aquí. Se renderiza
-	// como cromo fijo (pinnedActivityView) encima del input para que no se
-	// mueva con el scroll ni desaparezca cuando se anexan mensajes de tool.
-
 	return b.String()
 }
 
+func (m *ChatModel) renderTranscript() string {
+	return m.renderTranscriptRange(0, len(m.messages), true)
+}
+
+func (m *ChatModel) invalidateTranscriptCache() {
+	m.transcriptPrefixValid = false
+}
+
+// stableTranscriptPrefixCount devuelve la parte del transcript que no cambia
+// durante el turno actual. Todo lo anterior e incluido el último mensaje del
+// usuario es inmutable mientras llegan deltas, tool calls y paneles vivos.
+func (m *ChatModel) stableTranscriptPrefixCount() int {
+	if !m.streaming {
+		return len(m.messages)
+	}
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].Kind == MsgUser {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+func wrapTranscriptChunk(content string, width int) string {
+	if content == "" || width <= 0 {
+		return content
+	}
+	return lipgloss.NewStyle().Width(width).Render(content)
+}
 
 func (m *ChatModel) refreshTranscript(scrollBottom bool) {
-	content := m.renderTranscript()
-	if m.viewport.Width > 0 {
-		content = lipgloss.NewStyle().Width(m.viewport.Width).Render(content)
+	prefixCount := m.stableTranscriptPrefixCount()
+	width := m.viewport.Width
+	if !m.transcriptPrefixValid ||
+		m.transcriptPrefixCount != prefixCount ||
+		m.transcriptPrefixWidth != width {
+		m.transcriptPrefix = wrapTranscriptChunk(
+			m.renderTranscriptRange(0, prefixCount, true),
+			width,
+		)
+		m.transcriptPrefixCount = prefixCount
+		m.transcriptPrefixWidth = width
+		m.transcriptPrefixValid = true
 	}
+
+	content := m.transcriptPrefix
+	if prefixCount < len(m.messages) {
+		tail := wrapTranscriptChunk(
+			m.renderTranscriptRange(prefixCount, len(m.messages), false),
+			width,
+		)
+		if tail != "" {
+			if content != "" {
+				content += "\n\n"
+			}
+			content += tail
+		}
+	}
+
 	m.viewport.SetContent(content)
+	m.lastTranscriptRefresh = time.Now()
+	m.transcriptRefreshPending = false
+	m.transcriptRefreshAutoBottom = false
 	// Sólo hacemos autoscroll cuando el usuario no ha subido manualmente. Así
 	// puede leer historial mientras la CLI sigue ejecutando comandos, sin que
 	// cada frame lo tire de vuelta al fondo.
 	if scrollBottom && !m.userScrolled {
 		m.viewport.GotoBottom()
 	}
+	// Fuera de un turno activo el viewport ya conserva sus propias líneas y
+	// no necesitamos mantener una segunda copia renderizada de todo el chat.
+	// La caché se reconstruirá al iniciar el siguiente streaming.
+	if !m.streaming {
+		m.transcriptPrefix = ""
+		m.transcriptPrefixCount = 0
+		m.transcriptPrefixWidth = 0
+		m.transcriptPrefixValid = false
+	}
+}
+
+// refreshTranscriptStreaming limita el número de reconstrucciones del
+// viewport durante SSE. Los mensajes y streamBuf se actualizan siempre; sólo
+// agrupamos la pintura. Esto conserva el historial completo y evita que
+// SetContent procese miles de líneas por cada token recibido.
+func (m *ChatModel) refreshTranscriptStreaming(scrollBottom bool) tea.Cmd {
+	if scrollBottom {
+		m.transcriptRefreshAutoBottom = true
+	}
+	interval := transcriptRefreshInterval
+	if m.userScrolled {
+		// Mientras el usuario lee mensajes antiguos no necesita 20 repintados
+		// por segundo del contenido que está naciendo debajo. Mantener una
+		// cadencia más baja conserva actualizado el scrollbar sin castigar el
+		// scroll de historiales grandes.
+		interval = transcriptScrolledRefreshInterval
+	}
+	elapsed := time.Since(m.lastTranscriptRefresh)
+	if m.lastTranscriptRefresh.IsZero() || elapsed >= interval {
+		m.refreshTranscript(m.transcriptRefreshAutoBottom)
+		return nil
+	}
+	if m.transcriptRefreshPending {
+		return nil
+	}
+	m.transcriptRefreshPending = true
+	wait := interval - elapsed
+	return tea.Tick(wait, func(time.Time) tea.Msg { return transcriptRefreshTickMsg{} })
 }
 
 func indent(s, prefix string) string {
@@ -757,6 +933,7 @@ func truncateOneLine(text string, maxRunes int) string {
 	}
 	return string(runes[:maxRunes-1]) + "…"
 }
+
 // pinnedActivityView renderiza el shimmer de actividad FIJO justo encima de
 // la caja de entrada. No se mueve con el scroll y no lo tapan las burbujas de
 // tool, así el usuario siempre sabe si Lilith sigue trabajando o pensando.
@@ -776,7 +953,6 @@ func (m *ChatModel) pinnedActivityView(w int) string {
 	}
 	return lipgloss.NewStyle().Width(boxWidth).Padding(0, 1).Render(body)
 }
-
 
 func (m *ChatModel) bottomChromeHeight(w int) int {
 	parts := []string{}
@@ -866,9 +1042,18 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.thinkingFrame = v.frame
-		m.refreshTranscript(true)
+		// El shimmer vive fuera del viewport. Bubble Tea vuelve a ejecutar View
+		// tras este mensaje, así que reconstruir el transcript aquí sólo hacía
+		// trabajo O(historial) unas 11 veces por segundo sin cambiar su contenido.
 		return m, thinkingTick(v.frame)
 
+	case transcriptRefreshTickMsg:
+		if !m.transcriptRefreshPending {
+			return m, nil
+		}
+		autoBottom := m.transcriptRefreshAutoBottom
+		m.refreshTranscript(autoBottom)
+		return m, nil
 
 	case cmdElapsedTickMsg:
 		// Refrescamos el transcript para que la línea "Elapsed …" avance de
@@ -889,13 +1074,14 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.AddError("Error del proveedor: " + v.err.Error())
 			return m, nil
 		}
+		var refreshCmd tea.Cmd
 		if len(v.superseded) > 0 {
 			for _, idx := range v.superseded {
 				if p := m.livePanels[idx]; p != nil && !p.Failed {
 					p.MarkSuperseded()
 				}
 			}
-			m.refreshTranscript(true)
+			refreshCmd = m.refreshTranscriptStreaming(true)
 		}
 		if len(v.toolCalls) > 0 {
 			m.applyToolCalls(v.toolCalls)
@@ -909,11 +1095,13 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.thinking = false
 			m.working = true
 			if v.partial {
-				m.refreshTranscript(true)
-				if v.ch != nil {
-					return m, streamPump(v.ch)
+				if cmd := m.refreshTranscriptStreaming(true); cmd != nil {
+					refreshCmd = cmd
 				}
-				return m, nil
+				if v.ch != nil {
+					return m, tea.Batch(refreshCmd, streamPump(v.ch))
+				}
+				return m, refreshCmd
 			}
 			m.pendingCall = append(m.pendingCall, v.toolCalls...)
 		}
@@ -928,7 +1116,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.pendingCall) > 0 {
 				calls := m.pendingCall
 				m.pendingCall = nil
-				m.history = append(m.history, openai.Message{
+				m.appendHistory(openai.Message{
 					Role: "assistant", Content: text, ToolCalls: calls,
 				})
 				if text == "" && last >= 0 {
@@ -962,7 +1150,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			if text != "" {
-				m.history = append(m.history, openai.Message{Role: "assistant", Content: text})
+				m.appendHistory(openai.Message{Role: "assistant", Content: text})
 				m.toolFallback = ""
 			} else if last >= 0 {
 				// Tras una tool call, algunos modelos cierran el turno sin texto.
@@ -970,7 +1158,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// determinista en vez de una falsa respuesta vacía.
 				if fallback := strings.TrimSpace(m.toolFallback); fallback != "" {
 					m.messages[last].Content = fallback
-					m.history = append(m.history, openai.Message{Role: "assistant", Content: fallback})
+					m.appendHistory(openai.Message{Role: "assistant", Content: fallback})
 					m.toolFallback = ""
 				} else {
 					// El modelo no devolvió texto ni herramientas: no dejamos una
@@ -992,7 +1180,9 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if last >= 0 {
 				m.messages[last].Content = m.streamBuf.String()
 			}
-			m.refreshTranscript(true)
+			if cmd := m.refreshTranscriptStreaming(true); cmd != nil {
+				refreshCmd = cmd
+			}
 		}
 		if v.thinking != "" {
 			if m.thinkingActive == nil {
@@ -1013,17 +1203,21 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.working {
 				m.thinking = true
 			}
-			m.refreshTranscript(true)
+			if cmd := m.refreshTranscriptStreaming(true); cmd != nil {
+				refreshCmd = cmd
+			}
 		}
 		if v.thinkingDone && m.thinkingActive != nil {
 			m.thinkingActive.Finish()
 			m.thinkingActive = nil
-			m.refreshTranscript(true)
+			if cmd := m.refreshTranscriptStreaming(true); cmd != nil {
+				refreshCmd = cmd
+			}
 		}
 		if v.ch != nil {
-			return m, streamPump(v.ch)
+			return m, tea.Batch(refreshCmd, streamPump(v.ch))
 		}
-		return m, nil
+		return m, refreshCmd
 
 	case toolResultsMsg:
 		// No apagamos m.working aquí: el turno sigue activo (vamos a llamar de
@@ -1037,7 +1231,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.AddError(v.err.Error())
 			return m, nil
 		}
-		m.history = append(m.history, v.results...)
+		m.appendHistory(v.results...)
 		m.toolFallback = summarizeToolResults(v.results)
 
 		for _, r := range v.results {
@@ -1136,6 +1330,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				all[m.panelSel].Expanded = !all[m.panelSel].Expanded
 			}
+			m.invalidateTranscriptCache()
 			m.refreshTranscript(true)
 			return m, nil
 		case "ctrl+r":
@@ -1143,6 +1338,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for i := len(m.messages) - 1; i >= 0; i-- {
 				if m.messages[i].Kind == MsgThinking && m.messages[i].Thinking != nil {
 					m.messages[i].Thinking.Expanded = !m.messages[i].Thinking.Expanded
+					m.invalidateTranscriptCache()
 					m.refreshTranscript(true)
 					break
 				}
@@ -1160,7 +1356,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// request con "No tool output found for function call ...".
 				if len(m.pendingCall) > 0 {
 					for _, c := range m.pendingCall {
-						m.history = append(m.history, toolMessage(c, "error: cancelado por el usuario."))
+						m.appendHistory(toolMessage(c, "error: cancelado por el usuario."))
 					}
 					m.pendingCall = nil
 				}
@@ -1291,7 +1487,6 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-
 	if strings.HasPrefix(val, "/") {
 		firstSpace := strings.IndexByte(val, ' ')
 		name := val
@@ -1326,7 +1521,7 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 	}
 
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: val, Time: time.Now()})
-	m.history = append(m.history, openai.Message{Role: "user", Content: val})
+	m.appendHistory(openai.Message{Role: "user", Content: val})
 	// Selección perezosa: sólo los esquemas que este turno puede necesitar.
 	m.activeTools = tools.Select(val)
 	m.toolSteps = 0
@@ -1357,6 +1552,10 @@ func (m *ChatModel) runTurn() tea.Cmd {
 
 	m.thinkingFrame = 0
 	m.streamBuf.Reset()
+	// Un turno nuevo siempre vuelve a seguir el fondo. Si el usuario vuelve a
+	// desplazarse hacia arriba durante la ejecución, userScrolled se activará
+	// otra vez y los refrescos respetarán esa posición.
+	m.userScrolled = false
 	m.refreshTranscript(true)
 
 	msgs := make([]openai.Message, 0, len(m.history)+1)
@@ -1382,9 +1581,6 @@ func (m *ChatModel) runTurn() tea.Cmd {
 	if tick := m.maybeStartElapsedTick(); tick != nil {
 		batch = append(batch, tick)
 	}
-	// Al enviar un turno nuevo el usuario espera ver la respuesta: soltamos
-	// el "pin" para que vuelva al fondo automáticamente.
-	m.userScrolled = false
 	return tea.Batch(batch...)
 }
 
@@ -1393,13 +1589,35 @@ func (m *ChatModel) runTurn() tea.Cmd {
 func (m *ChatModel) contextUsage() (int, int) {
 	active := m.ctx.Providers.Active()
 	if active.ModelID == "" {
+		m.contextUsedCache = 0
+		m.contextMaxCache = 0
+		m.contextCacheProvider = active.ProviderID
+		m.contextCacheModel = active.ModelID
+		m.contextCacheTools = len(m.activeTools) > 0
+		m.contextCacheDirty = false
 		return 0, 0
 	}
+	withTools := len(m.activeTools) > 0
+	if !m.contextCacheDirty &&
+		m.contextCacheProvider == active.ProviderID &&
+		m.contextCacheModel == active.ModelID &&
+		m.contextCacheTools == withTools {
+		return m.contextUsedCache, m.contextMaxCache
+	}
 	msgs := make([]openai.Message, 0, len(m.history)+1)
-	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(len(m.activeTools) > 0, m.skillsBlock())})
+	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(withTools, m.skillsBlock())})
 	msgs = append(msgs, m.history...)
 	used := EstimateTokens(msgs)
-	maxCtx := m.ctx.Providers.FindProvider(active.ProviderID).ContextWindow(active.ModelID)
+	maxCtx := 0
+	if provider := m.ctx.Providers.FindProvider(active.ProviderID); provider != nil {
+		maxCtx = provider.ContextWindow(active.ModelID)
+	}
+	m.contextUsedCache = used
+	m.contextMaxCache = maxCtx
+	m.contextCacheProvider = active.ProviderID
+	m.contextCacheModel = active.ModelID
+	m.contextCacheTools = withTools
+	m.contextCacheDirty = false
 	return used, maxCtx
 }
 
@@ -1420,7 +1638,7 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 		for _, c := range calls {
 			stubs = append(stubs, toolMessage(c, "error: turno interrumpido (límite de pasos de herramientas alcanzado)."))
 		}
-		m.history = append(m.history, stubs...)
+		m.appendHistory(stubs...)
 		return func() tea.Msg {
 			return toolResultsMsg{err: errors.New("límite de pasos de herramientas alcanzado en este turno (aumentado a " + fmt.Sprint(maxToolSteps) + "). Pídeme continuar si aún falta.")}
 		}
@@ -1597,7 +1815,6 @@ func prettyToolArgs(raw string) string {
 	return line
 }
 
-
 // skillsEnabled devuelve el toggle persistido en settings.json (recargado
 // cada vez: /config puede haberlo cambiado sin que el chat lo sepa).
 func (m *ChatModel) skillsEnabled() bool {
@@ -1670,7 +1887,7 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 	}
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: visible, Time: time.Now()})
 	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: "Skill cargada: " + sk.Name + " (" + sk.Source + ")", Time: time.Now()})
-	m.history = append(m.history, openai.Message{Role: "user", Content: payload})
+	m.appendHistory(openai.Message{Role: "user", Content: payload})
 	m.activeTools = tools.Select(body + "\n" + args)
 	if len(m.activeTools) == 0 {
 		// Al menos permite leer/escribir/ejecutar cuando la skill lo pide.
@@ -1682,7 +1899,6 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 	m.refreshTranscript(true)
 	return m.runTurn()
 }
-
 
 // Kept in English on purpose: LLMs follow English tool-use guidance more
 // reliably than translated instructions, and this string travels on every
@@ -1706,8 +1922,8 @@ func systemPrompt(withTools bool, skillsBlock string) string {
 	return base + "\n\n" +
 		"# Available tools (always prefer tools over pasting code in chat)\n" +
 		"- read_files: read one or more real project files before touching them. Supports `offset` (1-indexed start line) and `limit` (max lines) to paginate large files without blowing the context.\n" +
-		"- write_file: create a NEW file with the FULL final content. Never use it to edit an existing file unless the user explicitly asks for a full rewrite.\n" +
-		"- str_replace: surgical edit(s) of an EXISTING file. Pass `path` plus either `old`/`new` OR an `edits: [{old,new}, ...]` array to apply several non-overlapping replacements in one call. Every `old` MUST be non-empty, copied byte-for-byte from the current file (whitespace, indentation and newlines included), and MUST appear EXACTLY ONCE — add 2-3 surrounding lines as anchor context if the snippet is not unique. `new` may be empty to delete the matched region. To INSERT new code, set `old` to an existing anchor line and repeat that anchor inside `new` together with the new lines. If an exact match fails, the tool retries with a fuzzy pass (Unicode quotes/dashes/spaces + trailing whitespace) — but do not rely on that as a substitute for reading the file first. Never call str_replace with an empty `old`.\n" +
+		"- write_file: create a NEW file with the FULL final content. It never overwrites an existing file; use str_replace or apply_diff for edits.\n" +
+		"- str_replace: surgical edit(s) of an EXISTING file. Pass `path` plus either `old`/`new` OR an `edits: [{old,new}, ...]` array to apply several non-overlapping replacements in one call. Every `old` MUST be non-empty, copied byte-for-byte from the current file (whitespace, indentation and newlines included), and MUST appear EXACTLY ONCE — add 2-3 surrounding lines as anchor context if the snippet is not unique. `new` may be empty to delete the matched region. Pairs where `old == new` are ignored as harmless no-ops, so do not retry or rewrite the whole file because of them. To INSERT new code, set `old` to an existing anchor line and repeat that anchor inside `new` together with the new lines. If an exact match fails, re-read the affected region and retry surgically; the tool also has a fuzzy fallback for Unicode quotes/dashes/spaces + trailing whitespace. Never call str_replace with an empty `old`.\n" +
 		"- apply_diff: apply a unified diff (`@@ -a,b +c,d @@` hunks) to an existing file. Prefer this over str_replace when you already have a diff or when the change spans many hunks; context lines must match byte-for-byte.\n" +
 		"- list_directory / glob / code_search: explore the repo. `code_search` accepts `glob`, `path`, `literal`, `ignore_case`, `context` (lines around each match) and `limit`.\n" +
 		"- run_terminal_command: execute shell commands (build, tests, git, rg, ls). Output is tail-truncated; when truncated the note tells you the temp file path with the full stream so you can read_files it if needed.\n" +
@@ -1725,8 +1941,9 @@ func systemPrompt(withTools bool, skillsBlock string) string {
 		"content. Never say \"same as above\" or expect the user to copy things.\n" +
 		"3. To modify an existing file: first read it with read_files, then use " +
 		"str_replace with a minimal, UNIQUE `old` window copied verbatim from the " +
-		"file (never leave `old` empty). Do NOT rewrite the whole file with " +
-		"write_file unless the user explicitly asks for a rewrite.\n" +
+		"file (never leave `old` empty), or apply_diff for multi-hunk changes. If an " +
+		"edit fails, re-read the affected lines and retry the smallest safe edit. " +
+		"Do NOT fall back to rewriting the whole existing file with write_file.\n" +
 		"4. Preserve the project's conventions, style, imports and file layout. " +
 		"Make the smallest change that satisfies the request.\n" +
 		"5. Before finishing a task that touches code, run the project's build " +
@@ -1746,7 +1963,6 @@ func systemPrompt(withTools bool, skillsBlock string) string {
 		"needs the user's attention (e.g. env vars, migrations).\n\n" +
 		"Working directory: " + cwd + skillsBlock
 }
-
 
 // streamPump reads one chunk and forwards it as a chatStreamMsg, keeping the
 // channel handle so the next tick can continue pumping.

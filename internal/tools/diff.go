@@ -44,6 +44,9 @@ func init() {
 			if err != nil {
 				return "", err
 			}
+			if !wasSeen(env, rel) {
+				return "", fmt.Errorf("%s has not been read in this session: use read_files first, then retry apply_diff against the current file", rel)
+			}
 			mu := lockFile(full)
 			mu.Lock()
 			defer mu.Unlock()

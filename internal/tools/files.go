@@ -39,8 +39,10 @@ func markSeen(env Env, rel string) {
 }
 
 func wasSeen(env Env, rel string) bool {
+	// Callers that do not provide a Seen map opt out of this guard. The TUI
+	// always provides one, so interactive agent edits must read the file first.
 	if env.Seen == nil {
-		return false
+		return true
 	}
 	return env.Seen[filepath.ToSlash(filepath.Clean(rel))]
 }
@@ -125,13 +127,10 @@ func init() {
 		},
 	})
 
-
-
 	register(Definition{
 		Name: "write_file",
 		Description: "Create a NEW file with the full final content. " +
-			"Use this only when the file does not exist yet, or when the user " +
-			"explicitly asks for a full rewrite. To modify an EXISTING file, " +
+			"This tool never overwrites an existing file. To modify an EXISTING file, " +
 			"read it first with read_files and then edit it with str_replace. " +
 			"Never call write_file with placeholders, ellipsis, or partial content.",
 		Mutating: true,
@@ -152,8 +151,13 @@ func init() {
 			mu := lockFile(full)
 			mu.Lock()
 			defer mu.Unlock()
-			if info, statErr := os.Stat(full); statErr == nil && !info.IsDir() && info.Size() > 0 && !wasSeen(env, rel) {
-				return "", fmt.Errorf("%s already exists (%d bytes): read it with read_files and edit it with str_replace instead of rewriting the whole file", rel, info.Size())
+			if info, statErr := os.Stat(full); statErr == nil {
+				if info.IsDir() {
+					return "", fmt.Errorf("%s already exists and is a directory", rel)
+				}
+				return "", fmt.Errorf("%s already exists (%d bytes): write_file only creates new files; use read_files + str_replace or apply_diff to edit it", rel, info.Size())
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				return "", statErr
 			}
 			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 				return "", err
@@ -179,6 +183,7 @@ func init() {
 			"anchor lines if the snippet is not unique; (4) `new` may be empty to delete the matched region. " +
 			"If exact match fails, the tool retries with a fuzzy pass that normalises Unicode quotes/dashes " +
 			"and trailing whitespace; the file is still written with the original bytes for unchanged regions. " +
+			"Pairs where `old` and `new` are identical are harmless no-ops: they are skipped while the other edits continue. " +
 			"DO NOT use str_replace to create a new file — use write_file instead. " +
 			"DO NOT pass an empty `old`; to insert code, choose an existing anchor line already in the file " +
 			"and put it inside `old`, then include the anchor plus the new lines inside `new`.",
@@ -219,6 +224,9 @@ func init() {
 			if err != nil {
 				return "", err
 			}
+			if !wasSeen(env, rel) {
+				return "", fmt.Errorf("%s has not been read in this session: use read_files first, then retry str_replace with the current text", rel)
+			}
 			mu := lockFile(full)
 			mu.Lock()
 			defer mu.Unlock()
@@ -234,6 +242,9 @@ func init() {
 			if err != nil {
 				return "", err
 			}
+			if applied == 0 {
+				return fmt.Sprintf("no changes needed in %s (all replacements were already identical).", rel), nil
+			}
 			if err := os.WriteFile(full, []byte(out), 0o644); err != nil {
 				return "", err
 			}
@@ -244,8 +255,6 @@ func init() {
 			return fmt.Sprintf("edited %s (%d replacements).", rel, applied), nil
 		},
 	})
-
-
 
 	register(Definition{
 		Name:        "list_directory",
@@ -480,12 +489,15 @@ func collectEdits(args map[string]any) ([]editPair, error) {
 // rejected. Exact match is tried first; on failure we retry with a fuzzy pass
 // that normalises Unicode quotes/dashes/spaces and trailing whitespace.
 func applyEdits(src string, edits []editPair, rel string) (string, int, error) {
-	type span struct{ start, end int; repl string }
+	type span struct {
+		start, end int
+		repl       string
+	}
 	spans := make([]span, 0, len(edits))
 	fuzzy := normalizeFuzzy(src)
 	for i, e := range edits {
 		if e.old == e.new {
-			return "", 0, fmt.Errorf("edits[%d]: `old` and `new` are identical — nothing to change", i)
+			continue
 		}
 		count := strings.Count(src, e.old)
 		if count == 1 {

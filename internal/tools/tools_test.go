@@ -64,14 +64,107 @@ func TestWriteFileRefusesBlindOverwrite(t *testing.T) {
 	}, env); err == nil {
 		t.Fatal("se esperaba rechazo de reescritura a ciegas")
 	}
-	// Tras leerlo, la reescritura explícita sí se permite.
+	// Leer el archivo no convierte write_file en una herramienta de sobrescritura.
 	if _, err := Execute(context.Background(), "read_files", map[string]any{"paths": []any{"a.html"}}, env); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Execute(context.Background(), "write_file", map[string]any{
 		"path": "a.html", "content": "nuevo",
-	}, env); err != nil {
-		t.Fatalf("tras leer debería permitirse: %v", err)
+	}, env); err == nil {
+		t.Fatal("write_file no debe sobrescribir archivos existentes ni siquiera después de leerlos")
+	}
+}
+
+func TestStrReplaceSkipsNoOpInsideBatch(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(path, []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := Env{Root: root, Seen: map[string]bool{"a.txt": true}}
+	out, err := Execute(context.Background(), "str_replace", map[string]any{
+		"path": "a.txt",
+		"edits": []any{
+			map[string]any{"old": "alpha", "new": "ALPHA"},
+			map[string]any{"old": "beta", "new": "beta"},
+			map[string]any{"old": "gamma", "new": "GAMMA"},
+		},
+	}, env)
+	if err != nil {
+		t.Fatalf("un no-op no debe abortar el lote: %v", err)
+	}
+	if !strings.Contains(out, "2 replacements") {
+		t.Fatalf("se esperaban 2 reemplazos reales, got %q", out)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "ALPHA\nbeta\nGAMMA\n" {
+		t.Fatalf("contenido inesperado: %q", got)
+	}
+}
+
+func TestStrReplaceAllNoOpsSucceedsWithoutRewrite(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "a.txt")
+	before := []byte("alpha\nbeta\n")
+	if err := os.WriteFile(path, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := Env{Root: root, Seen: map[string]bool{"a.txt": true}}
+	out, err := Execute(context.Background(), "str_replace", map[string]any{
+		"path": "a.txt",
+		"edits": []any{
+			map[string]any{"old": "alpha", "new": "alpha"},
+			map[string]any{"old": "beta", "new": "beta"},
+		},
+	}, env)
+	if err != nil {
+		t.Fatalf("un lote completamente idempotente debe ser éxito: %v", err)
+	}
+	if !strings.Contains(out, "no changes needed") {
+		t.Fatalf("salida inesperada: %q", out)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(before) {
+		t.Fatalf("el archivo no debía cambiar: %q", got)
+	}
+}
+
+func TestStrReplaceRequiresReadWhenSeenTrackingIsEnabled(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(path, []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := Env{Root: root, Seen: map[string]bool{}}
+	_, err := Execute(context.Background(), "str_replace", map[string]any{
+		"path": "a.txt",
+		"old":  "alpha",
+		"new":  "ALPHA",
+	}, env)
+	if err == nil || !strings.Contains(err.Error(), "read_files first") {
+		t.Fatalf("se esperaba exigir lectura previa, got %v", err)
+	}
+}
+
+func TestApplyDiffRequiresReadWhenSeenTrackingIsEnabled(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(path, []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := Env{Root: root, Seen: map[string]bool{}}
+	_, err := Execute(context.Background(), "apply_diff", map[string]any{
+		"path": "a.txt",
+		"diff": "@@ -1,1 +1,1 @@\n-alpha\n+ALPHA",
+	}, env)
+	if err == nil || !strings.Contains(err.Error(), "read_files first") {
+		t.Fatalf("se esperaba exigir lectura previa, got %v", err)
 	}
 }
 
@@ -79,8 +172,6 @@ func TestWriteFileRefusesBlindOverwrite(t *testing.T) {
 // to read their own assets/scripts via absolute paths. The tool surface now
 // trusts the caller (skills are user-authored) so we no longer enforce a
 // project-boundary check here.
-
-
 
 func TestGlobDoubleStar(t *testing.T) {
 	root := t.TempDir()

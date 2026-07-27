@@ -4,8 +4,12 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/lilith/li/internal/providers"
+	"github.com/lilith/li/internal/providers/openai"
 )
 
 var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
@@ -79,5 +83,120 @@ func TestRefreshTranscriptEnvuelveAntesDeEnviarAlViewport(t *testing.T) {
 		if width := len([]rune(line)); width > m.viewport.Width {
 			t.Fatalf("viewport recibió una línea sin envolver: ancho=%d límite=%d línea=%q", width, m.viewport.Width, line)
 		}
+	}
+}
+
+func TestThinkingTickNoReconstruyeTranscript(t *testing.T) {
+	ctx := &AppContext{Styles: NewStyles(DefaultTheme())}
+	m := NewChat(ctx)
+	m.Resize(80, 24)
+	m.messages = []ChatMessage{{Kind: MsgAssistant, Content: "respuesta estable", Time: time.Now()}}
+	m.refreshTranscript(true)
+	m.thinking = true
+	before := m.lastTranscriptRefresh
+
+	_, cmd := m.Update(thinkingTickMsg{frame: 2})
+	if cmd == nil {
+		t.Fatal("el shimmer debe seguir animándose")
+	}
+	if !m.lastTranscriptRefresh.Equal(before) {
+		t.Fatal("un frame del shimmer no debe reconstruir el viewport")
+	}
+}
+
+func TestRefreshTranscriptConservaScrollManualConHistorialLargo(t *testing.T) {
+	ctx := &AppContext{Styles: NewStyles(DefaultTheme())}
+	m := NewChat(ctx)
+	m.Resize(80, 20)
+	for i := 0; i < 80; i++ {
+		m.messages = append(m.messages, ChatMessage{
+			Kind:    MsgAssistant,
+			Content: "mensaje histórico con varias palabras para ocupar espacio",
+			Time:    time.Now(),
+		})
+	}
+	m.refreshTranscript(true)
+	if !m.viewport.AtBottom() {
+		t.Fatal("el transcript inicial debe quedar al fondo")
+	}
+	m.viewport.LineUp(12)
+	m.userScrolled = true
+	offset := m.viewport.YOffset
+	total := m.viewport.TotalLineCount()
+
+	m.messages = append(m.messages, ChatMessage{Kind: MsgAssistant, Content: "mensaje nuevo", Time: time.Now()})
+	m.refreshTranscript(true)
+
+	if m.viewport.YOffset != offset {
+		t.Fatalf("el auto-scroll movió al usuario: antes=%d después=%d", offset, m.viewport.YOffset)
+	}
+	if m.viewport.TotalLineCount() <= total {
+		t.Fatal("el mensaje nuevo debe agregarse sin recortar el historial anterior")
+	}
+}
+
+func TestRefreshStreamingAgrupaPintadosRapidos(t *testing.T) {
+	ctx := &AppContext{Styles: NewStyles(DefaultTheme())}
+	m := NewChat(ctx)
+	m.Resize(80, 20)
+	m.streaming = true
+	m.messages = []ChatMessage{
+		{Kind: MsgUser, Content: "hola", Time: time.Now()},
+		{Kind: MsgAssistant, Content: "respuesta", Time: time.Now()},
+	}
+	m.refreshTranscript(true)
+	m.lastTranscriptRefresh = time.Now()
+	before := m.lastTranscriptRefresh
+
+	cmd := m.refreshTranscriptStreaming(true)
+	if cmd == nil {
+		t.Fatal("un refresco demasiado cercano debe programarse, no ejecutarse inmediatamente")
+	}
+	if !m.transcriptRefreshPending {
+		t.Fatal("debe quedar un refresco agrupado pendiente")
+	}
+	if !m.lastTranscriptRefresh.Equal(before) {
+		t.Fatal("la llamada agrupada no debe reconstruir el viewport de inmediato")
+	}
+}
+
+func TestContextUsageSeCacheaYSeInvalidaConHistorial(t *testing.T) {
+	ctx := &AppContext{
+		ConfigDir: t.TempDir(),
+		Styles:    NewStyles(DefaultTheme()),
+		Providers: providers.Config{
+			ActiveProviderID: "test",
+			ActiveModelID:    "modelo",
+			Providers: []providers.Provider{{
+				ID: "test",
+				Models: []providers.Model{{
+					ID:               "modelo",
+					MaxContextTokens: 100_000,
+				}},
+			}},
+		},
+	}
+	m := NewChat(ctx)
+	m.appendHistory(openai.Message{Role: "user", Content: strings.Repeat("a", 400)})
+	used1, max1 := m.contextUsage()
+	if used1 <= 0 || max1 != 100_000 {
+		t.Fatalf("uso inicial inesperado: used=%d max=%d", used1, max1)
+	}
+	if m.contextCacheDirty {
+		t.Fatal("el cálculo debe dejar la caché limpia")
+	}
+
+	// Sin invalidación explícita, una segunda lectura debe usar el valor ya
+	// calculado. Las mutaciones reales pasan por appendHistory/Clear/LoadSession.
+	m.history = append(m.history, openai.Message{Role: "user", Content: strings.Repeat("b", 4_000)})
+	usedCached, _ := m.contextUsage()
+	if usedCached != used1 {
+		t.Fatal("contextUsage volvió a recorrer el historial pese a tener caché válida")
+	}
+
+	m.invalidateContextUsage()
+	used2, _ := m.contextUsage()
+	if used2 <= used1 {
+		t.Fatalf("tras invalidar debía reflejar el historial nuevo: antes=%d después=%d", used1, used2)
 	}
 }

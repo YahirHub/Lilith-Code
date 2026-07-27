@@ -105,6 +105,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case switchScreenMsg:
 		if v.next == nil {
 			// Return to chat
+			m.chat.invalidateContextUsage()
 			m.current = m.chat
 			return m, nil
 		}

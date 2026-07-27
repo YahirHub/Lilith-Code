@@ -55,7 +55,7 @@ componentes Bubble Tea/Bubbles ya presentes en la TUI.
 - `internal/tui/login_custom.go`
 - `internal/tui/login_custom_test.go`
 - `internal/providers/catalog_fetch_test.go`
-- `tareas/en-proceso-01-login-modelos-contexto-opcional.md`
+- `tareas/pendiente-01-login-modelos-contexto-opcional.md`
 - `contexto/040-login-modelos-contexto-opcional.md`
 
 # Problemas encontrados
