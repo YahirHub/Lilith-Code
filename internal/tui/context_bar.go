@@ -16,7 +16,7 @@ import (
 func EstimateTokens(msgs []openai.Message) int {
 	total := 0
 	for _, msg := range msgs {
-		total += 4 + len(msg.Content)/4
+		total += 4 + (len(msg.Content)+len(msg.ReasoningContent))/4
 		for _, call := range msg.ToolCalls {
 			total += 8 + (len(call.Function.Name)+len(call.Function.Arguments))/4
 		}

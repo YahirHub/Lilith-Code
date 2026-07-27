@@ -32,11 +32,12 @@ type ToolCall struct {
 
 // Message is one entry of the chat history sent to the API.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Name       string     `json:"name,omitempty"`
+	Role             string     `json:"role"`
+	Content          string     `json:"content"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	Name             string     `json:"name,omitempty"`
 }
 
 // Request configures a single chat call.
@@ -65,16 +66,52 @@ func NewClient(dir string) *Client {
 
 type chatChoice struct {
 	Delta struct {
-		Content   string          `json:"content"`
-		Role      string          `json:"role"`
-		ToolCalls []deltaToolCall `json:"tool_calls"`
+		Content          string            `json:"content"`
+		ReasoningContent string            `json:"reasoning_content"`
+		Reasoning        string            `json:"reasoning"`
+		ReasoningDetails []reasoningDetail `json:"reasoning_details"`
+		Role             string            `json:"role"`
+		ToolCalls        []deltaToolCall   `json:"tool_calls"`
 	} `json:"delta"`
 	Message struct {
-		Content   string     `json:"content"`
-		Role      string     `json:"role"`
-		ToolCalls []ToolCall `json:"tool_calls"`
+		Content          string            `json:"content"`
+		ReasoningContent string            `json:"reasoning_content"`
+		Reasoning        string            `json:"reasoning"`
+		ReasoningDetails []reasoningDetail `json:"reasoning_details"`
+		Role             string            `json:"role"`
+		ToolCalls        []ToolCall        `json:"tool_calls"`
 	} `json:"message"`
 	FinishReason string `json:"finish_reason"`
+}
+
+type reasoningDetail struct {
+	Type    string `json:"type"`
+	Text    string `json:"text"`
+	Summary string `json:"summary"`
+}
+
+func visibleReasoning(content, reasoning string, details []reasoningDetail) string {
+	// DeepSeek and several OpenAI-compatible gateways use reasoning_content.
+	// OpenRouter also exposes `reasoning`; prefer one scalar field to avoid
+	// showing the same tokens twice when a gateway supplies aliases together.
+	if content != "" {
+		return content
+	}
+	if reasoning != "" {
+		return reasoning
+	}
+	var b strings.Builder
+	for _, detail := range details {
+		part := detail.Text
+		if part == "" {
+			part = detail.Summary
+		}
+		if part == "" {
+			continue
+		}
+		b.WriteString(part)
+	}
+	return b.String()
 }
 
 type deltaToolCall struct {
@@ -292,10 +329,18 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 			return errors.New(raw.Message)
 		}
 		if len(raw.Choices) > 0 {
-			out.send(Chunk{
-				Delta:     raw.Choices[0].Message.Content,
-				ToolCalls: raw.Choices[0].Message.ToolCalls,
-			})
+			choice := raw.Choices[0]
+			reasoning := visibleReasoning(choice.Message.ReasoningContent, choice.Message.Reasoning, choice.Message.ReasoningDetails)
+			if reasoning != "" {
+				out.send(Chunk{Thinking: reasoning})
+				out.send(Chunk{ThinkingDone: true})
+			}
+			if choice.Message.Content != "" || len(choice.Message.ToolCalls) > 0 {
+				out.send(Chunk{
+					Delta:     choice.Message.Content,
+					ToolCalls: choice.Message.ToolCalls,
+				})
+			}
 		}
 		return nil
 	}
@@ -326,7 +371,17 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 		if len(raw.Choices) == 0 {
 			continue
 		}
-		for _, tc := range raw.Choices[0].Delta.ToolCalls {
+		choice := raw.Choices[0]
+		reasoning := visibleReasoning(choice.Delta.ReasoningContent, choice.Delta.Reasoning, choice.Delta.ReasoningDetails)
+		if reasoning != "" {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+				out.send(Chunk{Thinking: reasoning})
+			}
+		}
+		for _, tc := range choice.Delta.ToolCalls {
 			acc, ok := pending[tc.Index]
 			if !ok {
 				acc = &ToolCall{Type: "function", Index: tc.Index}
@@ -341,7 +396,7 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 			}
 			acc.Function.Arguments += tc.Function.Arguments
 		}
-		if len(raw.Choices[0].Delta.ToolCalls) > 0 {
+		if len(choice.Delta.ToolCalls) > 0 {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -349,12 +404,12 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 				out.send(Chunk{ToolCalls: snapshotCalls(pending, pendingOrder), Partial: true})
 			}
 		}
-		if raw.Choices[0].Delta.Content != "" {
+		if choice.Delta.Content != "" {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			default:
-				out.send(Chunk{Delta: raw.Choices[0].Delta.Content})
+				out.send(Chunk{Delta: choice.Delta.Content})
 			}
 		}
 	}

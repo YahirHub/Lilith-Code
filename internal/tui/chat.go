@@ -130,12 +130,14 @@ type ChatModel struct {
 	// la cola pendiente.
 	queue []string
 
-	// lastKeyAt guarda el instante del último KeyMsg que no sea Enter.
-	// Sirve como heurística de "paste" en terminales que no envían
-	// bracketed paste (p.ej. el host clásico de PowerShell en Windows):
-	// si un Enter llega < 25ms tras la tecla anterior se trata como salto
-	// de línea dentro del textarea en vez de enviar el mensaje.
-	lastKeyAt time.Time
+	// assistantActive apunta únicamente a la respuesta textual del turno de
+	// modelo ACTUAL. Se crea de forma perezosa al llegar el primer delta para
+	// no mostrar una cabecera `lilith` vacía mientras la API aún no responde.
+	assistantActive int
+	// reasoningBuf conserva el razonamiento explícitamente expuesto por el
+	// proveedor durante este paso del modelo. Además de mostrarse en vivo, se
+	// adjunta al assistant que contiene tool_calls cuando el endpoint lo exige.
+	reasoningBuf strings.Builder
 
 	// Caché del prefijo estable del transcript. Durante un turno sólo cambia
 	// la cola a partir del último mensaje del usuario; mantener renderizado el
@@ -237,7 +239,7 @@ func isScrollKey(k string) bool {
 
 func NewChat(ctx *AppContext) ChatModel {
 	ta := textarea.New()
-	ta.Placeholder = "Escribe un mensaje…   ( / comandos · ! bash · Enter enviar · Enter en tarea = encolar · Ctrl+C cancela/limpia cola · Ctrl+C x2 salir )"
+	ta.Placeholder = "Escribe un mensaje…   ( / comandos · ! bash · Enter enviar · Shift+Enter salto · Enter en tarea = encolar · Ctrl+C cancela/limpia cola · Ctrl+C x2 salir )"
 	ta.Prompt = "❯ "
 	ta.CharLimit = 20_000
 	ta.ShowLineNumbers = false
@@ -262,6 +264,7 @@ func NewChat(ctx *AppContext) ChatModel {
 		project:           project,
 		sess:              session.New(project),
 		seen:              map[string]bool{},
+		assistantActive:   -1,
 		contextCacheDirty: true,
 	}
 	return m
@@ -316,6 +319,17 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 		case "user":
 			m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: msg.Content, Time: s.UpdatedAt})
 		case "assistant":
+			if strings.TrimSpace(msg.ReasoningContent) != "" {
+				m.messages = append(m.messages, ChatMessage{
+					Kind: MsgThinking,
+					Thinking: &ThinkingPanel{
+						Content:  msg.ReasoningContent,
+						Done:     true,
+						Expanded: false,
+					},
+					Time: s.UpdatedAt,
+				})
+			}
 			if strings.TrimSpace(msg.Content) != "" {
 				m.messages = append(m.messages, ChatMessage{Kind: MsgAssistant, Content: msg.Content, Time: s.UpdatedAt})
 			}
@@ -424,6 +438,8 @@ func (m *ChatModel) Clear() {
 	m.panelSel = 0
 	m.panelPinned = false
 	m.thinkingActive = nil
+	m.assistantActive = -1
+	m.reasoningBuf.Reset()
 	m.seen = map[string]bool{}
 	m.sess = session.New(m.project)
 	m.refreshTranscript(false)
@@ -440,14 +456,24 @@ func (m *ChatModel) panels() []*FilePanel {
 	return out
 }
 
-// lastAssistantIndex localiza la burbuja del asistente en curso.
-func (m *ChatModel) lastAssistantIndex() int {
-	for i := len(m.messages) - 1; i >= 0; i-- {
-		if m.messages[i].Kind == MsgAssistant {
-			return i
-		}
+// ensureAssistantMessage materializa la respuesta textual del paso actual sólo
+// cuando el proveedor ya emitió contenido real. Así `Pensando…` puede estar
+// visible durante latencia/red/reintentos sin una cabecera `lilith` vacía.
+func (m *ChatModel) ensureAssistantMessage() int {
+	if m.assistantActive >= 0 && m.assistantActive < len(m.messages) && m.messages[m.assistantActive].Kind == MsgAssistant {
+		return m.assistantActive
 	}
-	return -1
+	m.messages = append(m.messages, ChatMessage{Kind: MsgAssistant, Time: time.Now()})
+	m.assistantActive = len(m.messages) - 1
+	return m.assistantActive
+}
+
+func (m *ChatModel) finishThinkingPanel() {
+	if m.thinkingActive == nil {
+		return
+	}
+	m.thinkingActive.Finish()
+	m.thinkingActive = nil
 }
 
 // applyToolCalls crea o refresca las ventanas en vivo (archivo o comando)
@@ -1068,9 +1094,12 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case chatStreamMsg:
 		if v.err != nil {
+			m.finishThinkingPanel()
 			m.streaming = false
 			m.thinking = false
 			m.working = false
+			m.assistantActive = -1
+			m.reasoningBuf.Reset()
 			m.AddError("Error del proveedor: " + v.err.Error())
 			return m, nil
 		}
@@ -1083,7 +1112,41 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			refreshCmd = m.refreshTranscriptStreaming(true)
 		}
+		if v.thinking != "" {
+			m.reasoningBuf.WriteString(v.thinking)
+			if m.thinkingActive == nil {
+				m.thinkingActive = &ThinkingPanel{Expanded: true}
+				panel := ChatMessage{Kind: MsgThinking, Thinking: m.thinkingActive, Time: time.Now()}
+				if m.assistantActive >= 0 && m.assistantActive < len(m.messages) {
+					idx := m.assistantActive
+					m.messages = append(m.messages, ChatMessage{})
+					copy(m.messages[idx+1:], m.messages[idx:])
+					m.messages[idx] = panel
+					m.assistantActive++
+				} else {
+					m.messages = append(m.messages, panel)
+				}
+			}
+			m.thinkingActive.Append(v.thinking)
+			// El reasoning sigue siendo una fase activa de "Pensando". Mantener
+			// el shimmer evita otro hueco visual entre el primer delta de
+			// reasoning y la siguiente tool call/respuesta. Si ya estamos en una
+			// tool call, "Trabajando" tiene prioridad.
+			if !m.working {
+				m.thinking = true
+			}
+			if cmd := m.refreshTranscriptStreaming(true); cmd != nil {
+				refreshCmd = cmd
+			}
+		}
+		if v.thinkingDone && m.thinkingActive != nil {
+			m.finishThinkingPanel()
+			if cmd := m.refreshTranscriptStreaming(true); cmd != nil {
+				refreshCmd = cmd
+			}
+		}
 		if len(v.toolCalls) > 0 {
+			m.finishThinkingPanel()
 			m.applyToolCalls(v.toolCalls)
 			// Una tool call empieza a ser trabajo desde el PRIMER snapshot,
 			// incluso mientras el proveedor todavía está transmitiendo sus
@@ -1106,22 +1169,22 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingCall = append(m.pendingCall, v.toolCalls...)
 		}
 		if v.done {
+			m.finishThinkingPanel()
 			text := m.streamBuf.String()
-			last := m.lastAssistantIndex()
-			if last >= 0 {
+			reasoning := m.reasoningBuf.String()
+			last := m.assistantActive
+			if last >= 0 && last < len(m.messages) {
 				m.messages[last].Content = text
 			}
 			m.streamBuf.Reset()
+			m.reasoningBuf.Reset()
 
 			if len(m.pendingCall) > 0 {
 				calls := m.pendingCall
 				m.pendingCall = nil
 				m.appendHistory(openai.Message{
-					Role: "assistant", Content: text, ToolCalls: calls,
+					Role: "assistant", Content: text, ReasoningContent: reasoning, ToolCalls: calls,
 				})
-				if text == "" && last >= 0 {
-					m.messages = append(m.messages[:last], m.messages[last+1:]...)
-				}
 				m.applyToolCalls(calls)
 				for _, c := range calls {
 					if IsFileTool(c.Function.Name) || IsCommandTool(c.Function.Name) {
@@ -1140,6 +1203,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.thinking = false
 				m.working = true
+				m.assistantActive = -1
 				m.refreshTranscript(true)
 				batch := []tea.Cmd{m.runTools(calls), thinkingTick(m.thinkingFrame)}
 
@@ -1150,66 +1214,36 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			if text != "" {
-				m.appendHistory(openai.Message{Role: "assistant", Content: text})
+				m.appendHistory(openai.Message{Role: "assistant", Content: text, ReasoningContent: reasoning})
 				m.toolFallback = ""
-			} else if last >= 0 {
+			} else {
 				// Tras una tool call, algunos modelos cierran el turno sin texto.
-				// En ese caso mostramos el resultado de la herramienta como cierre
-				// determinista en vez de una falsa respuesta vacía.
+				// Sólo en este punto (la API ya cerró el stream) materializamos una
+				// respuesta de cierre; nunca existe una burbuja vacía durante espera.
 				if fallback := strings.TrimSpace(m.toolFallback); fallback != "" {
-					m.messages[last].Content = fallback
+					idx := m.ensureAssistantMessage()
+					m.messages[idx].Content = fallback
 					m.appendHistory(openai.Message{Role: "assistant", Content: fallback})
 					m.toolFallback = ""
 				} else {
-					// El modelo no devolvió texto ni herramientas: no dejamos una
-					// burbuja vacía que parezca que Lilith no responde.
-					m.messages[last].Content = "(el modelo no devolvió contenido)"
+					idx := m.ensureAssistantMessage()
+					m.messages[idx].Content = "(el modelo no devolvió contenido)"
 				}
 			}
 			m.streaming = false
 			m.thinking = false
 			m.working = false
+			m.assistantActive = -1
 			m.refreshTranscript(true)
 			m.persist()
 			return m, m.drainQueue()
 		}
 		if v.delta != "" {
+			m.finishThinkingPanel()
 			m.thinking = false
 			m.streamBuf.WriteString(v.delta)
-			last := m.lastAssistantIndex()
-			if last >= 0 {
-				m.messages[last].Content = m.streamBuf.String()
-			}
-			if cmd := m.refreshTranscriptStreaming(true); cmd != nil {
-				refreshCmd = cmd
-			}
-		}
-		if v.thinking != "" {
-			if m.thinkingActive == nil {
-				m.thinkingActive = &ThinkingPanel{Expanded: true}
-				panel := ChatMessage{Kind: MsgThinking, Thinking: m.thinkingActive, Time: time.Now()}
-				last := m.lastAssistantIndex()
-				if last >= 0 {
-					m.messages = append(m.messages[:last], append([]ChatMessage{panel}, m.messages[last:]...)...)
-				} else {
-					m.messages = append(m.messages, panel)
-				}
-			}
-			m.thinkingActive.Append(v.thinking)
-			// El reasoning sigue siendo una fase activa de "Pensando". Mantener
-			// el shimmer evita otro hueco visual entre el primer delta de
-			// reasoning y la siguiente tool call/respuesta. Si ya estamos en una
-			// tool call, "Trabajando" tiene prioridad.
-			if !m.working {
-				m.thinking = true
-			}
-			if cmd := m.refreshTranscriptStreaming(true); cmd != nil {
-				refreshCmd = cmd
-			}
-		}
-		if v.thinkingDone && m.thinkingActive != nil {
-			m.thinkingActive.Finish()
-			m.thinkingActive = nil
+			last := m.ensureAssistantMessage()
+			m.messages[last].Content = m.streamBuf.String()
 			if cmd := m.refreshTranscriptStreaming(true); cmd != nil {
 				refreshCmd = cmd
 			}
@@ -1257,18 +1291,20 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		key := v.String()
-		// Pegado del portapapeles (bracketed paste): siempre va al textarea
-		// como texto literal. Nunca debe interpretarse como Enter, comandos
-		// ni atajos, aunque contenga saltos de línea o caracteres de control.
+		// Bubble Tea v1 entrega bracketed paste como un único KeyMsg con Paste
+		// activo. Insertamos el bloque completo de una vez: los saltos de línea
+		// son texto, nunca eventos Enter, y un pegado grande no se "teclea" rune
+		// por rune a través del loop principal.
 		if v.Paste {
-			var cmd tea.Cmd
-			prev := m.textarea.Value()
-			m.textarea, cmd = m.textarea.Update(msg)
-			if m.textarea.Value() != prev {
+			pasted := string(v.Runes)
+			pasted = strings.ReplaceAll(pasted, "\r\n", "\n")
+			pasted = strings.ReplaceAll(pasted, "\r", "\n")
+			if pasted != "" {
+				m.textarea.InsertString(pasted)
 				m.updatePalette()
 				m.syncInputHeight()
 			}
-			return m, cmd
+			return m, nil
 		}
 		// Teclas de scroll: siempre van al viewport, incluso durante streaming
 		// o ejecución de herramientas. Permiten leer el historial mientras
@@ -1367,9 +1403,12 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					notice = fmt.Sprintf("Tarea cancelada. %d mensaje(s) en cola descartados.", dropped)
 				}
 				m.AddSystem(notice + " Pulsa Ctrl+C otra vez para salir, o /exit.")
+				m.finishThinkingPanel()
 				m.streaming = false
 				m.thinking = false
 				m.working = false
+				m.assistantActive = -1
+				m.reasoningBuf.Reset()
 
 				m.quitPrimedAt = time.Now()
 				if m.ctx.Width > 0 && m.ctx.Height > 0 {
@@ -1397,37 +1436,18 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.AddSystem("Pulsa Ctrl+C otra vez para salir, o usa /exit.")
 			return m, nil
 		case "shift+enter", "alt+enter", "ctrl+enter":
-			// Nueva línea explícita dentro del textarea.
+			// Nueva línea explícita dentro del textarea. Enter simple siempre
+			// envía, incluso si se pulsa inmediatamente después de escribir.
 			m.textarea.InsertString("\n")
-			m.lastKeyAt = time.Now()
 			m.syncInputHeight()
 			return m, nil
 		case "enter":
-			// Heurística anti-paste: si la tecla previa fue hace muy poco,
-			// asumimos que este Enter forma parte de un pegado multi-línea
-			// y lo insertamos como salto de línea en lugar de enviar.
-			// Bubbletea entrega cada rune del paste como un KeyMsg
-			// separado; en Windows/PowerShell la separación puede llegar
-			// a las decenas de ms por render, así que usamos un umbral
-			// amplio (200ms).
-			if !m.lastKeyAt.IsZero() && time.Since(m.lastKeyAt) < 200*time.Millisecond {
-				m.textarea.InsertString("\n")
-				m.lastKeyAt = time.Now()
-				m.syncInputHeight()
-				return m, nil
-			}
-
 			val := strings.TrimSpace(m.textarea.Value())
 			if val == "" {
 				return m, nil
 			}
-			m.lastKeyAt = time.Time{}
 			return m.submit(val)
 		}
-		// Cualquier otra KeyMsg cuenta como actividad reciente de teclado
-		// para la heurística de paste (excepto el propio Enter, que se
-		// resetea al enviar arriba).
-		m.lastKeyAt = time.Now()
 	}
 
 	var cmds []tea.Cmd
@@ -1540,12 +1560,13 @@ func (m *ChatModel) runTurn() tea.Cmd {
 		m.AddError("No hay un proveedor activo. Usa /login o /providers.")
 		return nil
 	}
-	m.messages = append(m.messages, ChatMessage{Kind: MsgAssistant, Content: "", Time: time.Now()})
 	m.livePanels = nil
 	m.panelByCall = nil
 	m.cmdPanels = nil
 	m.cmdByCall = nil
 	m.thinkingActive = nil
+	m.assistantActive = -1
+	m.reasoningBuf.Reset()
 	m.streaming = true
 	m.thinking = true
 	m.working = false
