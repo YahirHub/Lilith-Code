@@ -22,13 +22,14 @@ const (
 
 // CustomLoginModel is the sequential form for adding a custom OpenAI-compatible provider.
 type CustomLoginModel struct {
-	ctx   *AppContext
-	step  customStep
-	input textinput.Model
-	name  string
-	url   string
-	key   string
-	err   string
+	ctx         *AppContext
+	step        customStep
+	input       textinput.Model
+	modelsInput adaptiveTextArea
+	name        string
+	url         string
+	key         string
+	err         string
 	// fetching indica que se está consultando {baseUrl}/models.
 	fetching bool
 }
@@ -51,70 +52,132 @@ func NewCustomLogin(ctx *AppContext) CustomLoginModel {
 	ti.Prompt = "❯ "
 	ti.Placeholder = "MyOpenAI"
 	ti.Focus()
-	ti.CharLimit = 128
+	ti.CharLimit = 2048
 	ti.PromptStyle = lipgloss.NewStyle().Foreground(ctx.Styles.Theme.Primary)
 	ti.TextStyle = lipgloss.NewStyle().Foreground(ctx.Styles.Theme.Foreground)
-	return CustomLoginModel{ctx: ctx, input: ti}
+	models := newAdaptiveTextArea("modelo, otro=1000000 · vacío = consultar /models", 1, 5)
+	models.SetWidth(64)
+	return CustomLoginModel{ctx: ctx, input: ti, modelsInput: models}
 }
 
 func (m CustomLoginModel) Init() tea.Cmd { return textinput.Blink }
 
 func (m CustomLoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
+	switch v := msg.(type) {
 	case modelsFetchedMsg:
 		m.fetching = false
-		if msg.err != nil {
-			m.err = msg.err.Error()
+		if v.err != nil {
+			m.err = v.err.Error()
 			return m, nil
 		}
-		return m.finish(msg.models)
+		return m.finish(v.models)
+
+	case tea.MouseMsg:
+		e, ok := mouseLeftPress(v)
+		if !ok {
+			return m, nil
+		}
+		_, hits := m.layout()
+		hit, ok := hitAt(hits, e.X, e.Y)
+		if !ok {
+			return m, nil
+		}
+		switch hit.id {
+		case "input":
+			if m.step == stepModels {
+				cmd := m.modelsInput.Focus()
+				return m, cmd
+			}
+			cmd := m.input.Focus()
+			return m, cmd
+		case "continue":
+			if !m.fetching {
+				return m.advance()
+			}
+		case "back":
+			if !m.fetching {
+				return m.back()
+			}
+		case "cancel":
+			return m, switchTo(NewOnboarding(m.ctx, false))
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		if m.fetching {
-			if msg.String() == "ctrl+c" {
+			switch v.String() {
+			case "ctrl+c":
 				return m, tea.Quit
+			case "esc":
+				// Switch screens instead of pretending to cancel the HTTP command.
+				// Any late result is then delivered to the new model and ignored.
+				return m, switchTo(NewOnboarding(m.ctx, false))
 			}
 			return m, nil
 		}
-		switch msg.String() {
+		switch v.String() {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "esc":
-			if m.step > stepName {
-				m.step--
-				m.err = ""
-				m.updateInputForStep()
+			return m.back()
+		case "shift+enter", "alt+enter":
+			if m.step == stepModels {
+				m.modelsInput.InsertString("\n")
 				return m, nil
 			}
-			return m, switchTo(NewOnboarding(m.ctx, false))
 		case "enter":
 			return m.advance()
 		}
+	}
+
+	if m.step == stepModels {
+		return m, m.modelsInput.Update(msg)
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
 }
 
+func (m CustomLoginModel) back() (tea.Model, tea.Cmd) {
+	if m.step > stepName {
+		m.step--
+		m.err = ""
+		m.updateInputForStep()
+		return m, nil
+	}
+	return m, switchTo(NewOnboarding(m.ctx, false))
+}
+
 func (m *CustomLoginModel) updateInputForStep() {
+	m.input.EchoMode = textinput.EchoNormal
 	m.input.SetValue("")
 	switch m.step {
 	case stepName:
 		m.input.Placeholder = "MyOpenAI"
+		m.input.SetValue(m.name)
 	case stepURL:
 		m.input.Placeholder = "https://api.openai.com/v1"
 		m.input.SetValue(m.url)
 	case stepKey:
-		m.input.Placeholder = "opcional · sk-...  |  env:OPENAI_API_KEY  |  vacío = sin token"
+		m.input.Placeholder = "opcional · sk-... | env:OPENAI_API_KEY | vacío = sin token"
 		m.input.EchoMode = textinput.EchoPassword
 		m.input.EchoCharacter = '•'
+		m.input.SetValue(m.key)
 	case stepModels:
-		m.input.Placeholder = "opcional · modelo, otro=1000000 · Enter vacío = consultar /models"
-		m.input.EchoMode = textinput.EchoNormal
+		m.modelsInput.SetValue("")
+		_ = m.modelsInput.Focus()
 	}
 }
 
+func (m CustomLoginModel) currentValue() string {
+	if m.step == stepModels {
+		return strings.TrimSpace(m.modelsInput.Value())
+	}
+	return strings.TrimSpace(m.input.Value())
+}
+
 func (m CustomLoginModel) advance() (tea.Model, tea.Cmd) {
-	val := strings.TrimSpace(m.input.Value())
+	val := m.currentValue()
 	switch m.step {
 	case stepName:
 		if val == "" {
@@ -173,9 +236,12 @@ func (m CustomLoginModel) finish(models []providers.Model) (tea.Model, tea.Cmd) 
 	return m, switchToChatWithSystem(fmt.Sprintf("Proveedor %q activo (%d modelos).", p.Name, len(p.Models)))
 }
 
-func (m CustomLoginModel) View() string {
+func (m CustomLoginModel) layout() (string, []settingsHit) {
 	s := m.ctx.Styles
-	w := min(72, m.ctx.Width-4)
+	w := settingsContentWidth(m.ctx.Width)
+	c := newSettingsCanvas(w)
+	c.block(settingsHeader(s, "Proveedor personalizado", "Endpoint OpenAI-compatible. Los campos usan el mismo sistema de controles de ajustes."))
+	c.blank()
 
 	steps := []string{"Nombre", "Base URL", "API Key", "Modelos"}
 	crumbs := make([]string, len(steps))
@@ -188,50 +254,68 @@ func (m CustomLoginModel) View() string {
 		}
 		crumbs[i] = style.Render(fmt.Sprintf("%d. %s", i+1, name))
 	}
-	crumbLine := strings.Join(crumbs, s.Muted.Render("  ›  "))
+	c.line(strings.Join(crumbs, s.Muted.Render("  ›  ")))
+	c.blank()
 
 	var hint, title string
 	switch m.step {
 	case stepName:
-		title = "¿Cómo quieres llamar a este proveedor?"
-		hint = "Solo se usa para identificarlo dentro de Lilith."
+		title = "Nombre del proveedor"
+		hint = "Se usa sólo para identificar la conexión dentro de Lilith."
 	case stepURL:
-		title = "URL base del endpoint"
-		hint = "Ejemplos: https://api.openai.com/v1  ·  http://localhost:11434/v1"
+		title = "URL base"
+		hint = "Ej.: https://api.openai.com/v1 · http://localhost:11434/v1"
 	case stepKey:
 		title = "API key (opcional)"
-		hint = "Déjalo vacío si el endpoint no la necesita. También admite env:NOMBRE_VAR."
+		hint = "Admite una key literal, env:NOMBRE_VAR o vacío si el endpoint no autentica."
 	case stepModels:
 		title = "Modelos y contexto (opcional)"
-		hint = "Vacío: consulta " + m.url + "/models. Manual: modelo, otro=1000000 (contexto en tokens)."
+		hint = "Vacío consulta " + m.url + "/models · Manual: modelo, otro=1000000 · Alt+Enter agrega línea."
 		if m.fetching {
 			hint = "Consultando " + m.url + "/models…"
 		}
 	}
+	c.line(s.Title.Render(title))
+	c.line(s.Subtitle.Render(settingsWrapPlain(hint, w)))
+	c.blank()
 
-	box := s.InputBoxFocused.Width(w).Render(m.input.View())
-	var errLine string
-	if m.err != "" {
-		errLine = "\n" + s.Danger.Render("✗ "+m.err)
-	}
-	footerText := "Enter Continuar   Esc Volver   Ctrl+C Salir"
 	if m.step == stepModels {
-		footerText = "Enter Continuar (vacío = consultar /models)   Esc Volver   Ctrl+C Salir"
+		copyInput := m.modelsInput
+		copyInput.SetWidth(w - 4)
+		c.block(settingsInput(s, settingsInputSpec{
+			ID:       "input",
+			Content:  copyInput.View(),
+			Width:    w,
+			Focused:  !m.fetching,
+			Disabled: m.fetching,
+		}))
+	} else {
+		c.block(settingsInput(s, settingsInputSpec{ID: "input", Content: m.input.View(), Width: w, Focused: true}))
 	}
-	footer := s.Muted.Render(footerText)
+	if m.err != "" {
+		c.blank()
+		c.line(s.Danger.Render("✗ " + settingsWrapPlain(m.err, w)))
+	}
+	c.blank()
 
-	body := strings.Join([]string{
-		s.Accent.Render("Proveedor personalizado"),
-		crumbLine,
-		"",
-		s.Title.Render(title),
-		s.Subtitle.Render(hint),
-		"",
-		box,
-		errLine,
-		"",
-		footer,
-	}, "\n")
+	continueLabel := "Continuar"
+	if m.step == stepModels {
+		continueLabel = "Guardar"
+		if m.currentValue() == "" {
+			continueLabel = "Consultar /models"
+		}
+	}
+	c.block(settingsButtonGroup(s, w,
+		settingsButtonSpec{ID: "continue", Label: continueLabel, Focused: true, Disabled: m.fetching},
+		settingsButtonSpec{ID: "back", Label: "Volver", Disabled: m.fetching},
+		settingsButtonSpec{ID: "cancel", Label: "Cancelar", Danger: true},
+	))
+	c.blank()
+	c.block(settingsFooter(s, "Enter continuar · Alt+Enter salto en modelos · clic en botones · Esc volver · Ctrl+C salir"))
+	return c.render(m.ctx.Width)
+}
 
-	return centered(m.ctx.Width, m.ctx.Height, body)
+func (m CustomLoginModel) View() string {
+	view, _ := m.layout()
+	return view
 }

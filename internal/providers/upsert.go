@@ -146,3 +146,47 @@ func firstNonEmpty(a, b string) string {
 	}
 	return b
 }
+
+// SetUseNonStreaming updates the transport preference of a persisted custom
+// provider without touching its authentication material or model catalog.
+func SetUseNonStreaming(dir, providerID string, value bool) error {
+	cfg, err := Load(dir)
+	if err != nil {
+		return err
+	}
+	p := cfg.FindProvider(providerID)
+	if p == nil {
+		return fmt.Errorf("No existe el proveedor personalizado %q.", providerID)
+	}
+	p.UseNonStreaming = value
+	return Save(dir, cfg)
+}
+
+// Delete removes a persisted custom provider and its API key. Bundled
+// providers are intentionally not present in Load(dir), so they cannot be
+// deleted through this function.
+func Delete(dir, providerID string) error {
+	cfg, err := Load(dir)
+	if err != nil {
+		return err
+	}
+	idx := -1
+	for i := range cfg.Providers {
+		if cfg.Providers[i].ID == providerID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("No existe el proveedor personalizado %q.", providerID)
+	}
+	cfg.Providers = append(cfg.Providers[:idx], cfg.Providers[idx+1:]...)
+	if cfg.ActiveProviderID == providerID {
+		cfg.ActiveProviderID = ""
+		cfg.ActiveModelID = ""
+	}
+	if err := Save(dir, cfg); err != nil {
+		return err
+	}
+	return secrets.DeleteAPIKey(dir, providerID)
+}

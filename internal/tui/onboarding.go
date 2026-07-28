@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // OnboardingOption identifies a first-run choice.
@@ -42,8 +41,8 @@ func NewOnboarding(ctx *AppContext, firstRun bool) OnboardingModel {
 	m := OnboardingModel{
 		ctx:      ctx,
 		firstRun: firstRun,
-		title:    "Elige cómo conectar tu proveedor de IA",
-		subtitle: "Puedes cambiarlo en cualquier momento con /login.",
+		title:    "Elige cómo conectar tu proveedor",
+		subtitle: "Usa teclado o clic. Puedes volver aquí con /login.",
 	}
 	if firstRun {
 		m.title = "Bienvenido a Lilith"
@@ -55,9 +54,31 @@ func NewOnboarding(ctx *AppContext, firstRun bool) OnboardingModel {
 func (m OnboardingModel) Init() tea.Cmd { return nil }
 
 func (m OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
+	switch v := msg.(type) {
+	case tea.MouseMsg:
+		e, ok := mouseLeftPress(v)
+		if !ok {
+			return m, nil
+		}
+		_, hits := m.layout()
+		hit, ok := hitAt(hits, e.X, e.Y)
+		if !ok {
+			return m, nil
+		}
+		if strings.HasPrefix(hit.id, "login:") {
+			for i, card := range onboardingCards {
+				if hit.id == "login:"+onboardingOptionID(card.option) {
+					m.selected = i
+					return m.choose()
+				}
+			}
+		}
+		if hit.id == "back" && !m.firstRun {
+			return m, switchToChat()
+		}
+
 	case tea.KeyMsg:
-		switch msg.String() {
+		switch v.String() {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "esc":
@@ -103,68 +124,49 @@ func (m OnboardingModel) choose() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m OnboardingModel) View() string {
+func (m OnboardingModel) layout() (string, []settingsHit) {
 	s := m.ctx.Styles
-	w := m.ctx.Width
-	if w < 40 {
-		w = 40
+	w := settingsContentWidth(m.ctx.Width)
+	c := newSettingsCanvas(w)
+	if m.firstRun && m.ctx.Height >= 30 {
+		c.block(settingsBlock{text: RenderLogo(w, m.ctx.Height, s.Theme)})
+		c.blank()
 	}
-	logo := RenderLogo(w, m.ctx.Height, s.Theme)
-
-	title := s.Title.Render(m.title)
-	subtitle := s.Subtitle.Render(m.subtitle)
-
-	cards := make([]string, len(onboardingCards))
-	cardWidth := min(72, w-4)
-	for i, c := range onboardingCards {
-		style := s.Card.Width(cardWidth)
-		if i == m.selected {
-			style = s.CardSelected.Width(cardWidth)
-		}
-		badge := s.Badge.Render(" " + c.badge + " ")
-		head := lipgloss.JoinHorizontal(lipgloss.Top,
-			s.Title.Render((numberPrefix(i+1))+"  "+c.title),
-			"  ",
-			badge,
-		)
-		body := s.Subtitle.Render(c.description)
-		cards[i] = style.Render(head + "\n" + body)
+	c.block(settingsHeader(s, m.title, m.subtitle))
+	c.blank()
+	for i, card := range onboardingCards {
+		c.block(settingsCard(s, settingsCardSpec{
+			ID:          "login:" + onboardingOptionID(card.option),
+			Title:       card.title,
+			Description: card.description,
+			Badge:       card.badge,
+			Selected:    i == m.selected,
+			Width:       w,
+		}))
+		c.blank()
 	}
-
-	footer := s.Muted.Render("↑↓ Navegar   1-3 Elegir   Enter Confirmar   Ctrl+C Salir")
-
-	parts := []string{
-		"",
-		logo,
-		"",
-		title,
-		subtitle,
-		"",
+	if !m.firstRun {
+		c.block(settingsButtonGroup(s, w, settingsButtonSpec{ID: "back", Label: "Volver"}))
+		c.blank()
 	}
-	parts = append(parts, cards...)
-	parts = append(parts, "", footer)
-	return centered(w, m.ctx.Height, strings.Join(parts, "\n"))
+	c.block(settingsFooter(s, "↑↓ navegar · 1-3 elegir · Enter confirmar · clic para abrir · Esc volver"))
+	return c.render(m.ctx.Width)
 }
 
-func numberPrefix(n int) string {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("#B084EB")).Bold(true).Render(itoa(n) + ".")
+func (m OnboardingModel) View() string {
+	view, _ := m.layout()
+	return view
 }
 
-func itoa(n int) string {
-	// small ints only
-	if n < 10 {
-		return string(rune('0' + n))
+func onboardingOptionID(option OnboardingOption) string {
+	switch option {
+	case OptionCodex:
+		return "codex"
+	case OptionCustom:
+		return "custom"
+	case OptionOpenCodeFree:
+		return "free"
+	default:
+		return "unknown"
 	}
-	return ""
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func centered(width, height int, content string) string {
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Top, content)
 }

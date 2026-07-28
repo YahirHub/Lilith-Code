@@ -34,10 +34,9 @@ func Commands() []SlashCommand {
 		},
 		{
 			Name: "providers", Aliases: []string{"provider"},
-			Description: "Lista los proveedores configurados",
+			Description: "Administra proveedores configurados",
 			Run: func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd {
-				chat.AddSystem(listProviders(ctx))
-				return nil
+				return switchTo(NewProviderScreen(ctx))
 			},
 		},
 		{
@@ -141,34 +140,3 @@ func helpText() string {
 	b.WriteString("\nAtajos: Enter enviar · ! prefix bash · Ctrl+R plegar razonamiento · Ctrl+C cancela tarea (2x sale)")
 	return b.String()
 }
-
-func listProviders(ctx *AppContext) string {
-	if len(ctx.Providers.Providers) == 0 {
-		return "No hay proveedores configurados. Usa /login."
-	}
-	active := ctx.Providers.Active()
-	var b strings.Builder
-	b.WriteString("Proveedores configurados:\n")
-	for _, p := range ctx.Providers.Providers {
-		marker := "  "
-		if p.ID == active.ProviderID {
-			marker = "▸ "
-		}
-		b.WriteString(marker)
-		b.WriteString(p.Name)
-		b.WriteString("  (")
-		b.WriteString(p.ID)
-		b.WriteString(", ")
-		b.WriteString(itoaInt(len(p.Models)))
-		b.WriteString(" modelos)\n")
-	}
-	if active.ModelID != "" {
-		b.WriteString("\nModelo activo: ")
-		b.WriteString(active.ProviderName)
-		b.WriteString(" / ")
-		b.WriteString(active.ModelID)
-	}
-	return b.String()
-}
-
-func itoaInt(n int) string { return fmtInt(n) }

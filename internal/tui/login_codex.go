@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -146,6 +145,46 @@ func (m *CodexLoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case tea.MouseMsg:
+		e, ok := mouseLeftPress(v)
+		if !ok {
+			return m, nil
+		}
+		_, hits := m.layout()
+		hit, ok := hitAt(hits, e.X, e.Y)
+		if !ok {
+			return m, nil
+		}
+		switch hit.id {
+		case "copy-url":
+			if m.flow != nil {
+				return m, copyToClipboardCmd(m.flow.AuthURL)
+			}
+		case "device":
+			m.cleanup()
+			m.step = codexStepStarting
+			m.notice = ""
+			return m, startDeviceFlowCmd()
+		case "copy-code":
+			if m.device != nil {
+				return m, copyToClipboardCmd(m.device.UserCode)
+			}
+		case "copy-device-url":
+			if m.device != nil {
+				return m, copyToClipboardCmd(m.device.VerificationURL)
+			}
+		case "retry":
+			m.cleanup()
+			m.err = ""
+			m.step = codexStepStarting
+			m.notice = ""
+			return m, startBrowserFlowCmd()
+		case "back":
+			m.cleanup()
+			return m, switchTo(NewOnboarding(m.ctx, m.ctx.FirstRun))
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		switch v.String() {
 		case "ctrl+c":
@@ -205,60 +244,86 @@ func (m *CodexLoginModel) cleanup() {
 	}
 }
 
-func (m *CodexLoginModel) View() string {
+func (m *CodexLoginModel) layout() (string, []settingsHit) {
 	s := m.ctx.Styles
-	var lines []string
-	lines = append(lines,
-		s.Accent.Render("Suscripción ChatGPT / Codex"),
-		"",
-	)
+	w := settingsContentWidth(m.ctx.Width)
+	c := newSettingsCanvas(w)
+	c.block(settingsHeader(s, "Suscripción ChatGPT / Codex", "Flujo OAuth con controles reutilizables y soporte de clic."))
+	c.blank()
+
 	switch m.step {
 	case codexStepStarting:
-		lines = append(lines, s.Subtitle.Render("Preparando el flujo OAuth…"))
+		c.line(s.Subtitle.Render("Preparando el flujo OAuth…"))
+		c.blank()
+		c.block(settingsButtonGroup(s, w, settingsButtonSpec{ID: "back", Label: "Volver"}))
+
 	case codexStepBrowserWait:
-		lines = append(lines,
-			s.Title.Render("Abre esta URL en tu navegador"),
-			"",
-			s.Subtitle.Render("Lilith no abre enlaces automáticamente."),
-			s.Subtitle.Render("Copia la URL, autoriza ChatGPT y vuelve a la terminal."),
-			"",
-			s.Muted.Render(m.flow.AuthURL),
-			"",
-			buttonRow(s, "C Copiar URL", "D Código dispositivo", "Esc Cancelar"),
-		)
+		c.line(s.Title.Render("Autoriza Lilith en tu navegador"))
+		c.line(s.Subtitle.Render("Copia la URL, autoriza tu cuenta y vuelve a la terminal."))
+		c.blank()
+		if m.flow != nil {
+			c.block(settingsCard(s, settingsCardSpec{
+				ID:          "copy-url",
+				Title:       "URL de autorización",
+				Description: m.flow.AuthURL,
+				Badge:       "OAUTH",
+				Width:       w,
+			}))
+			c.blank()
+		}
+		c.block(settingsButtonGroup(s, w,
+			settingsButtonSpec{ID: "copy-url", Label: "Copiar URL"},
+			settingsButtonSpec{ID: "device", Label: "Código de dispositivo"},
+			settingsButtonSpec{ID: "back", Label: "Cancelar", Danger: true},
+		))
+
 	case codexStepDevicePolling:
-		lines = append(lines,
-			s.Title.Render("Introduce este código en tu navegador"),
-			"",
-			s.Accent.Render(m.device.UserCode),
-			s.Subtitle.Render("Ve a "+m.device.VerificationURL),
-			"",
-			buttonRow(s, "C Copiar código", "U Copiar URL", "Esc Cancelar"),
-			s.Muted.Render("Esperando confirmación…"),
-		)
+		c.line(s.Title.Render("Introduce este código en tu navegador"))
+		c.blank()
+		if m.device != nil {
+			c.block(settingsCard(s, settingsCardSpec{
+				ID:          "copy-code",
+				Title:       m.device.UserCode,
+				Description: m.device.VerificationURL,
+				Badge:       "DISPOSITIVO",
+				Width:       w,
+			}))
+			c.blank()
+		}
+		c.block(settingsButtonGroup(s, w,
+			settingsButtonSpec{ID: "copy-code", Label: "Copiar código"},
+			settingsButtonSpec{ID: "copy-device-url", Label: "Copiar URL"},
+			settingsButtonSpec{ID: "back", Label: "Cancelar", Danger: true},
+		))
+		c.blank()
+		c.line(s.Muted.Render("Esperando confirmación…"))
+
 	case codexStepDone:
-		lines = append(lines, s.Success.Render("✓ "+m.msg))
+		c.line(s.Success.Render("✓ " + m.msg))
+
 	case codexStepError:
-		lines = append(lines,
-			s.Warning.Render("Falló el inicio de sesión"),
-			"",
-			s.Subtitle.Render(m.err),
-			"",
-			s.Muted.Render("R Reintentar (navegador)   D Código de dispositivo   Esc Volver"),
-		)
+		c.line(s.Warning.Render("Falló el inicio de sesión"))
+		c.blank()
+		c.line(s.Subtitle.Render(settingsWrapPlain(m.err, w)))
+		c.blank()
+		c.block(settingsButtonGroup(s, w,
+			settingsButtonSpec{ID: "retry", Label: "Reintentar"},
+			settingsButtonSpec{ID: "device", Label: "Código de dispositivo"},
+			settingsButtonSpec{ID: "back", Label: "Volver"},
+		))
 	}
 	if m.notice != "" {
-		lines = append(lines, "", s.Success.Render(m.notice))
+		c.blank()
+		c.line(s.Success.Render("· " + settingsWrapPlain(m.notice, w)))
 	}
-	return centered(m.ctx.Width, m.ctx.Height, strings.Join(lines, "\n"))
+	c.blank()
+	c.block(settingsFooter(s, "clic en botones · C copiar · D dispositivo · R reintentar · Esc volver"))
+	return c.render(m.ctx.Width)
 }
 
-func buttonRow(s Styles, labels ...string) string {
-	parts := make([]string, 0, len(labels))
-	for _, label := range labels {
-		parts = append(parts, s.Badge.Render(label))
-	}
-	return strings.Join(parts, "  ")
+func (m *CodexLoginModel) View() string {
+	view, _ := m.layout()
+	return view
 }
 
 func copyToClipboardCmd(text string) tea.Cmd {

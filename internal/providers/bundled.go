@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,6 +23,12 @@ const (
 // fallbackFreeModels mirrors los IDs actualmente publicados en
 // https://opencode.ai/zen/v1/models con sufijo `-free`. Se usan como fallback
 // cuando la API no está accesible.
+
+var (
+	freeModelsOnce  sync.Once
+	freeModelsCache []Model
+)
+
 var fallbackFreeModels = []Model{
 	{ID: "deepseek-v4-flash-free", Name: "DeepSeek V4 Flash (Free)", MaxContextTokens: 1_000_000},
 	{ID: "mimo-v2.5-free", Name: "MiMo V2.5 (Free)", MaxContextTokens: 128_000},
@@ -70,6 +77,13 @@ func BundledProviders() []Provider {
 // solo los modelos cuyo id termina en `-free`. Cualquier error devuelve el
 // fallback local.
 func fetchOpenCodeFreeModels() []Model {
+	freeModelsOnce.Do(func() {
+		freeModelsCache = fetchOpenCodeFreeModelsRemote()
+	})
+	return cloneModels(freeModelsCache)
+}
+
+func fetchOpenCodeFreeModelsRemote() []Model {
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get(OpenCodeFreeBaseURL + "/models")
 	if err != nil || resp.StatusCode != 200 {

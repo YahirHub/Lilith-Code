@@ -86,7 +86,7 @@ func TestCustomLoginManualModelsKeepsOptionalContextSyntax(t *testing.T) {
 	m.step = stepModels
 	m.name = "Manual"
 	m.url = "https://example.com/v1"
-	m.input.SetValue("modelo-a=250000, modelo-b")
+	m.modelsInput.SetValue("modelo-a=250000, modelo-b")
 
 	_, cmd := m.advance()
 	if cmd == nil {

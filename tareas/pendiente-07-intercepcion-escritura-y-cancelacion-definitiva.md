@@ -1,7 +1,7 @@
 # Tarea 07 — Intercepción de escritura y cancelación definitiva
 
 ## Estado
-en-proceso
+pendiente
 
 ## Objetivo
 Corregir las dos regresiones confirmadas en Windows:
