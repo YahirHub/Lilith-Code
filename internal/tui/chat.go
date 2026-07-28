@@ -62,14 +62,15 @@ const (
 
 // ChatModel is the main chat screen. Used via pointer.
 type ChatModel struct {
-	ctx       *AppContext
-	viewport  viewport.Model
-	textarea  textarea.Model
-	messages  []ChatMessage
-	mode      InputMode
-	streaming bool
-	streamBuf strings.Builder
-	cancel    context.CancelFunc
+	ctx           *AppContext
+	viewport      viewport.Model
+	textarea      textarea.Model
+	messages      []ChatMessage
+	mode          InputMode
+	streaming     bool
+	streamBuf     strings.Builder
+	cancel        context.CancelFunc
+	requestCancel context.CancelFunc
 
 	// turnCtx abarca TODO el turno del usuario: streaming del proveedor y
 	// herramientas. Ctrl+C cancela este contexto una sola vez y los resultados
@@ -289,6 +290,10 @@ func (m *ChatModel) beginTurn() error {
 	if active.ProviderID == "" || active.ModelID == "" || m.ctx.Providers.FindProvider(active.ProviderID) == nil {
 		return errors.New("no hay un proveedor/modelo activo; usa /login o /models")
 	}
+	if m.requestCancel != nil {
+		m.requestCancel()
+		m.requestCancel = nil
+	}
 	if m.cancel != nil {
 		m.cancel()
 	}
@@ -304,6 +309,10 @@ func (m *ChatModel) beginTurn() error {
 // endTurn releases the root context after a normal completion/error and makes
 // any message still in flight from the old turn stale.
 func (m *ChatModel) endTurn() {
+	if m.requestCancel != nil {
+		m.requestCancel()
+		m.requestCancel = nil
+	}
 	if m.cancel != nil {
 		m.cancel()
 	}
@@ -322,6 +331,10 @@ func (m *ChatModel) endTurn() {
 func (m *ChatModel) cancelTurn() string {
 	if m.activeTurnID == 0 {
 		return ""
+	}
+	if m.requestCancel != nil {
+		m.requestCancel()
+		m.requestCancel = nil
 	}
 	if m.cancel != nil {
 		m.cancel()
@@ -396,7 +409,7 @@ func (m *ChatModel) appendHistory(msgs ...openai.Message) {
 
 // LoadSession reemplaza la conversación activa por una guardada y reconstruye
 // el transcript visible a partir del historial real. Las tool calls de
-// archivo (write_file / str_replace) se rehidratan como FilePanel para que
+// archivo (create_file / str_replace; write_file en sesiones antiguas) se rehidratan como FilePanel para que
 // la sesión reanudada conserve el mismo diseño que cuando se estaban
 // ejecutando en vivo, en lugar de degradarse a una línea de texto genérica.
 func (m *ChatModel) LoadSession(s *session.Session) {
@@ -1257,11 +1270,22 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(v.toolCalls) > 0 {
 			m.finishThinkingPanel()
 			m.applyToolCalls(v.toolCalls)
+			// create_file is create-only. As soon as a partial tool call exposes
+			// its path, preflight it against disk. If it already exists we cancel
+			// only this provider request (not the whole turn), synthesize the
+			// FILE_EXISTS result, and continue with edit tools. This prevents a
+			// model from streaming hundreds of useless lines before the normal
+			// execution-time guard can reject the call.
+			if v.partial && len(v.toolCalls) == 1 {
+				if cmd, intercepted := m.interceptExistingCreateCall(v.toolCalls[0]); intercepted {
+					return m, cmd
+				}
+			}
 			// Una tool call empieza a ser trabajo desde el PRIMER snapshot,
 			// incluso mientras el proveedor todavía está transmitiendo sus
 			// argumentos. Antes se apagaba "Pensando" al crear un panel de
 			// archivo/comando, pero "Trabajando" sólo se encendía al llegar
-			// el chunk final. En llamadas grandes (write_file, apply_diff, etc.)
+			// el chunk final. En llamadas grandes (create_file, apply_diff, etc.)
 			// eso dejaba varios segundos con ambos flags en false y el indicador
 			// desaparecía exactamente mientras el panel decía "running".
 			m.thinking = false
@@ -1385,13 +1409,21 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.runningCalls = nil
 		for _, callID := range v.compactCallIDs {
-			m.compactRejectedWriteCall(callID)
+			m.compactRejectedCreateCall(callID)
+		}
+		if len(v.compactCallIDs) > 0 {
+			m.switchCreateToolToEditors()
 		}
 		m.appendHistory(v.results...)
 		m.toolFallback = summarizeToolResults(v.results)
 
 		for _, r := range v.results {
 			if p := m.panelByCall[r.ToolCallID]; p != nil {
+				if isCreateFileTool(p.Tool) && strings.HasPrefix(strings.TrimSpace(r.Content), "FILE_EXISTS:") {
+					// The body was never applied; do not keep hundreds of rejected
+					// lines occupying the transcript after the skip.
+					p.Content = ""
+				}
 				p.Finish(r.Content)
 				continue
 			}
@@ -1701,7 +1733,12 @@ func (m *ChatModel) runTurn() tea.Cmd {
 		Stream:   true,
 		Tools:    schemas,
 	}
-	ch := m.ctx.Client.Stream(m.turnCtx, req)
+	if m.requestCancel != nil {
+		m.requestCancel()
+	}
+	requestCtx, requestCancel := context.WithCancel(m.turnCtx)
+	m.requestCancel = requestCancel
+	ch := m.ctx.Client.Stream(requestCtx, req)
 	batch := []tea.Cmd{streamPump(ch, turnID), thinkingTick(0)}
 	if tick := m.maybeStartElapsedTick(); tick != nil {
 		batch = append(batch, tick)
@@ -1802,7 +1839,7 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 			out, err := tools.Execute(runCtx, c.Function.Name, args, env)
 			if err != nil {
 				out = "error: " + err.Error()
-			} else if c.Function.Name == "write_file" && strings.HasPrefix(out, "FILE_EXISTS:") {
+			} else if isCreateFileTool(c.Function.Name) && strings.HasPrefix(out, "FILE_EXISTS:") {
 				// The file was never written. Keep the visible panel, but compact the
 				// rejected full-file payload before the next API request so thousands
 				// of useless generated tokens are not re-sent on every continuation.
@@ -1814,11 +1851,107 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 	}
 }
 
-func (m *ChatModel) compactRejectedWriteCall(callID string) {
+func preflightStreamingCreateCall(root string, call openai.ToolCall) (openai.ToolCall, string, bool) {
+	if call.Function.Name != "create_file" || strings.TrimSpace(call.ID) == "" {
+		return call, "", false
+	}
+	path, ok := partialJSONString(call.Function.Arguments, "path")
+	path = strings.TrimSpace(path)
+	if !ok || path == "" {
+		return call, "", false
+	}
+	result, exists, err := tools.PreflightCreateFile(root, path)
+	if err != nil || !exists {
+		return call, "", false
+	}
+	compactArgs, err := json.Marshal(map[string]any{"path": path, "content": ""})
+	if err != nil {
+		return call, "", false
+	}
+	call.Function.Arguments = string(compactArgs)
+	return call, result, true
+}
+
+func (m *ChatModel) interceptExistingCreateCall(call openai.ToolCall) (tea.Cmd, bool) {
+	root, err := os.Getwd()
+	if err != nil {
+		return nil, false
+	}
+	call, result, intercepted := preflightStreamingCreateCall(root, call)
+	if !intercepted {
+		return nil, false
+	}
+
+	// Stop only the current HTTP/SSE request. The turn context must stay alive
+	// so the next model call and any edit tools can continue normally.
+	if m.requestCancel != nil {
+		m.requestCancel()
+		m.requestCancel = nil
+	}
+
+	m.finishThinkingPanel()
+	text := m.streamBuf.String()
+	reasoning := m.reasoningBuf.String()
+	if m.assistantActive >= 0 && m.assistantActive < len(m.messages) {
+		m.messages[m.assistantActive].Content = text
+	}
+	m.streamBuf.Reset()
+	m.reasoningBuf.Reset()
+	m.pendingCall = nil
+	m.runningCalls = nil
+	m.assistantActive = -1
+
+	// The assistant/tool pair remains protocol-correct even though we cut the
+	// provider stream early. The rejected payload is represented compactly and
+	// never pollutes subsequent context.
+	m.appendHistory(openai.Message{
+		Role: "assistant", Content: text, ReasoningContent: reasoning, ToolCalls: []openai.ToolCall{call},
+	})
+	m.appendHistory(toolMessage(call, result))
+	if p := m.panelByCall[call.ID]; p != nil {
+		p.Content = ""
+		p.Finish(result)
+	}
+
+	m.switchCreateToolToEditors()
+	m.toolFallback = result
+	m.toolSteps++
+	m.thinking = false
+	m.working = true
+	m.refreshTranscript(true)
+	return m.runTurn(), true
+}
+
+func (m *ChatModel) switchCreateToolToEditors() {
+	seen := map[string]bool{}
+	next := make([]string, 0, len(m.activeTools)+3)
+	for _, name := range m.activeTools {
+		if isCreateFileTool(name) {
+			continue
+		}
+		if !seen[name] {
+			seen[name] = true
+			next = append(next, name)
+		}
+	}
+	for _, name := range []string{"read_files", "str_replace", "apply_diff"} {
+		if seen[name] {
+			continue
+		}
+		if _, ok := tools.Get(name); !ok {
+			continue
+		}
+		seen[name] = true
+		next = append(next, name)
+	}
+	m.activeTools = next
+}
+
+func (m *ChatModel) compactRejectedCreateCall(callID string) {
 	for i := len(m.history) - 1; i >= 0; i-- {
 		for j := range m.history[i].ToolCalls {
 			call := &m.history[i].ToolCalls[j]
-			if call.ID != callID || call.Function.Name != "write_file" {
+			if call.ID != callID || !isCreateFileTool(call.Function.Name) {
 				continue
 			}
 			var args map[string]any
@@ -1886,7 +2019,7 @@ func summarizeToolResults(results []openai.Message) string {
 			continue
 		}
 		name := strings.TrimSpace(r.Name)
-		if name == "write_file" || name == "str_replace" {
+		if isCreateFileTool(name) || name == "str_replace" {
 			lines = append(lines, content)
 			continue
 		}
@@ -2047,7 +2180,7 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 	m.activeTools = tools.Select(body + "\n" + args)
 	if len(m.activeTools) == 0 {
 		// Al menos permite leer/escribir/ejecutar cuando la skill lo pide.
-		m.activeTools = []string{"tool_search", "read_files", "write_file", "str_replace", "run_terminal_command"}
+		m.activeTools = []string{"tool_search", "read_files", "create_file", "str_replace", "run_terminal_command"}
 	}
 	m.toolSteps = 0
 	m.toolFallback = ""
@@ -2110,10 +2243,10 @@ func systemPrompt(activeTools []string, skillsBlock string) string {
 		}
 		return false
 	}
-	if hasTool("write_file") || hasTool("str_replace") || hasTool("apply_diff") {
+	if hasTool("create_file") || hasTool("str_replace") || hasTool("apply_diff") {
 		add("Never write partial files or placeholders such as `...`, `// rest of code`, `TODO: fill in`, or equivalent; changes must leave real files usable as-is.")
 		add("For existing files, prefer str_replace for precise replacements or apply_diff for unified patches. Both validate against the current on-disk file, so do not perform a ceremonial read solely to unlock them; read when you need context or after a mismatch/ambiguity.")
-		add("write_file is creation-only in Lilith. If it returns FILE_EXISTS, do not retry or rewrite blindly; switch to str_replace/apply_diff.")
+		add("create_file is creation-only in Lilith. Never use it to modify, replace, rewrite, fix, refactor or regenerate an existing file. If it returns FILE_EXISTS, do not retry it; switch to str_replace/apply_diff.")
 		add("Preserve the project's conventions, imports, formatting and unrelated content. Make the smallest safe change that satisfies the request.")
 	}
 	if hasTool("run_terminal_command") {

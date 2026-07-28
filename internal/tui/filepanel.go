@@ -17,11 +17,11 @@ type filePanelEdit struct {
 }
 
 type FilePanel struct {
-	Tool     string // write_file | str_replace
+	Tool     string // create_file (legacy: write_file) | str_replace
 	CallID   string
 	Index    int
 	Path     string
-	Content  string          // write_file: contenido en construcción
+	Content  string          // create_file: contenido en construcción
 	Old, New string          // str_replace: bloque único/parcial durante streaming
 	Edits    []filePanelEdit // str_replace: lote completo de cambios, al estilo pi.dev
 	Done     bool
@@ -42,8 +42,12 @@ type FilePanel struct {
 const previewLines = 12
 
 // IsFileTool indica si una herramienta se representa como ventana de archivo.
+func isCreateFileTool(name string) bool {
+	return name == "create_file" || name == "write_file"
+}
+
 func IsFileTool(name string) bool {
-	return name == "write_file" || name == "str_replace"
+	return isCreateFileTool(name) || name == "str_replace"
 }
 
 // Update refresca el panel con los argumentos (posiblemente incompletos) que
@@ -53,7 +57,7 @@ func (p *FilePanel) Update(rawArgs string) {
 		p.Path = v
 	}
 	switch p.Tool {
-	case "write_file":
+	case "create_file", "write_file":
 		if v, ok := partialJSONString(rawArgs, "content"); ok {
 			p.Content = v
 		}
@@ -136,7 +140,7 @@ func (p *FilePanel) title() string {
 	if path == "" {
 		path = "(file)"
 	}
-	// Mimic a bash invocation: "$ write_file path" / "$ str_replace path".
+	// Mimic a bash invocation: "$ create_file path" / "$ str_replace path". Legacy sessions may still render "$ write_file ...".
 	verb := p.Tool
 	if verb == "" {
 		verb = "edit"
@@ -169,7 +173,7 @@ func (p *FilePanel) MarkSuperseded() {
 
 // stats devuelve el número de líneas añadidas y eliminadas.
 func (p *FilePanel) stats() (int, int) {
-	if p.Tool == "write_file" {
+	if isCreateFileTool(p.Tool) {
 		return len(splitLines(p.Content)), 0
 	}
 	add, del := 0, 0
@@ -249,7 +253,7 @@ func (p *FilePanel) renderBody(s Styles, inner int) string {
 	ctx := lipgloss.NewStyle().Foreground(t.Muted)
 
 	var out []string
-	if p.Tool == "write_file" {
+	if isCreateFileTool(p.Tool) {
 		for _, l := range splitLines(p.Content) {
 			out = append(out, green.Render("+ "+clip(l, inner-2)))
 		}

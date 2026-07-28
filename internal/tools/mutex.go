@@ -1,7 +1,7 @@
 package tools
 
 // Per-path write mutex, inspired by pi.dev's file-mutation-queue. Serialises
-// concurrent str_replace / write_file / apply_diff calls that target the same
+// concurrent str_replace / create_file / apply_diff calls that target the same
 // path so a burst of tool calls can never corrupt a file mid-write.
 
 import (

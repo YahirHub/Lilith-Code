@@ -18,7 +18,7 @@ func TestPartialJSONStringOnIncompleteArgs(t *testing.T) {
 }
 
 func TestFilePanelUpdateTracksLiveContent(t *testing.T) {
-	p := &FilePanel{Tool: "write_file"}
+	p := &FilePanel{Tool: "create_file"}
 	p.Update(`{"path":"a.txt","content":"uno\nd`)
 	if p.Path != "a.txt" || p.Content != "uno\nd" {
 		t.Fatalf("panel no refleja el stream: %+v", p)
@@ -49,7 +49,7 @@ func TestDiffLinesMarksAddedAndRemoved(t *testing.T) {
 }
 
 func TestFinishNoPliegaLasCreacionesLargas(t *testing.T) {
-	p := &FilePanel{Tool: "write_file"}
+	p := &FilePanel{Tool: "create_file"}
 	long := ""
 	for i := 0; i < 40; i++ {
 		long += "linea\n"
@@ -63,7 +63,7 @@ func TestFinishNoPliegaLasCreacionesLargas(t *testing.T) {
 
 func TestVistaPreviaCreceHastaSuLimite(t *testing.T) {
 	s := NewStyles(DefaultTheme())
-	p := &FilePanel{Tool: "write_file", Path: "a.txt"}
+	p := &FilePanel{Tool: "create_file", Path: "a.txt"}
 	medir := func() int {
 		return len(splitLines(p.renderBody(s, 60)))
 	}
@@ -87,14 +87,25 @@ func TestVistaPreviaCreceHastaSuLimite(t *testing.T) {
 	}
 }
 
-func TestFilePanelMarksExistingWriteAsSkipped(t *testing.T) {
-	p := &FilePanel{Tool: "write_file", Path: "styles.css"}
+func TestFilePanelMarksExistingCreateAsSkipped(t *testing.T) {
+	p := &FilePanel{Tool: "create_file", Path: "styles.css"}
 	p.Finish("FILE_EXISTS: styles.css already exists. Use str_replace or apply_diff.")
 	if !p.Done || p.Failed || !p.Skipped {
 		t.Fatalf("FILE_EXISTS should be a recoverable skipped panel: %+v", p)
 	}
 	if got := p.title(); !strings.Contains(got, "[skipped]") {
 		t.Fatalf("expected skipped title, got %q", got)
+	}
+}
+
+func TestFilePanelStillRendersLegacyWriteFileSessions(t *testing.T) {
+	if !IsFileTool("write_file") {
+		t.Fatal("legacy write_file tool calls from persisted sessions must still render as file panels")
+	}
+	p := &FilePanel{Tool: "write_file", Path: "legacy.txt"}
+	p.Update(`{"path":"legacy.txt","content":"hola"}`)
+	if p.Content != "hola" {
+		t.Fatalf("legacy write_file panel should still parse content: %+v", p)
 	}
 }
 

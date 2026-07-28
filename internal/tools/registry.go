@@ -135,7 +135,9 @@ var directChatPattern = regexp.MustCompile(`(?i)^\s*(hola|hello|hi|hey|buenas( (
 var (
 	projectScopePattern = regexp.MustCompile(`(?i)\b(project|proyecto|repo|repositor(y|io)|codebase|c(o|ó)digo|file|archivo|files|archivos|src|carpeta|directorio|package\.json|go\.mod|cargo\.toml|pyproject\.toml)\b`)
 	filePathPattern     = regexp.MustCompile(`(?i)[\w.-]+\.(ts|tsx|js|jsx|mjs|cjs|go|rs|py|java|kt|php|json|ya?ml|toml|md|css|scss|html|vue|svelte|txt|sh)\b`)
-	writePattern        = regexp.MustCompile(`(?i)\b(crea|create|escribe|write|genera|generate|implementa|implement|agrega|añade|add|modifica|modify|edita|edit|corrige|fix|refactoriza|refactor|renombra|rename|elimina|borra|delete|remove|guarda|save|haz|hazme|dame)\b`)
+	createFilePattern   = regexp.MustCompile(`(?i)\b(crea|crear|create|genera|generar|generate)\b\s+(?:(un|una|a|the)\s+)?(?:(nuevo|nueva|new)\s+)?(archivo|file|fichero)\b`)
+	newFilePattern      = regexp.MustCompile(`(?i)(\b(nuevo|nueva|new)\s+(archivo|file|fichero)\b|\b(agrega|añade|add)\b.{0,24}\b(archivo|file|fichero)\b)`)
+	writePattern        = regexp.MustCompile(`(?i)\b(escribe|write|implementa|implement|agrega|añade|add|modifica|modify|edita|edit|corrige|fix|refactoriza|refactor|renombra|rename|elimina|borra|delete|remove|guarda|save|haz|hazme|dame)\b`)
 	searchPattern       = regexp.MustCompile(`(?i)\b(busca|search|encuentra|find|grep|d(o|ó)nde|where|localiza|usages|referencias)\b`)
 	shellPattern        = regexp.MustCompile(`(?i)\b(ejecuta|execute|run|comando|command|terminal|bash|shell|compila|compile|build|test|prueba|git|npm|go run|instala|install)\b`)
 	urlPattern          = regexp.MustCompile(`(?i)(https?://|\b(url|web|p(a|á)gina|docs? online|documentaci(o|ó)n online)\b)`)
@@ -146,8 +148,8 @@ var promptHints = []struct {
 	tools   []string
 }{
 	{projectScopePattern, []string{"list_directory", "glob", "read_files"}},
-	{filePathPattern, []string{"read_files", "write_file", "str_replace", "apply_diff"}},
-	{writePattern, []string{"write_file", "str_replace", "apply_diff", "read_files"}},
+	{filePathPattern, []string{"read_files", "str_replace", "apply_diff"}},
+	{writePattern, []string{"str_replace", "apply_diff", "read_files"}},
 	{searchPattern, []string{"code_search", "glob", "read_files"}},
 	{shellPattern, []string{"run_terminal_command"}},
 	{urlPattern, []string{"read_url"}},
@@ -176,6 +178,16 @@ func Select(prompt string) []string {
 			if _, ok := registry[t]; ok {
 				active[t] = true
 			}
+		}
+	}
+	// create_file is intentionally narrower than the generic write/edit surface.
+	// Models strongly associate a tool named "write_file" with overwriting, so
+	// Lilith exposes the clearer create_file name only when the user explicitly
+	// asks for file creation. Generic "create a new design" wording does not expose it.
+	// If a broader implementation later needs a new file, tool_search can load it.
+	if createFilePattern.MatchString(p) || newFilePattern.MatchString(p) {
+		if _, ok := registry["create_file"]; ok {
+			active["create_file"] = true
 		}
 	}
 	out := make([]string, 0, len(active))

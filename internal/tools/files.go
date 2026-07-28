@@ -39,6 +39,28 @@ var skipDirs = map[string]bool{
 	"vendor": true, ".next": true, "target": true, "bin": true, ".li": true,
 }
 
+// PreflightCreateFile checks a create-only target without writing anything.
+// It is also used by the TUI while tool arguments are still streaming so an
+// existing path can be rejected before the model spends tokens generating the
+// rest of a large file body.
+func PreflightCreateFile(root, rel string) (result string, exists bool, err error) {
+	full, err := resolve(root, rel)
+	if err != nil {
+		return "", false, err
+	}
+	info, statErr := os.Stat(full)
+	if errors.Is(statErr, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if statErr != nil {
+		return "", false, statErr
+	}
+	if info.IsDir() {
+		return fmt.Sprintf("FILE_EXISTS: %s already exists and is a directory. Choose a new file path; do not retry create_file.", rel), true, nil
+	}
+	return fmt.Sprintf("FILE_EXISTS: %s already exists (%d bytes). Use str_replace for targeted edits or apply_diff for a unified patch. Do not retry create_file.", rel, info.Size()), true, nil
+}
+
 func init() {
 	register(Definition{
 		Name: "read_files",
@@ -116,14 +138,15 @@ func init() {
 	})
 
 	register(Definition{
-		Name: "write_file",
+		Name: "create_file",
 		Description: "Create a NEW file with the full final content. " +
 			"This tool never overwrites an existing file. If the target already exists, the call is skipped and returns FILE_EXISTS; " +
 			"switch to str_replace for targeted changes or apply_diff for a unified patch. " +
-			"Never call write_file with placeholders, ellipsis, or partial content.",
+			"Never call create_file with placeholders, ellipsis, or partial content.",
 		PromptSnippet: "Create new files only; existing targets are skipped",
 		PromptGuidelines: []string{
-			"Use write_file only for new files. If it returns FILE_EXISTS, do not retry it; use str_replace or apply_diff.",
+			"Use create_file only when the target path is intended to be new. Never use it to modify, replace, rewrite, fix, refactor or regenerate an existing file. If it returns FILE_EXISTS, do not retry it; use str_replace or apply_diff.",
+			"When calling create_file, emit the path argument before content so Lilith can preflight the target before a large body is generated.",
 		},
 		Mutating: true,
 		Parameters: map[string]any{
@@ -143,13 +166,10 @@ func init() {
 			mu := lockFile(full)
 			mu.Lock()
 			defer mu.Unlock()
-			if info, statErr := os.Stat(full); statErr == nil {
-				if info.IsDir() {
-					return "", fmt.Errorf("%s already exists and is a directory", rel)
-				}
-				return fmt.Sprintf("FILE_EXISTS: %s already exists (%d bytes). Use str_replace for targeted edits or apply_diff for a unified patch. Do not retry write_file.", rel, info.Size()), nil
-			} else if !errors.Is(statErr, os.ErrNotExist) {
-				return "", statErr
+			if result, exists, err := PreflightCreateFile(env.Root, rel); err != nil {
+				return "", err
+			} else if exists {
+				return result, nil
 			}
 			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 				return "", err
@@ -503,7 +523,7 @@ func collectEdits(args map[string]any) ([]editPair, error) {
 		old, oldOK := stringField(args, "old", "oldText")
 		newText, newOK := stringField(args, "new", "newText")
 		if !oldOK || old == "" {
-			return nil, errors.New("`old` must not be empty. Use exact current text as the target; to insert, reuse an existing anchor inside `new`. To create a file, use write_file")
+			return nil, errors.New("`old` must not be empty. Use exact current text as the target; to insert, reuse an existing anchor inside `new`. To create a file, use create_file")
 		}
 		if !newOK {
 			newText = ""

@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -17,10 +19,10 @@ func makeToolCall(name, args string) openai.ToolCall {
 	return call
 }
 
-func TestSummarizeToolResultsUsesWriteOutput(t *testing.T) {
+func TestSummarizeToolResultsUsesCreateOutput(t *testing.T) {
 	got := summarizeToolResults([]openai.Message{{
 		Role:    "tool",
-		Name:    "write_file",
+		Name:    "create_file",
 		Content: "Escrito ejemplo.html (1121 bytes).",
 	}})
 	if got != "Escrito ejemplo.html (1121 bytes)." {
@@ -58,7 +60,7 @@ func TestPartialToolCallShowsWorkingImmediately(t *testing.T) {
 	m.thinking = true
 
 	_, _ = m.Update(chatStreamMsg{
-		toolCalls: []openai.ToolCall{makeToolCall("write_file", `{"path":"demo.html","content":"<h1>hola</h1>"}`)},
+		toolCalls: []openai.ToolCall{makeToolCall("create_file", `{"path":"demo.html","content":"<h1>hola</h1>"}`)},
 		partial:   true,
 	})
 
@@ -100,16 +102,61 @@ func TestReasoningKeepsThinkingIndicatorActive(t *testing.T) {
 	}
 }
 
-func TestCompactRejectedWriteCallDropsUnappliedPayload(t *testing.T) {
-	call := makeToolCall("write_file", `{"path":"styles.css","content":"`+strings.Repeat("x", 8000)+`"}`)
+func TestCompactRejectedCreateCallDropsUnappliedPayload(t *testing.T) {
+	call := makeToolCall("create_file", `{"path":"styles.css","content":"`+strings.Repeat("x", 8000)+`"}`)
 	m := ChatModel{history: []openai.Message{{Role: "assistant", ToolCalls: []openai.ToolCall{call}}}}
-	m.compactRejectedWriteCall(call.ID)
+	m.compactRejectedCreateCall(call.ID)
 	got := m.history[0].ToolCalls[0].Function.Arguments
 	if strings.Contains(got, strings.Repeat("x", 100)) {
 		t.Fatalf("rejected payload should not remain in API history: %d bytes", len(got))
 	}
 	if !strings.Contains(got, `"path":"styles.css"`) || !strings.Contains(got, `"content":""`) {
 		t.Fatalf("unexpected compact arguments: %s", got)
+	}
+}
+
+func TestPreflightStreamingCreateCallRejectsExistingPathBeforeBodyCompletes(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "styles.css")
+	if err := os.WriteFile(path, []byte("body { color: red; }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	call := makeToolCall("create_file", `{"path":"styles.css","content":"`+strings.Repeat("x", 200))
+	got, result, ok := preflightStreamingCreateCall(root, call)
+	if !ok {
+		t.Fatal("existing target should be intercepted from partial create_file arguments")
+	}
+	if !strings.HasPrefix(result, "FILE_EXISTS:") {
+		t.Fatalf("unexpected preflight result: %q", result)
+	}
+	if strings.Contains(got.Function.Arguments, strings.Repeat("x", 20)) {
+		t.Fatalf("synthetic call must discard the streamed body: %s", got.Function.Arguments)
+	}
+	if !strings.Contains(got.Function.Arguments, `"path":"styles.css"`) || !strings.Contains(got.Function.Arguments, `"content":""`) {
+		t.Fatalf("unexpected compact call arguments: %s", got.Function.Arguments)
+	}
+}
+
+func TestPreflightStreamingCreateCallAllowsMissingPath(t *testing.T) {
+	root := t.TempDir()
+	call := makeToolCall("create_file", `{"path":"new.css","content":"partial`)
+	_, _, ok := preflightStreamingCreateCall(root, call)
+	if ok {
+		t.Fatal("missing target must continue streaming normally")
+	}
+}
+
+func TestSwitchCreateToolToEditorsAfterFileExists(t *testing.T) {
+	m := ChatModel{activeTools: []string{"tool_search", "create_file"}}
+	m.switchCreateToolToEditors()
+	joined := strings.Join(m.activeTools, ",")
+	if strings.Contains(joined, "create_file") || strings.Contains(joined, "write_file") {
+		t.Fatalf("create tool must be removed after FILE_EXISTS: %v", m.activeTools)
+	}
+	for _, want := range []string{"read_files", "str_replace", "apply_diff"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %s after FILE_EXISTS recovery: %v", want, m.activeTools)
+		}
 	}
 }
 

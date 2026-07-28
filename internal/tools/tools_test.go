@@ -14,7 +14,7 @@ func TestSelectLazySurface(t *testing.T) {
 	}
 	got := Select("crea un archivo index.html con una web de gatitos")
 	joined := strings.Join(got, ",")
-	for _, want := range []string{"write_file", "tool_search"} {
+	for _, want := range []string{"create_file", "tool_search"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("falta %s en %v", want, got)
 		}
@@ -24,12 +24,35 @@ func TestSelectLazySurface(t *testing.T) {
 	}
 }
 
+func TestEditPromptDoesNotExposeCreateFile(t *testing.T) {
+	got := Select("modifica el archivo node-ocr/src/renderer/styles.css y crea un nuevo diseño visual")
+	joined := strings.Join(got, ",")
+	if strings.Contains(joined, "create_file") {
+		t.Fatalf("an existing-file edit prompt must not expose create_file: %v", got)
+	}
+	for _, want := range []string{"str_replace", "apply_diff", "read_files", "tool_search"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %s in edit surface %v", want, got)
+		}
+	}
+}
+
+func TestPublicToolCatalogUsesCreateFileName(t *testing.T) {
+	joined := strings.Join(Names(), ",")
+	if !strings.Contains(joined, "create_file") {
+		t.Fatalf("create_file should be public: %v", Names())
+	}
+	if strings.Contains(joined, "write_file") {
+		t.Fatalf("write_file should not remain in the public registry: %v", Names())
+	}
+}
+
 func TestWriteReadAndReplace(t *testing.T) {
 	root := t.TempDir()
 	env := Env{Root: root}
 	ctx := context.Background()
 
-	if _, err := Execute(ctx, "write_file", map[string]any{
+	if _, err := Execute(ctx, "create_file", map[string]any{
 		"path": "web/index.html", "content": "<h1>gatitos</h1>",
 	}, env); err != nil {
 		t.Fatal(err)
@@ -55,7 +78,34 @@ func TestWriteReadAndReplace(t *testing.T) {
 	}
 }
 
-func TestWriteFileSkipsExistingTargetWithoutOverwriting(t *testing.T) {
+func TestPreflightCreateFileDetectsExistingWithoutWriting(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "existing.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, exists, err := PreflightCreateFile(root, "existing.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists || !strings.HasPrefix(result, "FILE_EXISTS:") {
+		t.Fatalf("existing target should be detected: exists=%v result=%q", exists, result)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("preflight must not modify the target: %q", got)
+	}
+
+	result, exists, err = PreflightCreateFile(root, "missing.txt")
+	if err != nil || exists || result != "" {
+		t.Fatalf("missing target should pass preflight: exists=%v result=%q err=%v", exists, result, err)
+	}
+}
+
+func TestCreateFileSkipsExistingTargetWithoutOverwriting(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "a.html")
 	before := []byte("<h1>hola</h1>")
@@ -63,7 +113,7 @@ func TestWriteFileSkipsExistingTargetWithoutOverwriting(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := Env{Root: root}
-	out, err := Execute(context.Background(), "write_file", map[string]any{
+	out, err := Execute(context.Background(), "create_file", map[string]any{
 		"path": "a.html", "content": "nuevo",
 	}, env)
 	if err != nil {
@@ -77,7 +127,7 @@ func TestWriteFileSkipsExistingTargetWithoutOverwriting(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(got) != string(before) {
-		t.Fatalf("write_file must never overwrite an existing target: %q", got)
+		t.Fatalf("create_file must never overwrite an existing target: %q", got)
 	}
 }
 
