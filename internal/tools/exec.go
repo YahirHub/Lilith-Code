@@ -24,8 +24,6 @@ const (
 	bashOutputMaxBytes = 32 << 10
 )
 
-
-
 func init() {
 	register(Definition{
 		Name: "run_terminal_command",
@@ -61,6 +59,9 @@ func init() {
 			if res.TimedOut {
 				b.WriteString("timeout: yes\n")
 			}
+			if res.Canceled {
+				b.WriteString("canceled: yes\n")
+			}
 			if s := strings.TrimSpace(res.Stdout); s != "" {
 				body, note := tailTruncate(s, "stdout")
 				fmt.Fprintf(&b, "stdout:\n%s\n", body)
@@ -78,8 +79,6 @@ func init() {
 			return b.String(), nil
 		},
 	})
-
-
 
 	register(Definition{
 		Name: "code_search",

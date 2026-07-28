@@ -31,6 +31,7 @@ type CommandPanel struct {
 	Stdout     string
 	Stderr     string
 	TimedOut   bool
+	Canceled   bool
 	StartedAt  time.Time
 	Elapsed    time.Duration
 	Expanded   bool
@@ -95,6 +96,18 @@ func (p *CommandPanel) MarkSuperseded() {
 	p.Expanded = false
 }
 
+// Cancel marks a running command as canceled immediately in the TUI. The OS
+// process is terminated asynchronously by the shared turn context.
+func (p *CommandPanel) Cancel() {
+	p.Done = true
+	p.Canceled = true
+	p.Failed = false
+	p.Expanded = false
+	if !p.StartedAt.IsZero() {
+		p.Elapsed = time.Since(p.StartedAt)
+	}
+}
+
 // extractBlock returns the trailing block after `header` up to the next
 // blank line or end-of-string. The formatter in tools/exec.go emits
 // `stdout:\n<...>\n` and `stderr:\n<...>\n` blocks separated by newlines.
@@ -132,6 +145,10 @@ func (p *CommandPanel) View(s Styles, width int, selected bool) string {
 	var tag string
 	var tagStyle lipgloss.Style
 	switch {
+	case p.Canceled:
+		borderColor = t.Muted
+		tag = "canceled"
+		tagStyle = lipgloss.NewStyle().Foreground(t.Background).Background(t.Muted).Padding(0, 1).Bold(true)
 	case p.Superseded:
 		borderColor = t.Muted
 		tag = "retried"
@@ -177,6 +194,8 @@ func (p *CommandPanel) View(s Styles, width int, selected bool) string {
 	// Elapsed / took line.
 	timing := ""
 	switch {
+	case p.Done && p.Canceled:
+		timing = s.Muted.Render("canceled by user")
 	case p.Done && p.Superseded:
 		timing = s.Muted.Render("retried by the model")
 	case p.Done:
@@ -201,6 +220,8 @@ func (p *CommandPanel) View(s Styles, width int, selected bool) string {
 	if p.Done && !p.Superseded {
 		var footer string
 		switch {
+		case p.Canceled:
+			footer = s.Muted.Render("Command canceled")
 		case p.TimedOut:
 			footer = s.Danger.Render("Command timed out")
 		case p.Failed:

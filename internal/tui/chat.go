@@ -70,6 +70,16 @@ type ChatModel struct {
 	streamBuf strings.Builder
 	cancel    context.CancelFunc
 
+	// turnCtx abarca TODO el turno del usuario: streaming del proveedor y
+	// herramientas. Ctrl+C cancela este contexto una sola vez y los resultados
+	// tardíos quedan invalidados por activeTurnID.
+	turnCtx      context.Context
+	turnSeq      uint64
+	activeTurnID uint64
+	turnProvider string
+	turnModel    string
+	runningCalls []openai.ToolCall
+
 	// history is the real conversation sent to the model (incluye mensajes
 	// de herramienta), separada del transcript que se dibuja en pantalla.
 	history      []openai.Message
@@ -167,6 +177,7 @@ type ChatModel struct {
 
 // chatStreamMsg is emitted by the streaming pump for each SSE chunk.
 type chatStreamMsg struct {
+	turnID       uint64
 	ch           <-chan openai.Chunk
 	delta        string
 	toolCalls    []openai.ToolCall
@@ -180,6 +191,7 @@ type chatStreamMsg struct {
 
 // toolResultsMsg carries the outcome of a batch of tool calls.
 type toolResultsMsg struct {
+	turnID  uint64
 	results []openai.Message
 	err     error
 }
@@ -268,6 +280,98 @@ func NewChat(ctx *AppContext) ChatModel {
 		contextCacheDirty: true,
 	}
 	return m
+}
+
+// beginTurn snapshots the provider/model selected at the moment the user starts
+// a request and creates one cancellation root shared by provider streaming and
+// every tool spawned by that request. A model change made later therefore takes
+// effect on the next user request, never halfway through a tool continuation.
+func (m *ChatModel) beginTurn() error {
+	active := m.ctx.Providers.Active()
+	if active.ProviderID == "" || active.ModelID == "" || m.ctx.Providers.FindProvider(active.ProviderID) == nil {
+		return errors.New("no hay un proveedor/modelo activo; usa /login o /models")
+	}
+	if m.cancel != nil {
+		m.cancel()
+	}
+	m.turnSeq++
+	m.activeTurnID = m.turnSeq
+	m.turnProvider = active.ProviderID
+	m.turnModel = active.ModelID
+	m.turnCtx, m.cancel = context.WithCancel(context.Background())
+	m.streaming = true
+	return nil
+}
+
+// endTurn releases the root context after a normal completion/error and makes
+// any message still in flight from the old turn stale.
+func (m *ChatModel) endTurn() {
+	if m.cancel != nil {
+		m.cancel()
+	}
+	m.cancel = nil
+	m.turnCtx = nil
+	m.activeTurnID = 0
+	m.turnProvider = ""
+	m.turnModel = ""
+	m.runningCalls = nil
+}
+
+// cancelTurn is deliberately cheap on the Bubble Tea Update goroutine. It only
+// signals cancellation, invalidates the turn, repairs tool-call history and
+// refreshes the small mutable tail. Process-tree termination happens in the
+// background command goroutine through the shared context.
+func (m *ChatModel) cancelTurn() string {
+	if m.activeTurnID == 0 {
+		return ""
+	}
+	if m.cancel != nil {
+		m.cancel()
+	}
+	// Invalidate first: provider/tool results racing with Ctrl+C can no longer
+	// re-enter the agent loop even if the OS needs a moment to reap a child.
+	m.activeTurnID = 0
+	m.cancel = nil
+	m.turnCtx = nil
+
+	// Only runningCalls already have a matching assistant tool_call in history.
+	// Add synthetic outputs so the next request remains OpenAI-compatible.
+	if len(m.runningCalls) > 0 {
+		for _, c := range m.runningCalls {
+			m.appendHistory(toolMessage(c, "cancelado por el usuario."))
+		}
+	}
+	m.runningCalls = nil
+	m.pendingCall = nil
+
+	for _, cp := range m.cmdPanels {
+		if cp != nil && !cp.Done {
+			cp.Cancel()
+		}
+	}
+	m.finishThinkingPanel()
+
+	dropped := len(m.queue)
+	m.queue = nil
+	notice := "Tarea cancelada."
+	if dropped > 0 {
+		notice = fmt.Sprintf("Tarea cancelada. %d mensaje(s) en cola descartados.", dropped)
+	}
+	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: notice + " Pulsa Ctrl+C otra vez para salir, o /exit.", Time: time.Now()})
+
+	// Keep streaming=true just for this refresh so the already-rendered stable
+	// prefix is reused; setting it false first would rebuild the full history and
+	// is what made Ctrl+C feel delayed on long chats.
+	m.refreshTranscript(true)
+	m.streaming = false
+	m.thinking = false
+	m.working = false
+	m.assistantActive = -1
+	m.reasoningBuf.Reset()
+	m.turnProvider = ""
+	m.turnModel = ""
+	m.quitPrimedAt = time.Now()
+	return notice
 }
 
 // persist guarda la conversación actual (silencioso: la persistencia nunca
@@ -424,6 +528,10 @@ func (m *ChatModel) AddError(text string) {
 }
 
 func (m *ChatModel) Clear() {
+	m.endTurn()
+	m.streaming = false
+	m.thinking = false
+	m.working = false
 	m.messages = nil
 	m.history = nil
 	m.invalidateContextUsage()
@@ -1093,6 +1201,9 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmdElapsedTick()
 
 	case chatStreamMsg:
+		if v.turnID != 0 && v.turnID != m.activeTurnID {
+			return m, nil
+		}
 		if v.err != nil {
 			m.finishThinkingPanel()
 			m.streaming = false
@@ -1100,6 +1211,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.working = false
 			m.assistantActive = -1
 			m.reasoningBuf.Reset()
+			m.endTurn()
 			m.AddError("Error del proveedor: " + v.err.Error())
 			return m, nil
 		}
@@ -1162,7 +1274,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					refreshCmd = cmd
 				}
 				if v.ch != nil {
-					return m, tea.Batch(refreshCmd, streamPump(v.ch))
+					return m, tea.Batch(refreshCmd, streamPump(v.ch, v.turnID))
 				}
 				return m, refreshCmd
 			}
@@ -1204,6 +1316,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.thinking = false
 				m.working = true
 				m.assistantActive = -1
+				m.runningCalls = append(m.runningCalls[:0], calls...)
 				m.refreshTranscript(true)
 				batch := []tea.Cmd{m.runTools(calls), thinkingTick(m.thinkingFrame)}
 
@@ -1230,11 +1343,14 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.messages[idx].Content = "(el modelo no devolvió contenido)"
 				}
 			}
-			m.streaming = false
 			m.thinking = false
 			m.working = false
 			m.assistantActive = -1
+			// Refresh the mutable tail before dropping streaming so a long chat does
+			// not rebuild the entire transcript on the completion frame.
 			m.refreshTranscript(true)
+			m.streaming = false
+			m.endTurn()
 			m.persist()
 			return m, m.drainQueue()
 		}
@@ -1249,11 +1365,14 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if v.ch != nil {
-			return m, tea.Batch(refreshCmd, streamPump(v.ch))
+			return m, tea.Batch(refreshCmd, streamPump(v.ch, v.turnID))
 		}
 		return m, refreshCmd
 
 	case toolResultsMsg:
+		if v.turnID != 0 && v.turnID != m.activeTurnID {
+			return m, nil
+		}
 		// No apagamos m.working aquí: el turno sigue activo (vamos a llamar de
 		// nuevo al modelo con runTurn). Dejar working en true evita que el
 		// shimmer parpadee o desaparezca entre la tool y la siguiente respuesta.
@@ -1262,9 +1381,12 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streaming = false
 			m.thinking = false
 			m.working = false
+			m.runningCalls = nil
+			m.endTurn()
 			m.AddError(v.err.Error())
 			return m, nil
 		}
+		m.runningCalls = nil
 		m.appendHistory(v.results...)
 		m.toolFallback = summarizeToolResults(v.results)
 
@@ -1385,35 +1507,8 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// por error mientras Lilith trabaja.
 			return m, nil
 		case "ctrl+c":
-			if m.streaming && m.cancel != nil {
-				m.cancel()
-				// Sanear: si el turno cortado dejó tool_calls sin ejecutar,
-				// añade outputs sintéticos para no romper el siguiente
-				// request con "No tool output found for function call ...".
-				if len(m.pendingCall) > 0 {
-					for _, c := range m.pendingCall {
-						m.appendHistory(toolMessage(c, "error: cancelado por el usuario."))
-					}
-					m.pendingCall = nil
-				}
-				dropped := len(m.queue)
-				m.queue = nil
-				notice := "Tarea cancelada."
-				if dropped > 0 {
-					notice = fmt.Sprintf("Tarea cancelada. %d mensaje(s) en cola descartados.", dropped)
-				}
-				m.AddSystem(notice + " Pulsa Ctrl+C otra vez para salir, o /exit.")
-				m.finishThinkingPanel()
-				m.streaming = false
-				m.thinking = false
-				m.working = false
-				m.assistantActive = -1
-				m.reasoningBuf.Reset()
-
-				m.quitPrimedAt = time.Now()
-				if m.ctx.Width > 0 && m.ctx.Height > 0 {
-					m.Resize(m.ctx.Width, m.ctx.Height)
-				}
+			if m.streaming && m.activeTurnID != 0 {
+				m.cancelTurn()
 				return m, nil
 			}
 			// Sin tarea activa: si hay cola pendiente, Ctrl+C la limpia
@@ -1546,6 +1641,10 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 	m.activeTools = tools.Select(val)
 	m.toolSteps = 0
 	m.toolFallback = ""
+	if err := m.beginTurn(); err != nil {
+		m.AddError(err.Error())
+		return m, nil
+	}
 	m.persist()
 	m.refreshTranscript(true)
 	return m, m.runTurn()
@@ -1554,9 +1653,16 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 // runTurn envía el historial actual al modelo con los esquemas de herramientas
 // activos y arranca el streaming.
 func (m *ChatModel) runTurn() tea.Cmd {
-	active := m.ctx.Providers.Active()
-	provider := m.ctx.Providers.FindProvider(active.ProviderID)
+	turnID := m.activeTurnID
+	if turnID == 0 || m.turnCtx == nil {
+		return nil
+	}
+	provider := m.ctx.Providers.FindProvider(m.turnProvider)
 	if provider == nil {
+		m.endTurn()
+		m.streaming = false
+		m.thinking = false
+		m.working = false
 		m.AddError("No hay un proveedor activo. Usa /login o /providers.")
 		return nil
 	}
@@ -1588,17 +1694,15 @@ func (m *ChatModel) runTurn() tea.Cmd {
 		schemas = append(schemas, s)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	m.cancel = cancel
 	req := openai.Request{
 		Provider: *provider,
-		Model:    active.ModelID,
+		Model:    m.turnModel,
 		Messages: msgs,
 		Stream:   true,
 		Tools:    schemas,
 	}
-	ch := m.ctx.Client.Stream(ctx, req)
-	batch := []tea.Cmd{streamPump(ch), thinkingTick(0)}
+	ch := m.ctx.Client.Stream(m.turnCtx, req)
+	batch := []tea.Cmd{streamPump(ch, turnID), thinkingTick(0)}
 	if tick := m.maybeStartElapsedTick(); tick != nil {
 		batch = append(batch, tick)
 	}
@@ -1649,6 +1753,8 @@ const maxToolSteps = 60
 
 // runTools ejecuta el lote de llamadas y devuelve los mensajes `tool`.
 func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
+	turnID := m.activeTurnID
+	runCtx := m.turnCtx
 	m.toolSteps++
 	if m.toolSteps > maxToolSteps {
 		// Sanear el historial: el assistant previo dejó tool_calls sin
@@ -1661,7 +1767,7 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 		}
 		m.appendHistory(stubs...)
 		return func() tea.Msg {
-			return toolResultsMsg{err: errors.New("límite de pasos de herramientas alcanzado en este turno (aumentado a " + fmt.Sprint(maxToolSteps) + "). Pídeme continuar si aún falta.")}
+			return toolResultsMsg{turnID: turnID, err: errors.New("límite de pasos de herramientas alcanzado en este turno (aumentado a " + fmt.Sprint(maxToolSteps) + "). Pídeme continuar si aún falta.")}
 		}
 	}
 
@@ -1685,6 +1791,9 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 	return func() tea.Msg {
 		results := make([]openai.Message, 0, len(calls))
 		for _, c := range calls {
+			if runCtx == nil || runCtx.Err() != nil {
+				return toolResultsMsg{turnID: turnID, err: context.Canceled}
+			}
 			args := map[string]any{}
 			if strings.TrimSpace(c.Function.Arguments) != "" {
 				if err := json.Unmarshal([]byte(c.Function.Arguments), &args); err != nil {
@@ -1692,13 +1801,13 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 					continue
 				}
 			}
-			out, err := tools.Execute(context.Background(), c.Function.Name, args, env)
+			out, err := tools.Execute(runCtx, c.Function.Name, args, env)
 			if err != nil {
 				out = "error: " + err.Error()
 			}
 			results = append(results, toolMessage(c, out))
 		}
-		return toolResultsMsg{results: results}
+		return toolResultsMsg{turnID: turnID, results: results}
 	}
 }
 
@@ -1916,6 +2025,10 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 	}
 	m.toolSteps = 0
 	m.toolFallback = ""
+	if err := m.beginTurn(); err != nil {
+		m.AddError(err.Error())
+		return nil
+	}
 	m.persist()
 	m.refreshTranscript(true)
 	return m.runTurn()
@@ -1987,19 +2100,19 @@ func systemPrompt(withTools bool, skillsBlock string) string {
 
 // streamPump reads one chunk and forwards it as a chatStreamMsg, keeping the
 // channel handle so the next tick can continue pumping.
-func streamPump(ch <-chan openai.Chunk) tea.Cmd {
+func streamPump(ch <-chan openai.Chunk, turnID uint64) tea.Cmd {
 	return func() tea.Msg {
 		c, ok := <-ch
 		if !ok {
-			return chatStreamMsg{done: true}
+			return chatStreamMsg{turnID: turnID, done: true}
 		}
 		if c.Err != nil {
-			return chatStreamMsg{err: c.Err}
+			return chatStreamMsg{turnID: turnID, err: c.Err}
 		}
 		if c.Done {
-			return chatStreamMsg{done: true}
+			return chatStreamMsg{turnID: turnID, done: true}
 		}
-		return chatStreamMsg{ch: ch, delta: c.Delta, toolCalls: c.ToolCalls, partial: c.Partial, superseded: c.SupersededIndices, thinking: c.Thinking, thinkingDone: c.ThinkingDone}
+		return chatStreamMsg{turnID: turnID, ch: ch, delta: c.Delta, toolCalls: c.ToolCalls, partial: c.Partial, superseded: c.SupersededIndices, thinking: c.Thinking, thinkingDone: c.ThinkingDone}
 	}
 }
 

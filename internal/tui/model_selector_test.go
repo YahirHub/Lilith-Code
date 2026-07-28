@@ -1,6 +1,12 @@
 package tui
 
-import "testing"
+import (
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/lilith/li/internal/providers"
+)
 
 func TestSubsequenceMatch(t *testing.T) {
 	cases := []struct {
@@ -18,5 +24,49 @@ func TestSubsequenceMatch(t *testing.T) {
 		if ok != c.wantOK {
 			t.Errorf("subsequenceMatch(%q, %q) = %v, want %v", c.hay, c.needle, ok, c.wantOK)
 		}
+	}
+}
+
+func TestModelSelectorAppliesSelectionImmediatelyInMemoryAndOnDisk(t *testing.T) {
+	dir := t.TempDir()
+	cfg := providers.Config{
+		Version:          providers.CurrentVersion,
+		ActiveProviderID: "custom",
+		ActiveModelID:    "gpt-5.5",
+		Providers: []providers.Provider{{
+			ID:      "custom",
+			Name:    "Custom",
+			BaseURL: "https://example.com/v1",
+			Auth:    providers.AuthNone,
+			Models: []providers.Model{
+				{ID: "gpt-5.5"},
+				{ID: "deepseek-v4-flash"},
+			},
+		}},
+	}
+	if err := providers.Save(dir, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	ctx := &AppContext{ConfigDir: dir, Providers: cfg, Styles: NewStyles(DefaultTheme()), Width: 100, Height: 30}
+	m := NewModelSelector(ctx)
+	for i, row := range m.filtered {
+		if !row.isHeader && row.modelID == "deepseek-v4-flash" {
+			m.cursor = i
+			break
+		}
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("seleccionar un modelo debe volver al chat")
+	}
+	if got := ctx.Providers.ActiveModelID; got != "deepseek-v4-flash" {
+		t.Fatalf("selección en memoria = %q", got)
+	}
+	persisted, err := providers.Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := persisted.ActiveModelID; got != "deepseek-v4-flash" {
+		t.Fatalf("selección persistida = %q", got)
 	}
 }

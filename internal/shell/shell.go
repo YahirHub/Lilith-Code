@@ -42,6 +42,7 @@ type Result struct {
 	Stderr     string        `json:"stderr"`
 	ExitCode   int           `json:"exitCode"`
 	TimedOut   bool          `json:"timedOut"`
+	Canceled   bool          `json:"canceled"`
 	Duration   time.Duration `json:"-"`
 	DurationMs int64         `json:"durationMs"`
 	Truncated  bool          `json:"truncated"`
@@ -92,7 +93,9 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	// long-running children (npm, tsc, docker, …) orphaned in the background.
 	configureProcessGroup(cmd)
 	cmd.Cancel = func() error { return killProcessGroup(cmd) }
-	cmd.WaitDelay = 2 * time.Second
+	// Ctrl+C is a hard stop. After killing the process tree, do not let stale
+	// inherited pipes keep the command goroutine around for seconds.
+	cmd.WaitDelay = 150 * time.Millisecond
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -116,6 +119,11 @@ func Run(ctx context.Context, req Request) (Result, error) {
 
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		res.TimedOut = true
+		res.ExitCode = -1
+		return res, nil
+	}
+	if errors.Is(runCtx.Err(), context.Canceled) {
+		res.Canceled = true
 		res.ExitCode = -1
 		return res, nil
 	}

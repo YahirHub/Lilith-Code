@@ -1,7 +1,7 @@
 # Tarea 04 — Paneles con altura adaptativa
 
 ## Estado
-en-proceso
+completado
 
 ## Objetivo
 Hacer que todos los paneles visuales del transcript crezcan únicamente según el contenido visible, conservando como límite máximo la altura de vista previa que ya tenían.

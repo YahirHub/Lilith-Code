@@ -155,10 +155,18 @@ func (m ModelSelectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if row.isHeader {
 				return m, nil
 			}
-			if err := providers.SetActive(m.ctx.ConfigDir, row.providerID, row.modelID); err != nil {
+			// La fila ya pertenece al catálogo cargado en memoria, así que no hace
+			// falta volver a consultar proveedores remotos para validarla. Persistimos
+			// sólo la selección y actualizamos el contexto compartido: el siguiente
+			// turno toma este modelo sin reiniciar la CLI.
+			cfg := m.ctx.Providers
+			cfg.ActiveProviderID = row.providerID
+			cfg.ActiveModelID = row.modelID
+			if err := providers.Save(m.ctx.ConfigDir, cfg); err != nil {
 				return m, showError(err)
 			}
-			_ = m.ctx.ReloadProviders()
+			m.ctx.Providers.ActiveProviderID = row.providerID
+			m.ctx.Providers.ActiveModelID = row.modelID
 			return m, switchToChatWithSystem("Modelo activo: " + row.provName + " / " + row.modelID)
 		}
 	}

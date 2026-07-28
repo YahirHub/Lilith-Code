@@ -51,3 +51,34 @@ func TestRunRejectsInvalidDir(t *testing.T) {
 		t.Fatal("esperaba error con directorio inválido")
 	}
 }
+
+func TestRunCancelReturnsPromptly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requiere shell POSIX en el entorno de pruebas")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	var res Result
+	var runErr error
+	go func() {
+		defer close(done)
+		res, runErr = Run(ctx, Request{Command: "sleep 30", Timeout: -1})
+	}()
+	time.Sleep(100 * time.Millisecond)
+	start := time.Now()
+	cancel()
+	select {
+	case <-done:
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("la cancelación tardó demasiado: %s", elapsed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("el comando no terminó dentro de 1s tras cancelar")
+	}
+	if runErr != nil {
+		t.Fatalf("Run cancelado devolvió error Go: %v", runErr)
+	}
+	if !res.Canceled {
+		t.Fatalf("esperaba Canceled=true, obtuvo %+v", res)
+	}
+}
