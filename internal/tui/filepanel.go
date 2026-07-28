@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -10,15 +11,22 @@ import (
 // FilePanel es la ventana plegable que muestra en vivo lo que una herramienta
 // de archivo está escribiendo: creación (todo en verde) o edición (diff con
 // líneas añadidas en verde y eliminadas en rojo, al estilo GitHub).
+type filePanelEdit struct {
+	Old string
+	New string
+}
+
 type FilePanel struct {
 	Tool     string // write_file | str_replace
 	CallID   string
 	Index    int
 	Path     string
-	Content  string // write_file: contenido en construcción
-	Old, New string // str_replace: bloques a comparar
+	Content  string          // write_file: contenido en construcción
+	Old, New string          // str_replace: bloque único/parcial durante streaming
+	Edits    []filePanelEdit // str_replace: lote completo de cambios, al estilo pi.dev
 	Done     bool
 	Failed   bool
+	Skipped  bool
 	// Superseded marca un panel que el backend abandonó a mitad del stream
 	// (Codex reintentó la tool call en otro output_index sin cerrar la
 	// anterior). Se dibuja colapsado y con la nota "reintentado" en vez
@@ -50,13 +58,69 @@ func (p *FilePanel) Update(rawArgs string) {
 			p.Content = v
 		}
 	case "str_replace":
+		// Mientras los argumentos siguen llegando mantenemos el preview del
+		// par simple. Cuando el JSON queda completo, preferimos edits[] para
+		// representar correctamente los lotes multi-edición que usa pi.dev.
 		if v, ok := partialJSONString(rawArgs, "old"); ok {
 			p.Old = v
 		}
 		if v, ok := partialJSONString(rawArgs, "new"); ok {
 			p.New = v
 		}
+		if edits := parsePanelEdits(rawArgs); len(edits) > 0 {
+			p.Edits = edits
+		}
 	}
+}
+
+func parsePanelEdits(rawArgs string) []filePanelEdit {
+	var args map[string]any
+	if json.Unmarshal([]byte(rawArgs), &args) != nil {
+		return nil
+	}
+	var raw []any
+	if value, ok := args["edits"]; ok {
+		switch v := value.(type) {
+		case []any:
+			raw = v
+		case string:
+			_ = json.Unmarshal([]byte(v), &raw)
+		}
+	}
+	out := make([]filePanelEdit, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		old, _ := panelStringField(m, "old", "oldText")
+		newText, newOK := panelStringField(m, "new", "newText")
+		if old == "" || !newOK {
+			continue
+		}
+		out = append(out, filePanelEdit{Old: old, New: newText})
+	}
+	return out
+}
+
+func panelStringField(values map[string]any, names ...string) (string, bool) {
+	for _, name := range names {
+		if value, ok := values[name]; ok {
+			s, ok := value.(string)
+			return s, ok
+		}
+	}
+	return "", false
+}
+
+func (p *FilePanel) replacements() []filePanelEdit {
+	if len(p.Edits) > 0 {
+		return p.Edits
+	}
+	if p.Old == "" && p.New == "" {
+		return nil
+	}
+	return []filePanelEdit{{Old: p.Old, New: p.New}}
 }
 
 // Finish cierra el panel con el resultado real de la herramienta.
@@ -64,6 +128,7 @@ func (p *FilePanel) Finish(result string) {
 	p.Done = true
 	p.Result = strings.TrimSpace(result)
 	p.Failed = strings.HasPrefix(p.Result, "error:")
+	p.Skipped = strings.HasPrefix(p.Result, "FILE_EXISTS:")
 }
 
 func (p *FilePanel) title() string {
@@ -81,6 +146,8 @@ func (p *FilePanel) title() string {
 		switch {
 		case p.Failed:
 			return prefix + "   [failed]"
+		case p.Skipped:
+			return prefix + "   [skipped]"
 		case p.Superseded:
 			return prefix + "   [retried]"
 		default:
@@ -106,12 +173,14 @@ func (p *FilePanel) stats() (int, int) {
 		return len(splitLines(p.Content)), 0
 	}
 	add, del := 0, 0
-	for _, l := range diffLines(splitLines(p.Old), splitLines(p.New)) {
-		switch l.op {
-		case '+':
-			add++
-		case '-':
-			del++
+	for _, edit := range p.replacements() {
+		for _, l := range diffLines(splitLines(edit.Old), splitLines(edit.New)) {
+			switch l.op {
+			case '+':
+				add++
+			case '-':
+				del++
+			}
 		}
 	}
 	return add, del
@@ -155,6 +224,8 @@ func (p *FilePanel) View(s Styles, width int, selected bool) string {
 		style := s.Muted
 		if p.Failed {
 			style = s.Danger
+		} else if p.Skipped {
+			style = s.Warning
 		}
 		body += "\n" + style.Render(firstLine(p.Result))
 	}
@@ -183,15 +254,20 @@ func (p *FilePanel) renderBody(s Styles, inner int) string {
 			out = append(out, green.Render("+ "+clip(l, inner-2)))
 		}
 	} else {
-		for _, d := range diffLines(splitLines(p.Old), splitLines(p.New)) {
-			text := clip(d.text, inner-2)
-			switch d.op {
-			case '+':
-				out = append(out, green.Render("+ "+text))
-			case '-':
-				out = append(out, red.Render("- "+text))
-			default:
-				out = append(out, ctx.Render("  "+text))
+		for editIndex, edit := range p.replacements() {
+			if editIndex > 0 {
+				out = append(out, ctx.Render("  ···"))
+			}
+			for _, d := range diffLines(splitLines(edit.Old), splitLines(edit.New)) {
+				text := clip(d.text, inner-2)
+				switch d.op {
+				case '+':
+					out = append(out, green.Render("+ "+text))
+				case '-':
+					out = append(out, red.Render("- "+text))
+				default:
+					out = append(out, ctx.Render("  "+text))
+				}
 			}
 		}
 	}

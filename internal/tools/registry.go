@@ -18,16 +18,20 @@ type Env struct {
 	Root string
 	// Materialize adds tool names to the active set (used by tool_search).
 	Materialize func(names []string)
-	// Seen marks files already read (or created) in this session. Mutating
-	// edit tools use it to require a current read before changing an existing
-	// file, avoiding blind edits against stale content.
-	Seen map[string]bool
 }
 
 // Definition describes one callable tool.
 type Definition struct {
 	Name        string
 	Description string
+	// PromptSnippet is the short one-line description included in the system
+	// prompt when this tool is active. The full Description already travels in
+	// the tool schema, so keeping this short avoids paying for the same text twice.
+	PromptSnippet string
+	// PromptGuidelines are concise usage rules that only enter the prompt while
+	// this tool is active. This mirrors pi.dev's promptSnippet/promptGuidelines
+	// pattern and keeps lazy tool selection useful for prompt tokens too.
+	PromptGuidelines []string
 	// Parameters is a JSON Schema object.
 	Parameters map[string]any
 	// Mutating marks tools that write files or run commands.
@@ -52,6 +56,31 @@ func Get(name string) (Definition, bool) {
 
 // Names returns every registered tool name, sorted.
 func Names() []string { return append([]string(nil), order...) }
+
+// PromptInfo returns compact prompt metadata for the active tool set. Unknown
+// tools and empty snippets are ignored; guidelines are de-duplicated while
+// preserving tool order.
+func PromptInfo(names []string) (toolLines []string, guidelines []string) {
+	seenGuideline := map[string]bool{}
+	for _, name := range names {
+		d, ok := registry[name]
+		if !ok {
+			continue
+		}
+		if snippet := strings.TrimSpace(d.PromptSnippet); snippet != "" {
+			toolLines = append(toolLines, name+": "+snippet)
+		}
+		for _, guideline := range d.PromptGuidelines {
+			g := strings.TrimSpace(guideline)
+			if g == "" || seenGuideline[g] {
+				continue
+			}
+			seenGuideline[g] = true
+			guidelines = append(guidelines, g)
+		}
+	}
+	return toolLines, guidelines
+}
 
 // Schema is the OpenAI-compatible wire shape of a tool.
 type Schema struct {
@@ -118,7 +147,7 @@ var promptHints = []struct {
 }{
 	{projectScopePattern, []string{"list_directory", "glob", "read_files"}},
 	{filePathPattern, []string{"read_files", "write_file", "str_replace", "apply_diff"}},
-	{writePattern, []string{"write_file", "str_replace", "read_files"}},
+	{writePattern, []string{"write_file", "str_replace", "apply_diff", "read_files"}},
 	{searchPattern, []string{"code_search", "glob", "read_files"}},
 	{shellPattern, []string{"run_terminal_command"}},
 	{urlPattern, []string{"read_url"}},
@@ -167,6 +196,7 @@ func init() {
 		Description: "Search available tools by keyword and enable them for the next calls. " +
 			"Use this when you need to read, write or search files, run commands, or fetch a URL " +
 			"and that tool is not loaded yet.",
+		PromptSnippet: "Discover and enable additional tools on demand",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

@@ -35,6 +35,10 @@ func init() {
 				"it with read_files.",
 			bashOutputMaxLines, bashOutputMaxBytes/1024,
 		),
+		PromptSnippet: "Execute shell commands in the project directory",
+		PromptGuidelines: []string{
+			"Use run_terminal_command for builds, tests, git and shell inspection; prefer non-interactive commands and set an appropriate timeout_seconds.",
+		},
 		Mutating: true,
 		Parameters: map[string]any{
 			"type": "object",
@@ -87,6 +91,7 @@ func init() {
 			"`literal` treats `pattern` as a fixed string instead of a regex, `ignore_case` enables case-insensitive matching, " +
 			"`context` shows N lines before/after each match, and `limit` caps total matches (default 100). " +
 			"Long output is truncated; long lines are individually truncated to 500 chars.",
+		PromptSnippet: "Search file contents with ripgrep",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

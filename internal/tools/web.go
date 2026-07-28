@@ -18,8 +18,9 @@ var (
 
 func init() {
 	register(Definition{
-		Name:        "read_url",
-		Description: "Fetch a public URL and return its plain text (useful for online documentation).",
+		Name:          "read_url",
+		Description:   "Fetch a public URL and return its plain text (useful for online documentation).",
+		PromptSnippet: "Fetch public documentation or web text from a URL",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

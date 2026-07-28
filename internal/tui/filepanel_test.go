@@ -1,6 +1,9 @@
 package tui
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestPartialJSONStringOnIncompleteArgs(t *testing.T) {
 	raw := `{"path":"index.html","content":"<!DOCTYPE html>\n<html`
@@ -81,5 +84,40 @@ func TestVistaPreviaCreceHastaSuLimite(t *testing.T) {
 	p.Expanded = true
 	if medir() <= previewLines {
 		t.Fatalf("expandido debe mostrar todo el contenido")
+	}
+}
+
+func TestFilePanelMarksExistingWriteAsSkipped(t *testing.T) {
+	p := &FilePanel{Tool: "write_file", Path: "styles.css"}
+	p.Finish("FILE_EXISTS: styles.css already exists. Use str_replace or apply_diff.")
+	if !p.Done || p.Failed || !p.Skipped {
+		t.Fatalf("FILE_EXISTS should be a recoverable skipped panel: %+v", p)
+	}
+	if got := p.title(); !strings.Contains(got, "[skipped]") {
+		t.Fatalf("expected skipped title, got %q", got)
+	}
+}
+
+func TestFilePanelRendersMultiEditArguments(t *testing.T) {
+	p := &FilePanel{Tool: "str_replace"}
+	p.Update(`{"path":"styles.css","edits":[{"old":"alpha","new":"ALPHA"},{"old":"beta","new":"BETA"}]}`)
+	if p.Path != "styles.css" || len(p.Edits) != 2 {
+		t.Fatalf("expected two parsed edits, got %+v", p)
+	}
+	add, del := p.stats()
+	if add != 2 || del != 2 {
+		t.Fatalf("unexpected multi-edit stats: +%d -%d", add, del)
+	}
+	body := p.renderBody(NewStyles(DefaultTheme()), 80)
+	if !strings.Contains(body, "ALPHA") || !strings.Contains(body, "BETA") {
+		t.Fatalf("multi-edit preview omitted changes: %q", body)
+	}
+}
+
+func TestFilePanelAcceptsStringifiedMultiEdits(t *testing.T) {
+	p := &FilePanel{Tool: "str_replace"}
+	p.Update(`{"path":"a.txt","edits":"[{\\"oldText\\":\\"one\\",\\"newText\\":\\"ONE\\"}]"}`)
+	if len(p.Edits) != 1 || p.Edits[0].Old != "one" || p.Edits[0].New != "ONE" {
+		t.Fatalf("stringified edits not rendered: %+v", p.Edits)
 	}
 }

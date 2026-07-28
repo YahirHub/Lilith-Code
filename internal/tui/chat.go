@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -92,9 +93,6 @@ type ChatModel struct {
 	store   *session.Store
 	sess    *session.Session
 	project string
-	// seen marca archivos leídos/creados para que las herramientas de edición
-	// puedan exigir una lectura actual antes de modificar contenido existente.
-	seen map[string]bool
 
 	// Paneles de archivo en vivo (creación/edición con diff plegable).
 	livePanels  map[int]*FilePanel
@@ -172,7 +170,7 @@ type ChatModel struct {
 	contextCacheDirty    bool
 	contextCacheProvider string
 	contextCacheModel    string
-	contextCacheTools    bool
+	contextCacheToolSig  string
 }
 
 // chatStreamMsg is emitted by the streaming pump for each SSE chunk.
@@ -191,9 +189,10 @@ type chatStreamMsg struct {
 
 // toolResultsMsg carries the outcome of a batch of tool calls.
 type toolResultsMsg struct {
-	turnID  uint64
-	results []openai.Message
-	err     error
+	turnID         uint64
+	results        []openai.Message
+	compactCallIDs []string
+	err            error
 }
 
 // cmdElapsedTickMsg refresca el transcript a intervalo fijo mientras haya
@@ -275,7 +274,6 @@ func NewChat(ctx *AppContext) ChatModel {
 		store:             session.NewStore(ctx.ConfigDir),
 		project:           project,
 		sess:              session.New(project),
-		seen:              map[string]bool{},
 		assistantActive:   -1,
 		contextCacheDirty: true,
 	}
@@ -548,7 +546,6 @@ func (m *ChatModel) Clear() {
 	m.thinkingActive = nil
 	m.assistantActive = -1
 	m.reasoningBuf.Reset()
-	m.seen = map[string]bool{}
 	m.sess = session.New(m.project)
 	m.refreshTranscript(false)
 }
@@ -1387,6 +1384,9 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.runningCalls = nil
+		for _, callID := range v.compactCallIDs {
+			m.compactRejectedWriteCall(callID)
+		}
 		m.appendHistory(v.results...)
 		m.toolFallback = summarizeToolResults(v.results)
 
@@ -1686,7 +1686,7 @@ func (m *ChatModel) runTurn() tea.Cmd {
 	m.refreshTranscript(true)
 
 	msgs := make([]openai.Message, 0, len(m.history)+1)
-	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(len(m.activeTools) > 0, m.skillsBlock())})
+	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(m.activeTools, m.skillsBlock())})
 	msgs = append(msgs, m.history...)
 
 	var schemas []any
@@ -1718,19 +1718,19 @@ func (m *ChatModel) contextUsage() (int, int) {
 		m.contextMaxCache = 0
 		m.contextCacheProvider = active.ProviderID
 		m.contextCacheModel = active.ModelID
-		m.contextCacheTools = len(m.activeTools) > 0
+		m.contextCacheToolSig = activeToolsSignature(m.activeTools)
 		m.contextCacheDirty = false
 		return 0, 0
 	}
-	withTools := len(m.activeTools) > 0
+	toolSig := activeToolsSignature(m.activeTools)
 	if !m.contextCacheDirty &&
 		m.contextCacheProvider == active.ProviderID &&
 		m.contextCacheModel == active.ModelID &&
-		m.contextCacheTools == withTools {
+		m.contextCacheToolSig == toolSig {
 		return m.contextUsedCache, m.contextMaxCache
 	}
 	msgs := make([]openai.Message, 0, len(m.history)+1)
-	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(withTools, m.skillsBlock())})
+	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(m.activeTools, m.skillsBlock())})
 	msgs = append(msgs, m.history...)
 	used := EstimateTokens(msgs)
 	maxCtx := 0
@@ -1741,7 +1741,7 @@ func (m *ChatModel) contextUsage() (int, int) {
 	m.contextMaxCache = maxCtx
 	m.contextCacheProvider = active.ProviderID
 	m.contextCacheModel = active.ModelID
-	m.contextCacheTools = withTools
+	m.contextCacheToolSig = toolSig
 	m.contextCacheDirty = false
 	return used, maxCtx
 }
@@ -1784,12 +1784,10 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 			}
 		}
 	}
-	if m.seen == nil {
-		m.seen = map[string]bool{}
-	}
-	env := tools.Env{Root: root, Materialize: materialize, Seen: m.seen}
+	env := tools.Env{Root: root, Materialize: materialize}
 	return func() tea.Msg {
 		results := make([]openai.Message, 0, len(calls))
+		compactCallIDs := make([]string, 0, 1)
 		for _, c := range calls {
 			if runCtx == nil || runCtx.Err() != nil {
 				return toolResultsMsg{turnID: turnID, err: context.Canceled}
@@ -1804,10 +1802,38 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 			out, err := tools.Execute(runCtx, c.Function.Name, args, env)
 			if err != nil {
 				out = "error: " + err.Error()
+			} else if c.Function.Name == "write_file" && strings.HasPrefix(out, "FILE_EXISTS:") {
+				// The file was never written. Keep the visible panel, but compact the
+				// rejected full-file payload before the next API request so thousands
+				// of useless generated tokens are not re-sent on every continuation.
+				compactCallIDs = append(compactCallIDs, c.ID)
 			}
 			results = append(results, toolMessage(c, out))
 		}
-		return toolResultsMsg{turnID: turnID, results: results}
+		return toolResultsMsg{turnID: turnID, results: results, compactCallIDs: compactCallIDs}
+	}
+}
+
+func (m *ChatModel) compactRejectedWriteCall(callID string) {
+	for i := len(m.history) - 1; i >= 0; i-- {
+		for j := range m.history[i].ToolCalls {
+			call := &m.history[i].ToolCalls[j]
+			if call.ID != callID || call.Function.Name != "write_file" {
+				continue
+			}
+			var args map[string]any
+			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+				return
+			}
+			path, _ := args["path"].(string)
+			compact, err := json.Marshal(map[string]any{"path": path, "content": ""})
+			if err != nil {
+				return
+			}
+			call.Function.Arguments = string(compact)
+			m.invalidateContextUsage()
+			return
+		}
 	}
 }
 
@@ -2034,68 +2060,82 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 	return m.runTurn()
 }
 
-// Kept in English on purpose: LLMs follow English tool-use guidance more
-// reliably than translated instructions, and this string travels on every
-// request so it stays tight. Rules are distilled from pi.dev's
-// coding-agent/system-prompt and hardened for our tool set.
-func systemPrompt(withTools bool, skillsBlock string) string {
-	base := "You are Lilith, an expert coding assistant that operates inside " +
-		"the user's terminal. You help by reading files, running commands, and " +
-		"editing / creating source files with real tool calls. " +
-		"Reply to the user in the same language they use (default Spanish for " +
-		"conversational replies), but keep tool arguments, file paths, code, " +
-		"identifiers, and shell commands in their original language. " +
-		"Be concise, direct, and skip filler."
-	if !withTools {
+// Kept in English on purpose: tool-use guidance is generally followed more
+// consistently across providers in English. The structure mirrors pi.dev:
+// full tool contracts stay in JSON schemas, while the system prompt receives
+// only short snippets and guidelines for the tools active in this turn.
+func systemPrompt(activeTools []string, skillsBlock string) string {
+	base := "You are Lilith, an expert coding assistant operating inside the user's terminal. " +
+		"Use tools to inspect the real project, execute commands, and make code changes. " +
+		"Reply in the user's language (Spanish by default), while preserving code, paths, identifiers and shell syntax. " +
+		"Be concise, direct, and keep working until the requested task is actually complete."
+	if len(activeTools) == 0 {
 		if skillsBlock != "" {
 			return base + skillsBlock
 		}
 		return base
 	}
-	cwd, _ := os.Getwd()
-	return base + "\n\n" +
-		"# Available tools (always prefer tools over pasting code in chat)\n" +
-		"- read_files: read one or more real project files before touching them. Supports `offset` (1-indexed start line) and `limit` (max lines) to paginate large files without blowing the context.\n" +
-		"- write_file: create a NEW file with the FULL final content. It never overwrites an existing file; use str_replace or apply_diff for edits.\n" +
-		"- str_replace: surgical edit(s) of an EXISTING file. Pass `path` plus either `old`/`new` OR an `edits: [{old,new}, ...]` array to apply several non-overlapping replacements in one call. Every `old` MUST be non-empty, copied byte-for-byte from the current file (whitespace, indentation and newlines included), and MUST appear EXACTLY ONCE — add 2-3 surrounding lines as anchor context if the snippet is not unique. `new` may be empty to delete the matched region. Pairs where `old == new` are ignored as harmless no-ops, so do not retry or rewrite the whole file because of them. To INSERT new code, set `old` to an existing anchor line and repeat that anchor inside `new` together with the new lines. If an exact match fails, re-read the affected region and retry surgically; the tool also has a fuzzy fallback for Unicode quotes/dashes/spaces + trailing whitespace. Never call str_replace with an empty `old`.\n" +
-		"- apply_diff: apply a unified diff (`@@ -a,b +c,d @@` hunks) to an existing file. Prefer this over str_replace when you already have a diff or when the change spans many hunks; context lines must match byte-for-byte.\n" +
-		"- list_directory / glob / code_search: explore the repo. `code_search` accepts `glob`, `path`, `literal`, `ignore_case`, `context` (lines around each match) and `limit`.\n" +
-		"- run_terminal_command: execute shell commands (build, tests, git, rg, ls). Output is tail-truncated; when truncated the note tells you the temp file path with the full stream so you can read_files it if needed.\n" +
-		"- read_url: fetch documentation from a public URL.\n" +
-		"- tool_search: enable extra tools on demand.\n\n" +
 
-		"# Hard rules (MUST follow)\n" +
-		"1. Never emit partial files, scaffolds, or placeholders such as " +
-		"`// rest of the code`, `// TODO: fill in`, `...`, `<!-- rest -->`, " +
-		"`# ... (omitted)`, `/* keep existing */`, or any equivalent. Every file " +
-		"you write must compile / render as-is, ready to run.\n" +
-		"2. If the user asks for MULTIPLE artifacts in one turn (e.g. the same " +
-		"page in two languages, EN + ES; or client + server; or several tests), " +
-		"produce ALL of them fully in the SAME turn, each with its complete " +
-		"content. Never say \"same as above\" or expect the user to copy things.\n" +
-		"3. To modify an existing file: first read it with read_files, then use " +
-		"str_replace with a minimal, UNIQUE `old` window copied verbatim from the " +
-		"file (never leave `old` empty), or apply_diff for multi-hunk changes. If an " +
-		"edit fails, re-read the affected lines and retry the smallest safe edit. " +
-		"Do NOT fall back to rewriting the whole existing file with write_file.\n" +
-		"4. Preserve the project's conventions, style, imports and file layout. " +
-		"Make the smallest change that satisfies the request.\n" +
-		"5. Before finishing a task that touches code, run the project's build " +
-		"and/or tests when they exist. Fix any regressions in the same turn.\n" +
-		"6. Keep working across tool steps until the task is truly done. Do not " +
-		"stop with \"do you want me to continue?\" unless you are actually blocked " +
-		"(missing credentials, ambiguous requirement, destructive action).\n" +
-		"7. Ask a clarifying question ONLY when the request is genuinely ambiguous. " +
-		"For obvious tasks, just do the work.\n" +
-		"8. When you use run_terminal_command, prefer non-interactive flags and a " +
-		"reasonable timeout. Set `timeout_seconds` explicitly per call (default 30). " +
-		"Use larger values for installs, builds, or test suites (e.g. 120, 300) and " +
-		"short ones for cheap checks. When the command times out, all descendants are " +
-		"killed automatically. Never run destructive commands (rm -rf, force pushes, " +
-		"resetting git history) without an explicit user request.\n" +
-		"9. When done, summarise in 1-3 lines: which files changed and what still " +
-		"needs the user's attention (e.g. env vars, migrations).\n\n" +
-		"Working directory: " + cwd + skillsBlock
+	toolLines, toolGuidelines := tools.PromptInfo(activeTools)
+	var b strings.Builder
+	b.WriteString(base)
+	b.WriteString("\n\nAvailable tools:\n")
+	if len(toolLines) == 0 {
+		b.WriteString("- Tool schemas are available for this turn.\n")
+	} else {
+		for _, line := range toolLines {
+			b.WriteString("- " + line + "\n")
+		}
+	}
+
+	b.WriteString("\nGuidelines:\n")
+	seen := map[string]bool{}
+	add := func(rule string) {
+		rule = strings.TrimSpace(rule)
+		if rule == "" || seen[rule] {
+			return
+		}
+		seen[rule] = true
+		b.WriteString("- " + rule + "\n")
+	}
+	for _, rule := range toolGuidelines {
+		add(rule)
+	}
+
+	hasTool := func(name string) bool {
+		for _, active := range activeTools {
+			if active == name {
+				return true
+			}
+		}
+		return false
+	}
+	if hasTool("write_file") || hasTool("str_replace") || hasTool("apply_diff") {
+		add("Never write partial files or placeholders such as `...`, `// rest of code`, `TODO: fill in`, or equivalent; changes must leave real files usable as-is.")
+		add("For existing files, prefer str_replace for precise replacements or apply_diff for unified patches. Both validate against the current on-disk file, so do not perform a ceremonial read solely to unlock them; read when you need context or after a mismatch/ambiguity.")
+		add("write_file is creation-only in Lilith. If it returns FILE_EXISTS, do not retry or rewrite blindly; switch to str_replace/apply_diff.")
+		add("Preserve the project's conventions, imports, formatting and unrelated content. Make the smallest safe change that satisfies the request.")
+	}
+	if hasTool("run_terminal_command") {
+		add("Before finishing code changes, run the relevant build/tests when available and fix regressions in the same turn.")
+		add("Never run destructive commands such as rm -rf, force-pushes, or history resets unless the user explicitly requested that destructive action.")
+	}
+	add("Do not stop with `do you want me to continue?` when you can keep working; ask only when genuinely blocked by missing information, credentials, or a destructive ambiguity.")
+	add("When finished, summarize the concrete changes and any action still required from the user in 1-3 lines.")
+
+	cwd, _ := os.Getwd()
+	b.WriteString("\nCurrent working directory: " + filepath.ToSlash(cwd))
+	b.WriteString(skillsBlock)
+	return b.String()
+}
+
+func activeToolsSignature(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	copyNames := append([]string(nil), names...)
+	sort.Strings(copyNames)
+	return strings.Join(copyNames, "\x1f")
 }
 
 // streamPump reads one chunk and forwards it as a chatStreamMsg, keeping the

@@ -20,7 +20,7 @@ func TestApplyDiffBasic(t *testing.T) {
 		t.Fatal("apply_diff not registered")
 	}
 	diff := "@@ -1,3 +1,3 @@\n hello\n-world\n+earth\n foo\n"
-	env := Env{Root: dir, Seen: map[string]bool{"greet.txt": true}}
+	env := Env{Root: dir}
 	out, err := def.Run(context.Background(), map[string]any{"path": "greet.txt", "diff": diff}, env)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -41,7 +41,7 @@ func TestApplyDiffContextMismatch(t *testing.T) {
 	os.WriteFile(path, []byte("a\nb\nc\n"), 0o644)
 	def, _ := Get("apply_diff")
 	diff := "@@ -1,3 +1,3 @@\n a\n-XX\n+d\n c\n"
-	env := Env{Root: dir, Seen: map[string]bool{"a.txt": true}}
+	env := Env{Root: dir}
 	if _, err := def.Run(context.Background(), map[string]any{"path": "a.txt", "diff": diff}, env); err == nil {
 		t.Fatal("expected mismatch error")
 	}
@@ -52,7 +52,7 @@ func TestReadFilesRejectsImage(t *testing.T) {
 	path := filepath.Join(dir, "logo.png")
 	os.WriteFile(path, []byte("\x89PNG\r\n\x1a\nblob"), 0o644)
 	def, _ := Get("read_files")
-	env := Env{Root: dir, Seen: map[string]bool{}}
+	env := Env{Root: dir}
 	out, err := def.Run(context.Background(), map[string]any{"paths": []any{"logo.png"}}, env)
 	if err != nil {
 		t.Fatal(err)
@@ -75,5 +75,25 @@ func TestListDirectoryLimit(t *testing.T) {
 	}
 	if !strings.Contains(out, "truncated at 2 entries of 3") {
 		t.Errorf("expected truncation note, got %s", out)
+	}
+}
+
+func TestApplyDiffPreservesBOMAndCRLF(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "windows.txt")
+	if err := os.WriteFile(path, []byte("\uFEFFalpha\r\nbeta\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Execute(context.Background(), "apply_diff", map[string]any{
+		"path": "windows.txt",
+		"diff": "@@ -1,2 +1,2 @@\n alpha\n-beta\n+BETA",
+	}, Env{Root: dir})
+	if err != nil {
+		t.Fatalf("apply_diff failed on CRLF file: %v", err)
+	}
+	got, _ := os.ReadFile(path)
+	want := "\uFEFFalpha\r\nBETA\r\n"
+	if string(got) != want {
+		t.Fatalf("BOM/CRLF not preserved: want %q got %q", want, got)
 	}
 }

@@ -25,10 +25,14 @@ func init() {
 	register(Definition{
 		Name: "apply_diff",
 		Description: "Apply a unified diff to a single existing file. Use this instead of str_replace when a change spans many hunks or when you already have a diff. " +
-			"The `diff` argument must be a standard unified diff with `@@ -old,len +new,len @@` hunk headers; the `--- / +++` header lines are optional but must reference `path` if present. " +
-			"Every context line must match the file byte-for-byte. The whole diff is validated first and either applied atomically or rejected with a descriptive error. " +
-			"REQUIREMENTS: (1) the file MUST already exist and MUST have been read with read_files in this session; (2) hunk line numbers are 1-indexed and must match the current file. " +
-			"DO NOT use apply_diff to create a new file — use write_file instead.",
+			"The `diff` argument must use standard `@@ -old,len +new,len @@` hunks; optional file headers are accepted. " +
+			"The current file is read and every context/removal line is validated at execution time before writing, so a separate read_files call is recommended for understanding but is not a runtime prerequisite. " +
+			"The operation is atomic and preserves UTF-8 BOM plus the file's CRLF/LF style. Do not use apply_diff to create a new file.",
+		PromptSnippet: "Apply a validated unified diff to an existing file",
+		PromptGuidelines: []string{
+			"Use apply_diff for existing-file changes when you already have a unified patch or when a change is clearer as multiple hunks.",
+			"If a hunk mismatches current content, read the affected region and regenerate the patch; do not retry stale context.",
+		},
 		Mutating: true,
 		Parameters: map[string]any{
 			"type": "object",
@@ -44,9 +48,6 @@ func init() {
 			if err != nil {
 				return "", err
 			}
-			if !wasSeen(env, rel) {
-				return "", fmt.Errorf("%s has not been read in this session: use read_files first, then retry apply_diff against the current file", rel)
-			}
 			mu := lockFile(full)
 			mu.Lock()
 			defer mu.Unlock()
@@ -54,14 +55,16 @@ func init() {
 			if err != nil {
 				return "", err
 			}
-			out, hunks, err := applyUnifiedDiff(string(data), str(args, "diff"), rel)
+			bom, content := stripUTF8BOM(string(data))
+			ending := detectLineEnding(content)
+			out, hunks, err := applyUnifiedDiff(normalizeToLF(content), normalizeToLF(str(args, "diff")), rel)
 			if err != nil {
 				return "", err
 			}
-			if err := os.WriteFile(full, []byte(out), 0o644); err != nil {
+			final := bom + restoreLineEndings(out, ending)
+			if err := os.WriteFile(full, []byte(final), 0o644); err != nil {
 				return "", err
 			}
-			markSeen(env, rel)
 			return fmt.Sprintf("patched %s (%d hunk(s) applied).", rel, hunks), nil
 		},
 	})

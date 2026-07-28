@@ -1,3 +1,5 @@
+> **Actualización 2026-07-27:** la obligación de `read_files`/`Env.Seen` antes de editar quedó reemplazada por la arquitectura documentada en `045-port-pi-edicion-y-prompt.md`. Las herramientas de edición validan el contenido actual en disco en el momento de ejecutar.
+
 # 041 — Ediciones idempotentes y rendimiento del historial TUI
 
 # Fecha

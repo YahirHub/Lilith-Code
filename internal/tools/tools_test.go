@@ -55,23 +55,29 @@ func TestWriteReadAndReplace(t *testing.T) {
 	}
 }
 
-func TestWriteFileRefusesBlindOverwrite(t *testing.T) {
+func TestWriteFileSkipsExistingTargetWithoutOverwriting(t *testing.T) {
 	root := t.TempDir()
-	os.WriteFile(filepath.Join(root, "a.html"), []byte("<h1>hola</h1>"), 0o644)
-	env := Env{Root: root, Seen: map[string]bool{}}
-	if _, err := Execute(context.Background(), "write_file", map[string]any{
-		"path": "a.html", "content": "nuevo",
-	}, env); err == nil {
-		t.Fatal("se esperaba rechazo de reescritura a ciegas")
-	}
-	// Leer el archivo no convierte write_file en una herramienta de sobrescritura.
-	if _, err := Execute(context.Background(), "read_files", map[string]any{"paths": []any{"a.html"}}, env); err != nil {
+	path := filepath.Join(root, "a.html")
+	before := []byte("<h1>hola</h1>")
+	if err := os.WriteFile(path, before, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Execute(context.Background(), "write_file", map[string]any{
+	env := Env{Root: root}
+	out, err := Execute(context.Background(), "write_file", map[string]any{
 		"path": "a.html", "content": "nuevo",
-	}, env); err == nil {
-		t.Fatal("write_file no debe sobrescribir archivos existentes ni siquiera después de leerlos")
+	}, env)
+	if err != nil {
+		t.Fatalf("existing file should be a recoverable skip, got %v", err)
+	}
+	if !strings.HasPrefix(out, "FILE_EXISTS:") || !strings.Contains(out, "str_replace") {
+		t.Fatalf("expected compact actionable FILE_EXISTS result, got %q", out)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(before) {
+		t.Fatalf("write_file must never overwrite an existing target: %q", got)
 	}
 }
 
@@ -81,7 +87,7 @@ func TestStrReplaceSkipsNoOpInsideBatch(t *testing.T) {
 	if err := os.WriteFile(path, []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env := Env{Root: root, Seen: map[string]bool{"a.txt": true}}
+	env := Env{Root: root}
 	out, err := Execute(context.Background(), "str_replace", map[string]any{
 		"path": "a.txt",
 		"edits": []any{
@@ -112,7 +118,7 @@ func TestStrReplaceAllNoOpsSucceedsWithoutRewrite(t *testing.T) {
 	if err := os.WriteFile(path, before, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env := Env{Root: root, Seen: map[string]bool{"a.txt": true}}
+	env := Env{Root: root}
 	out, err := Execute(context.Background(), "str_replace", map[string]any{
 		"path": "a.txt",
 		"edits": []any{
@@ -135,36 +141,42 @@ func TestStrReplaceAllNoOpsSucceedsWithoutRewrite(t *testing.T) {
 	}
 }
 
-func TestStrReplaceRequiresReadWhenSeenTrackingIsEnabled(t *testing.T) {
+func TestStrReplaceValidatesCurrentFileWithoutPriorRead(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "a.txt")
 	if err := os.WriteFile(path, []byte("alpha\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env := Env{Root: root, Seen: map[string]bool{}}
 	_, err := Execute(context.Background(), "str_replace", map[string]any{
 		"path": "a.txt",
 		"old":  "alpha",
 		"new":  "ALPHA",
-	}, env)
-	if err == nil || !strings.Contains(err.Error(), "read_files first") {
-		t.Fatalf("se esperaba exigir lectura previa, got %v", err)
+	}, Env{Root: root})
+	if err != nil {
+		t.Fatalf("str_replace should validate current disk content itself: %v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != "ALPHA\n" {
+		t.Fatalf("unexpected content: %q", got)
 	}
 }
 
-func TestApplyDiffRequiresReadWhenSeenTrackingIsEnabled(t *testing.T) {
+func TestApplyDiffValidatesCurrentFileWithoutPriorRead(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "a.txt")
 	if err := os.WriteFile(path, []byte("alpha\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env := Env{Root: root, Seen: map[string]bool{}}
 	_, err := Execute(context.Background(), "apply_diff", map[string]any{
 		"path": "a.txt",
 		"diff": "@@ -1,1 +1,1 @@\n-alpha\n+ALPHA",
-	}, env)
-	if err == nil || !strings.Contains(err.Error(), "read_files first") {
-		t.Fatalf("se esperaba exigir lectura previa, got %v", err)
+	}, Env{Root: root})
+	if err != nil {
+		t.Fatalf("apply_diff should validate current disk content itself: %v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != "ALPHA\n" {
+		t.Fatalf("unexpected content: %q", got)
 	}
 }
 
@@ -193,5 +205,19 @@ func TestToolSearchMaterializes(t *testing.T) {
 	}
 	if !strings.Contains(out, "run_terminal_command") || len(added) == 0 {
 		t.Fatalf("tool_search no activó herramientas: %q %v", out, added)
+	}
+}
+
+func TestPromptInfoOnlyIncludesActiveTools(t *testing.T) {
+	lines, guidelines := PromptInfo([]string{"str_replace"})
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "str_replace: Make precise replacements") {
+		t.Fatalf("missing active tool snippet: %q", joined)
+	}
+	if strings.Contains(joined, "run_terminal_command") {
+		t.Fatalf("inactive tool leaked into prompt metadata: %q", joined)
+	}
+	if len(guidelines) == 0 {
+		t.Fatal("expected str_replace prompt guidelines")
 	}
 }

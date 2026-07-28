@@ -99,3 +99,32 @@ func TestReasoningKeepsThinkingIndicatorActive(t *testing.T) {
 		t.Fatal("el indicador Pensando debe permanecer visible mientras llega reasoning")
 	}
 }
+
+func TestCompactRejectedWriteCallDropsUnappliedPayload(t *testing.T) {
+	call := makeToolCall("write_file", `{"path":"styles.css","content":"`+strings.Repeat("x", 8000)+`"}`)
+	m := ChatModel{history: []openai.Message{{Role: "assistant", ToolCalls: []openai.ToolCall{call}}}}
+	m.compactRejectedWriteCall(call.ID)
+	got := m.history[0].ToolCalls[0].Function.Arguments
+	if strings.Contains(got, strings.Repeat("x", 100)) {
+		t.Fatalf("rejected payload should not remain in API history: %d bytes", len(got))
+	}
+	if !strings.Contains(got, `"path":"styles.css"`) || !strings.Contains(got, `"content":""`) {
+		t.Fatalf("unexpected compact arguments: %s", got)
+	}
+}
+
+func TestSystemPromptUsesPiStyleActiveToolMetadata(t *testing.T) {
+	prompt := systemPrompt([]string{"str_replace"}, "")
+	if !strings.Contains(prompt, "str_replace: Make precise replacements") {
+		t.Fatalf("active tool snippet missing:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "run_terminal_command: Execute shell") {
+		t.Fatalf("inactive tool should not consume system-prompt tokens:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "first read it with read_files") || strings.Contains(prompt, "MUST have been read") {
+		t.Fatalf("prompt must not enforce a ceremonial read before safe edit:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "validate against the current on-disk file") {
+		t.Fatalf("prompt should explain current-file validation:\n%s", prompt)
+	}
+}
