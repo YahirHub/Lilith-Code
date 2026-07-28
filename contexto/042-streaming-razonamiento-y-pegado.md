@@ -54,3 +54,6 @@ No se agregaron dependencias. Se reutilizan Bubble Tea/Bubbles ya presentes y la
 1. Compilar y ejecutar las pruebas en Windows con Go 1.24+.
 2. Probar escritura rápida seguida de Enter y un pegado multilínea grande.
 3. Probar un modelo de razonamiento y una tool call para confirmar que el panel se actualiza y la continuación no devuelve errores 400.
+
+## Actualización 2026-07-28
+La decisión de depender exclusivamente de `KeyMsg.Paste` quedó ampliada por `050-pegado-multilinea-atomico.md`. Bubble Tea v1 sí habilita bracketed paste de forma predeterminada, pero un host intermedio puede perder esos delimitadores y degradar el contenido a teclas ordinarias. La compatibilidad nueva NO restaura el umbral antiguo de «tecla previa + Enter»: difiere únicamente el Enter ambiguo y decide según si aparece contenido posterior inmediato.

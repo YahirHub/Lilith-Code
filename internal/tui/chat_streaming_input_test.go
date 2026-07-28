@@ -80,8 +80,16 @@ func TestEnterInmediatoDespuesDeEscribirEnvia(t *testing.T) {
 
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("Enter inmediato debe enviar, no insertar un salto de línea")
+	if cmd == nil || !m.pendingEnter {
+		t.Fatal("Enter debe quedar pendiente sólo durante la ventana mínima de decisión")
+	}
+	if got := m.textarea.Value(); got != "x" {
+		t.Fatalf("Enter ambiguo no debe insertar un salto: %q", got)
+	}
+
+	_, turnCmd := m.Update(pasteEnterDecisionMsg{seq: m.pendingEnterSeq})
+	if turnCmd == nil {
+		t.Fatal("al vencer la ventana, Enter humano debe enviar el turno")
 	}
 	if got := m.textarea.Value(); got != "" {
 		t.Fatalf("el textarea debe limpiarse tras enviar, obtuvo %q", got)
@@ -108,8 +116,98 @@ func TestBracketedPasteMultilineaSeInsertaComoUnBloque(t *testing.T) {
 	}
 
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.Update(pasteEnterDecisionMsg{seq: m.pendingEnterSeq})
 	if len(m.messages) != 1 || m.messages[0].Kind != MsgUser || m.messages[0].Content != want {
 		t.Fatalf("el bloque pegado debe enviarse como un único mensaje: %#v", m.messages)
+	}
+}
+
+func TestPasteMultilineaSinBracketedPasteNoEnviaNiEncola(t *testing.T) {
+	m := newInputTestChat(t)
+
+	// Simula el caso observado en Windows: el host perdió ESC[200~/ESC[201~
+	// y Bubble Tea recibe párrafos y CRLF como eventos de teclado normales.
+	input := []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("## Requisitos principales")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyCtrlJ}, // LF de CRLF: no debe duplicar la línea.
+		{Type: tea.KeyRunes, Runes: []rune("### 1. Vinculación mediante QR")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyCtrlJ},
+		{Type: tea.KeyRunes, Runes: []rune("El bot debe poder vincularse a una cuenta de WhatsApp.")},
+	}
+
+	for _, key := range input {
+		_, _ = m.Update(key)
+	}
+
+	want := "## Requisitos principales\n### 1. Vinculación mediante QR\nEl bot debe poder vincularse a una cuenta de WhatsApp."
+	if got := m.textarea.Value(); got != want {
+		t.Fatalf("el paste degradado debe permanecer unido:\nwant=%q\n got=%q", want, got)
+	}
+	if len(m.messages) != 0 {
+		t.Fatalf("ningún párrafo pegado debe convertirse en solicitud: %#v", m.messages)
+	}
+	if len(m.queue) != 0 {
+		t.Fatalf("ningún párrafo pegado debe entrar a la cola: %#v", m.queue)
+	}
+
+	// Al terminar la ráfaga, un Enter humano vuelve a significar enviar.
+	_, _ = m.Update(pasteFallbackIdleMsg{seq: m.pasteFallbackSeq})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.Update(pasteEnterDecisionMsg{seq: m.pendingEnterSeq})
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgUser || m.messages[0].Content != want {
+		t.Fatalf("el paste completo debe salir como una sola solicitud: %#v", m.messages)
+	}
+}
+
+func TestPasteMultilineaMientrasStreamingSeEncolaComoUnSoloMensaje(t *testing.T) {
+	m := newInputTestChat(t)
+	m.streaming = true
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("párrafo uno")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("párrafo dos")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("párrafo tres")},
+	} {
+		_, _ = m.Update(key)
+	}
+
+	if len(m.queue) != 0 {
+		t.Fatalf("el paste no debe fragmentarse en la cola durante streaming: %#v", m.queue)
+	}
+	want := "párrafo uno\npárrafo dos\npárrafo tres"
+	if got := m.textarea.Value(); got != want {
+		t.Fatalf("paste degradado inesperado: want=%q got=%q", want, got)
+	}
+
+	_, _ = m.Update(pasteFallbackIdleMsg{seq: m.pasteFallbackSeq})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.Update(pasteEnterDecisionMsg{seq: m.pendingEnterSeq})
+	if len(m.queue) != 1 || m.queue[0] != want {
+		t.Fatalf("el mensaje completo debe encolarse una sola vez: %#v", m.queue)
+	}
+}
+
+func TestTimerViejoDeEnterNoPuedeEnviarUnPasteConfirmado(t *testing.T) {
+	m := newInputTestChat(t)
+
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("primera")})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	oldSeq := m.pendingEnterSeq
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("segunda")})
+
+	if !m.pasteFallbackActive {
+		t.Fatal("la continuación posterior al Enter debe confirmar el paste")
+	}
+	_, _ = m.Update(pasteEnterDecisionMsg{seq: oldSeq})
+	if len(m.messages) != 0 || len(m.queue) != 0 {
+		t.Fatalf("un timer obsoleto no puede enviar/encolar contenido: messages=%#v queue=%#v", m.messages, m.queue)
+	}
+	if got := m.textarea.Value(); got != "primera\nsegunda" {
+		t.Fatalf("contenido inesperado tras timer obsoleto: %q", got)
 	}
 }
 

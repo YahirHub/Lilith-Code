@@ -147,6 +147,18 @@ type ChatModel struct {
 	// la cola pendiente.
 	queue []string
 
+	// Compatibilidad para terminales/hosts que degradan un pegado multilínea
+	// a teclas normales en vez de conservar bracketed paste. Un Enter normal
+	// queda pendiente durante una ventana minúscula: si llega texto enseguida,
+	// ese Enter era un salto del pegado; si no llega nada, se envía el mensaje.
+	// Esto evita la heurística antigua "tecla previa + Enter rápido", que
+	// rompía a quien escribe y pulsa Enter con rapidez.
+	pasteFallbackActive bool
+	pasteFallbackSeq    uint64
+	pasteAwaitingLF     bool
+	pendingEnter        bool
+	pendingEnterSeq     uint64
+
 	// assistantActive apunta únicamente a la respuesta textual del turno de
 	// modelo ACTUAL. Se crea de forma perezosa al llegar el primer delta para
 	// no mostrar una cabecera `lilith` vacía mientras la API aún no responde.
@@ -217,10 +229,82 @@ type cmdElapsedTickMsg struct{}
 // refreshTranscriptStreaming.
 type transcriptRefreshTickMsg struct{}
 
+// pasteEnterDecisionMsg resuelve un Enter ambiguo que llegó sin marcador de
+// paste. Si durante la ventana no aparece más contenido, era un Enter humano y
+// se ejecuta el submit. Un seq antiguo nunca puede enviar un valor más nuevo.
+type pasteEnterDecisionMsg struct{ seq uint64 }
+
+// pasteFallbackIdleMsg cierra la ráfaga confirmada de paste. Mientras está
+// activa, los Enter posteriores son saltos de línea y nunca submits.
+type pasteFallbackIdleMsg struct{ seq uint64 }
+
 const (
 	transcriptRefreshInterval         = 50 * time.Millisecond
 	transcriptScrolledRefreshInterval = 250 * time.Millisecond
+
+	// Sin bracketed paste no existe información suficiente para distinguir un
+	// CR pegado de la tecla Enter. En vez de adivinar mirando la tecla ANTERIOR,
+	// damos al input una ventana corta para ver si llega contenido DESPUÉS del
+	// Enter. Los bytes de un paste llegan como una ráfaga; un Enter humano queda
+	// solo y se envía al vencer esta ventana.
+	pasteEnterDecisionWindow = 80 * time.Millisecond
+	pasteFallbackIdleWindow  = 60 * time.Millisecond
 )
+
+func (m *ChatModel) resetPasteFallback() {
+	m.pasteFallbackActive = false
+	m.pasteAwaitingLF = false
+	m.pendingEnter = false
+	// Invalidar cualquier timer pendiente sin esperar a que dispare.
+	m.pasteFallbackSeq++
+	m.pendingEnterSeq++
+}
+
+func (m *ChatModel) armPasteFallback() tea.Cmd {
+	m.pasteFallbackActive = true
+	m.pasteFallbackSeq++
+	seq := m.pasteFallbackSeq
+	return tea.Tick(pasteFallbackIdleWindow, func(time.Time) tea.Msg {
+		return pasteFallbackIdleMsg{seq: seq}
+	})
+}
+
+func (m *ChatModel) deferEnterSubmit() tea.Cmd {
+	m.pendingEnter = true
+	m.pendingEnterSeq++
+	seq := m.pendingEnterSeq
+	return tea.Tick(pasteEnterDecisionWindow, func(time.Time) tea.Msg {
+		return pasteEnterDecisionMsg{seq: seq}
+	})
+}
+
+// confirmPendingEnterAsPaste convierte el Enter pendiente en texto sólo cuando
+// existe evidencia posterior (otro fragmento del paste). Esa dirección de la
+// comprobación es importante: escribir y pulsar Enter rápidamente no se
+// confunde con un pegado, porque no hay una tecla posterior que lo confirme.
+func (m *ChatModel) confirmPendingEnterAsPaste() tea.Cmd {
+	if !m.pendingEnter {
+		return nil
+	}
+	m.pendingEnter = false
+	m.pendingEnterSeq++
+	m.textarea.InsertString("\n")
+	m.updatePalette()
+	m.syncInputHeight()
+	return m.armPasteFallback()
+}
+
+func isPasteContinuationKey(v tea.KeyMsg) bool {
+	if v.Paste {
+		return false
+	}
+	switch v.Type {
+	case tea.KeyRunes, tea.KeySpace, tea.KeyTab, tea.KeyEnter, tea.KeyCtrlJ:
+		return true
+	default:
+		return false
+	}
+}
 
 func cmdElapsedTick() tea.Cmd {
 	// CommandPanel muestra segundos enteros; refrescar dos veces por segundo
@@ -1219,6 +1303,34 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTranscript(autoBottom)
 		return m, nil
 
+	case pasteEnterDecisionMsg:
+		if v.seq != m.pendingEnterSeq || !m.pendingEnter {
+			return m, nil
+		}
+		m.pendingEnter = false
+		// Si Enter pertenecía al selector de comandos, mantenemos el
+		// comportamiento histórico: ejecutar la fila resaltada. La breve espera
+		// sólo sirve para dar oportunidad a un paste multilínea de continuar.
+		if m.paletteOpen && len(m.paletteRows) > 0 {
+			c := m.paletteRows[m.paletteIdx]
+			m.textarea.Reset()
+			m.paletteOpen = false
+			m.syncInputHeight()
+			return m, c.Run(m.ctx, m, "")
+		}
+		val := strings.TrimSpace(m.textarea.Value())
+		if val == "" {
+			return m, nil
+		}
+		return m.submit(val)
+
+	case pasteFallbackIdleMsg:
+		if v.seq == m.pasteFallbackSeq {
+			m.pasteFallbackActive = false
+			m.pasteAwaitingLF = false
+		}
+		return m, nil
+
 	case cmdElapsedTickMsg:
 		// Refrescamos el transcript para que la línea "Elapsed …" avance de
 		// forma suave. Reprogramamos mientras siga habiendo comandos vivos
@@ -1482,11 +1594,15 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		key := v.String()
+		var pasteCmd tea.Cmd
 		// Bubble Tea v1 entrega bracketed paste como un único KeyMsg con Paste
 		// activo. Insertamos el bloque completo de una vez: los saltos de línea
 		// son texto, nunca eventos Enter, y un pegado grande no se "teclea" rune
 		// por rune a través del loop principal.
 		if v.Paste {
+			// El camino nativo es autoritativo. Un paste bracketed nunca debe
+			// heredar el estado heurístico de una entrada anterior.
+			m.resetPasteFallback()
 			pasted := string(v.Runes)
 			pasted = strings.ReplaceAll(pasted, "\r\n", "\n")
 			pasted = strings.ReplaceAll(pasted, "\r", "\n")
@@ -1497,6 +1613,59 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+
+		// Algunos hosts pierden los delimitadores bracketed-paste y entregan
+		// "texto, Enter, texto". El primer Enter queda pendiente; la llegada
+		// inmediata de contenido posterior confirma que era un salto pegado.
+		// CRLF se coalesce: el LF que sigue al CR confirma el salto pero no
+		// inserta una segunda línea vacía.
+		if m.pendingEnter && isPasteContinuationKey(v) {
+			pasteCmd = m.confirmPendingEnterAsPaste()
+			if v.Type == tea.KeyCtrlJ {
+				// CR + LF representan un único salto de línea.
+				m.pasteAwaitingLF = false
+				return m, pasteCmd
+			}
+		}
+
+		// Si el CR anterior ya insertó la nueva línea, consumir su LF compañero
+		// sin crear una línea vacía adicional. Si llega cualquier otra cosa, el
+		// terminal estaba usando CR solo y seguimos procesándola normalmente.
+		if m.pasteFallbackActive && m.pasteAwaitingLF {
+			if v.Type == tea.KeyCtrlJ {
+				m.pasteAwaitingLF = false
+				return m, m.armPasteFallback()
+			}
+			m.pasteAwaitingLF = false
+		}
+
+		// Resolver Enter antes del palette y del resto de atajos. De otro modo
+		// un texto pegado que empieza por "/" podría ejecutar una sugerencia en
+		// cuanto llegara su primer salto de línea.
+		if key == "enter" {
+			if m.pasteFallbackActive {
+				m.textarea.InsertString("\n")
+				m.pasteAwaitingLF = true
+				m.updatePalette()
+				m.syncInputHeight()
+				return m, m.armPasteFallback()
+			}
+			if strings.TrimSpace(m.textarea.Value()) == "" {
+				return m, nil
+			}
+			return m, m.deferEnterSubmit()
+		}
+
+		// Un LF inmediatamente posterior a un CR fue consumido arriba como la
+		// segunda mitad de CRLF. Los LF siguientes, mientras el paste siga
+		// confirmado, sí representan líneas nuevas.
+		if m.pasteFallbackActive && v.Type == tea.KeyCtrlJ {
+			m.textarea.InsertString("\n")
+			m.updatePalette()
+			m.syncInputHeight()
+			return m, m.armPasteFallback()
+		}
+
 		// Teclas de scroll: siempre van al viewport, incluso durante streaming
 		// o ejecución de herramientas. Permiten leer el historial mientras
 		// Lilith trabaja.
@@ -1529,13 +1698,6 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc":
 				m.paletteOpen = false
 				return m, nil
-			case "enter":
-				if len(m.paletteRows) > 0 {
-					c := m.paletteRows[m.paletteIdx]
-					m.textarea.Reset()
-					m.paletteOpen = false
-					return m, c.Run(m.ctx, m, "")
-				}
 			}
 		}
 		switch key {
@@ -1576,6 +1738,13 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// por error mientras Lilith trabaja.
 			return m, nil
 		case "ctrl+c":
+			// Ctrl+C invalida primero cualquier Enter aún pendiente. De lo
+			// contrario su timer podría enviar el textarea unos milisegundos
+			// después de que el usuario canceló el turno.
+			if m.pendingEnter {
+				m.pendingEnter = false
+				m.pendingEnterSeq++
+			}
 			if m.streaming && m.activeTurnID != 0 {
 				m.cancelTurn()
 				return m, nil
@@ -1600,18 +1769,30 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.AddSystem("Pulsa Ctrl+C otra vez para salir, o usa /exit.")
 			return m, nil
 		case "shift+enter", "alt+enter", "ctrl+enter":
-			// Nueva línea explícita dentro del textarea. Enter simple siempre
-			// envía, incluso si se pulsa inmediatamente después de escribir.
+			// Nueva línea explícita dentro del textarea. No entra en el detector
+			// de paste porque el usuario indicó de forma inequívoca que quiere
+			// una línea nueva.
+			m.pendingEnter = false
+			m.pendingEnterSeq++
 			m.textarea.InsertString("\n")
 			m.syncInputHeight()
 			return m, nil
-		case "enter":
-			val := strings.TrimSpace(m.textarea.Value())
-			if val == "" {
-				return m, nil
-			}
-			return m.submit(val)
 		}
+
+		// Para teclas normales dejamos que Bubbles actualice el textarea y
+		// conservamos, si aplica, el timer del fallback de paste. Retornar aquí
+		// evita que el mismo KeyMsg se procese dos veces en el bloque genérico.
+		prev := m.textarea.Value()
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
+		if m.textarea.Value() != prev {
+			m.updatePalette()
+			m.syncInputHeight()
+		}
+		if m.pasteFallbackActive && isPasteContinuationKey(v) {
+			pasteCmd = m.armPasteFallback()
+		}
+		return m, tea.Batch(cmd, pasteCmd)
 	}
 
 	var cmds []tea.Cmd
@@ -1655,6 +1836,7 @@ func (m *ChatModel) drainQueue() tea.Cmd {
 }
 
 func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
+	m.resetPasteFallback()
 	m.textarea.Reset()
 	m.paletteOpen = false
 	m.syncInputHeight()

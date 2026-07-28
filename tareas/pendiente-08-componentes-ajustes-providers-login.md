@@ -1,7 +1,7 @@
 # Tarea 08 — Componentes reutilizables para ajustes, /providers y /login
 
 ## Estado
-en-proceso
+pendiente
 
 ## Objetivo
 Crear un pequeño kit TUI reutilizable para pantallas de configuración y aplicarlo a `/providers` y `/login`, sustituyendo el listado de texto inútil de `/providers` por una pantalla interactiva con teclado y ratón.
