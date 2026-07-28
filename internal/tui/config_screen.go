@@ -24,10 +24,7 @@ type ConfigScreen struct {
 
 func NewConfigScreen(ctx *AppContext) *ConfigScreen {
 	s, _ := config.Load(ctx.ConfigDir)
-	loaded := skills.Load(skills.LoadOptions{
-		UserDir:    skills.UserDir(ctx.ConfigDir),
-		ProjectDir: skills.ProjectDir(currentProject()),
-	})
+	loaded := skills.Load(skills.DefaultLoadOptions(ctx.ConfigDir, currentProject()))
 	return &ConfigScreen{ctx: ctx, settings: s, loaded: loaded, focus: "skills"}
 }
 
@@ -93,10 +90,7 @@ func (c *ConfigScreen) toggleSkills() (tea.Model, tea.Cmd) {
 	state := "desactivadas"
 	if c.settings.SkillsEnabled {
 		state = "activadas"
-		c.loaded = skills.Load(skills.LoadOptions{
-			UserDir:    skills.UserDir(c.ctx.ConfigDir),
-			ProjectDir: skills.ProjectDir(currentProject()),
-		})
+		c.loaded = skills.Load(skills.DefaultLoadOptions(c.ctx.ConfigDir, currentProject()))
 	}
 	c.message = fmt.Sprintf("Skills %s. %d disponibles.", state, len(c.loaded))
 	return c, nil
@@ -121,8 +115,8 @@ func (c *ConfigScreen) layout() (string, []settingsHit) {
 	canvas.blank()
 	canvas.block(settingsSwitch(s, settingsSwitchSpec{
 		ID:          "skills",
-		Label:       "Claude Code skills",
-		Description: fmt.Sprintf("%d skill(s) detectada(s) en ~/.li/skills y ./.li/skills", len(c.loaded)),
+		Label:       "Skills",
+		Description: fmt.Sprintf("%d skill(s) detectada(s) en rutas Lilith, Claude y Agent del usuario/proyecto", len(c.loaded)),
 		Value:       c.settings.SkillsEnabled,
 		Focused:     c.focus == "skills",
 		Width:       w,

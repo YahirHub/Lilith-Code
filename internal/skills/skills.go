@@ -1,8 +1,7 @@
-// Package skills carga "Claude Agent Skills" (SKILL.md con frontmatter YAML)
-// desde el directorio de usuario (~/.li/skills) y del proyecto (./.li/skills)
-// e inyecta un catálogo compacto en el system prompt para que el modelo pueda
-// pedir la skill correcta con read_files. Está inspirado en la implementación
-// de pi.dev (packages/coding-agent/src/core/skills.ts), adaptada a Go.
+// Package skills carga Agent Skills (SKILL.md con frontmatter YAML), descubre
+// recursos asociados y ofrece navegación/búsqueda acotada para que el modelo no
+// tenga que meter archivos grandes completos en contexto. Está inspirado en la
+// implementación de pi.dev y adaptado a Go/Lilith.
 package skills
 
 import (
@@ -36,8 +35,10 @@ var (
 
 // LoadOptions controla de dónde se leen las skills.
 type LoadOptions struct {
-	UserDir    string // normalmente ~/.li/skills (se resuelve por caller)
-	ProjectDir string // normalmente <cwd>/.li/skills
+	UserDir     string   // compatibilidad: ~/.li/skills
+	ProjectDir  string   // compatibilidad: <cwd>/.li/skills
+	UserDirs    []string // rutas adicionales de usuario, en orden de precedencia
+	ProjectDirs []string // rutas adicionales de proyecto, en orden de precedencia
 }
 
 // Load descubre skills en las carpetas indicadas. Cada carpeta puede contener
@@ -46,9 +47,22 @@ type LoadOptions struct {
 // silencian: una skill inválida no debe romper el arranque.
 func Load(opts LoadOptions) []Skill {
 	seen := map[string]Skill{}
-	// Orden: primero user, luego project (project sobrescribe).
-	scan(opts.UserDir, "user", seen)
-	scan(opts.ProjectDir, "project", seen)
+	// Rutas más específicas se procesan después y por tanto sobrescriben
+	// colisiones. Las skills de proyecto siguen ganando a las de usuario.
+	userDirs := append([]string(nil), opts.UserDirs...)
+	if strings.TrimSpace(opts.UserDir) != "" {
+		userDirs = append(userDirs, opts.UserDir)
+	}
+	projectDirs := append([]string(nil), opts.ProjectDirs...)
+	if strings.TrimSpace(opts.ProjectDir) != "" {
+		projectDirs = append(projectDirs, opts.ProjectDir)
+	}
+	for _, dir := range userDirs {
+		scan(dir, "user", seen)
+	}
+	for _, dir := range projectDirs {
+		scan(dir, "project", seen)
+	}
 
 	out := make([]Skill, 0, len(seen))
 	for _, s := range seen {
@@ -58,29 +72,68 @@ func Load(opts LoadOptions) []Skill {
 	return out
 }
 
-// scan busca SKILL.md un nivel bajo dir (dir/<slug>/SKILL.md).
+// DefaultLoadOptions añade las ubicaciones nativas de Lilith y las rutas de
+// Claude/Agent Skills que el usuario ya utiliza. No necesita configuración
+// adicional y conserva la precedencia proyecto > usuario y .li > compatibilidad.
+func DefaultLoadOptions(configDir, projectRoot string) LoadOptions {
+	home := ""
+	if strings.TrimSpace(configDir) != "" {
+		home = filepath.Dir(filepath.Clean(configDir))
+	}
+	var userDirs []string
+	if home != "" {
+		userDirs = append(userDirs,
+			filepath.Join(home, ".agents", "skills"),
+			filepath.Join(home, ".claude", "skills"),
+		)
+	}
+	var projectDirs []string
+	if strings.TrimSpace(projectRoot) != "" {
+		projectDirs = append(projectDirs,
+			filepath.Join(projectRoot, ".agents", "skills"),
+			filepath.Join(projectRoot, ".claude", "skills"),
+		)
+	}
+	return LoadOptions{
+		UserDir:     UserDir(configDir),
+		ProjectDir:  ProjectDir(projectRoot),
+		UserDirs:    userDirs,
+		ProjectDirs: projectDirs,
+	}
+}
+
+// scan descubre SKILL.md de forma recursiva. Cuando un directorio ya contiene
+// SKILL.md se trata como raíz de skill y no se entra en sus assets/scripts para
+// evitar detectar accidentalmente recursos internos como otras skills.
 func scan(dir, source string, out map[string]Skill) {
 	if strings.TrimSpace(dir) == "" {
 		return
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
-			continue
+	root := filepath.Clean(dir)
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
 		}
-		file := filepath.Join(dir, entry.Name(), "SKILL.md")
-		if _, err := os.Stat(file); err != nil {
-			continue
+		if !d.IsDir() {
+			return nil
 		}
-		s, ok := loadFile(file, source)
-		if !ok {
-			continue
+		if path != root {
+			name := d.Name()
+			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" || name == "dist" || name == "build" {
+				return filepath.SkipDir
+			}
 		}
-		out[s.Name] = s
-	}
+		file := filepath.Join(path, "SKILL.md")
+		if info, statErr := os.Stat(file); statErr == nil && !info.IsDir() {
+			if s, ok := loadFile(file, source); ok {
+				out[s.Name] = s
+			}
+			if path != root {
+				return filepath.SkipDir
+			}
+		}
+		return nil
+	})
 }
 
 // loadFile parsea el frontmatter y valida los campos obligatorios.
@@ -113,17 +166,18 @@ func loadFile(path, source string) (Skill, bool) {
 	}, true
 }
 
-// parseFrontmatter extrae los pares key:value del bloque YAML inicial ---.
-// No es un parser YAML completo; sólo soporta strings de una línea, que es lo
-// único que la spec de Skills necesita (name/description/disable-model-invocation).
+// parseFrontmatter extrae los valores simples que Lilith necesita. Además de
+// `key: value`, soporta escalares YAML plegados/literales (`>` y `|`), usados
+// habitualmente para descriptions largas en Agent Skills. No pretende ser un
+// parser YAML general.
 func parseFrontmatter(content string) map[string]string {
 	out := map[string]string{}
-	lines := strings.Split(content, "\n")
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
 	if len(lines) == 0 || strings.TrimSpace(lines[0]) != fmDelim {
 		return out
 	}
 	for i := 1; i < len(lines); i++ {
-		line := strings.TrimRight(lines[i], "\r")
+		line := lines[i]
 		if strings.TrimSpace(line) == fmDelim {
 			return out
 		}
@@ -131,9 +185,31 @@ func parseFrontmatter(content string) map[string]string {
 		if m == nil {
 			continue
 		}
+		key := strings.ToLower(m[1])
 		val := strings.TrimSpace(m[2])
-		val = strings.Trim(val, `"'`)
-		out[strings.ToLower(m[1])] = val
+		if val == ">" || val == ">-" || val == ">+" || val == "|" || val == "|-" || val == "|+" {
+			folded := strings.HasPrefix(val, ">")
+			var block []string
+			for i+1 < len(lines) {
+				next := lines[i+1]
+				if strings.TrimSpace(next) == fmDelim {
+					break
+				}
+				if strings.TrimSpace(next) != "" && len(next) > 0 && next[0] != ' ' && next[0] != '\t' {
+					break
+				}
+				i++
+				block = append(block, strings.TrimSpace(next))
+			}
+			if folded {
+				val = strings.Join(block, " ")
+			} else {
+				val = strings.Join(block, "\n")
+			}
+		} else {
+			val = strings.Trim(val, `"'`)
+		}
+		out[key] = strings.TrimSpace(val)
 	}
 	return out
 }
@@ -165,16 +241,16 @@ func ReadContent(s Skill) (string, error) {
 }
 
 // FormatForPrompt renderiza el bloque XML con las skills disponibles para
-// que el modelo sepa que existen (y sepa dónde leerlas con read_files). El
-// formato sigue el estándar de Agent Skills usado por pi/Claude Code.
+// que el modelo sepa que existen sin cargar sus recursos. El acceso detallado
+// se hace con skill_search/skill_files/skill_read para mantener el contexto acotado.
 func FormatForPrompt(skills []Skill) string {
 	if len(skills) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("\n\nThe following user-defined skills provide expert instructions for specific tasks. ")
-	b.WriteString("When a task matches a skill's description, load its SKILL.md with read_files and follow it before acting. ")
-	b.WriteString("Resolve any relative paths mentioned inside a skill against the skill's own directory (dirname of its path).\n")
+	b.WriteString("When a task matches a skill, prefer the dedicated skill tools: use skill_search to find relevant instructions/assets/scripts, skill_read for bounded reads, and skill_files to inspect resources. If those tools are not active, enable them with tool_search. ")
+	b.WriteString("Avoid loading large skill resources wholesale when a targeted search/read is enough. Resolve relative paths against the skill directory.\n")
 	b.WriteString("\n<available_skills>\n")
 	for _, s := range skills {
 		fmt.Fprintf(&b, "  <skill>\n    <name>%s</name>\n    <description>%s</description>\n    <path>%s</path>\n  </skill>\n",

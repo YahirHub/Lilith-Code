@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/lilith/li/internal/skills"
 )
 
 // Env is the execution environment handed to every tool.
@@ -18,6 +20,9 @@ type Env struct {
 	Root string
 	// Materialize adds tool names to the active set (used by tool_search).
 	Materialize func(names []string)
+	// Skills is the already-discovered skill catalog for this session. Skill
+	// tools never scan arbitrary user locations on their own.
+	Skills []skills.Skill
 }
 
 // Definition describes one callable tool.
@@ -214,7 +219,7 @@ func init() {
 	register(Definition{
 		Name: "tool_search",
 		Description: "Search available tools by keyword and enable them for the next calls. " +
-			"Use this when you need to read, write or search files, run commands, or fetch a URL " +
+			"Use this when you need to read, write or search project files, inspect/search skills, run commands, or fetch a URL " +
 			"and that tool is not loaded yet.",
 		PromptSnippet: "Discover and enable additional tools on demand",
 		Parameters: map[string]any{
@@ -222,7 +227,7 @@ func init() {
 			"properties": map[string]any{
 				"query": map[string]any{
 					"type":        "string",
-					"description": "Keywords, e.g. \"write file\" or \"run command\".",
+					"description": "Keywords, e.g. \"write file\", \"search skill\" or \"run command\".",
 				},
 			},
 			"required": []string{"query"},
@@ -232,6 +237,7 @@ func init() {
 			var matches []string
 			var b strings.Builder
 			allowCreate := createSearchPattern.MatchString(query)
+			skillQuery := strings.Contains(query, "skill")
 			for _, n := range order {
 				if n == "tool_search" {
 					continue
@@ -244,6 +250,9 @@ func init() {
 				}
 				d := registry[n]
 				hay := strings.ToLower(d.Name + " " + d.Description)
+				if skillQuery && !strings.Contains(hay, "skill") {
+					continue
+				}
 				if query != "" && !containsAnyWord(hay, query) {
 					continue
 				}

@@ -2507,7 +2507,11 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 			}
 		}
 	}
-	env := tools.Env{Root: root, Materialize: materialize}
+	var skillCatalog []skills.Skill
+	if m.skillsEnabled() {
+		skillCatalog = m.loadSkills()
+	}
+	env := tools.Env{Root: root, Materialize: materialize, Skills: skillCatalog}
 	return func() tea.Msg {
 		results := make([]openai.Message, 0, len(calls))
 		compactCallIDs := make([]string, 0, 1)
@@ -2683,6 +2687,15 @@ func (m *ChatModel) switchCreateToolToEditors() {
 		next = append(next, name)
 	}
 	m.activeTools = next
+}
+
+func appendUniqueTool(names []string, name string) []string {
+	for _, current := range names {
+		if current == name {
+			return names
+		}
+	}
+	return append(names, name)
 }
 
 func (m *ChatModel) enableCreateTool() {
@@ -2861,12 +2874,11 @@ func (m *ChatModel) skillsEnabled() bool {
 	return s.SkillsEnabled
 }
 
-// loadSkills descubre las skills user + project. Barato (dos ReadDir).
+// loadSkills descubre las skills compatibles de usuario + proyecto. El loader
+// sólo inspecciona metadata SKILL.md; los recursos grandes se consultan después
+// mediante skill_search/skill_files/skill_read.
 func (m *ChatModel) loadSkills() []skills.Skill {
-	return skills.Load(skills.LoadOptions{
-		UserDir:    skills.UserDir(m.ctx.ConfigDir),
-		ProjectDir: skills.ProjectDir(m.project),
-	})
+	return skills.Load(skills.DefaultLoadOptions(m.ctx.ConfigDir, m.project))
 }
 
 // skillsBlock renderiza el bloque XML de skills disponibles cuando el toggle
@@ -2894,7 +2906,7 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 	list := m.loadSkills()
 	sk := skills.Find(list, name)
 	if sk == nil {
-		m.AddError("Skill no encontrada: " + name + ". Revisa ~/.li/skills o ./.li/skills.")
+		m.AddError("Skill no encontrada: " + name + ". Revisa las carpetas de skills de Lilith/Claude/Agent del usuario o proyecto.")
 		return nil
 	}
 	body, err := skills.ReadContent(*sk)
@@ -2928,10 +2940,20 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: "Skill cargada: " + sk.Name + " (" + sk.Source + ")", Time: time.Now()})
 	m.appendHistory(openai.Message{Role: "user", Content: payload})
 	m.activeTools = tools.Select(body + "\n" + args)
-	if len(m.activeTools) == 0 {
-		// Al menos permite leer/escribir/ejecutar cuando la skill lo pide.
-		m.activeTools = []string{"tool_search", "read_files", "create_file", "str_replace", "run_terminal_command"}
+	// Una skill explícita puede ser pequeña, pero sus references/assets/scripts
+	// pueden ser enormes. Mantén siempre disponible la navegación acotada nativa
+	// para que el modelo no tenga que leer recursos completos ni usar shell.
+	for _, name := range []string{"list_skills", "skill_search", "skill_files", "skill_read"} {
+		if _, ok := tools.Get(name); ok {
+			m.activeTools = appendUniqueTool(m.activeTools, name)
+		}
 	}
+	if len(m.activeTools) == 0 {
+		// Fallback defensivo; normalmente los cuatro tools de skill ya hacen que
+		// este bloque no sea necesario.
+		m.activeTools = []string{"tool_search", "list_skills", "skill_search", "skill_files", "skill_read"}
+	}
+	sort.Strings(m.activeTools)
 	m.toolSteps = 0
 	m.toolFallback = ""
 	if err := m.beginTurn(); err != nil {

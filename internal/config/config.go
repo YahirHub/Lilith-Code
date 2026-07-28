@@ -21,9 +21,9 @@ const (
 type Settings struct {
 	OnboardingVersion int    `json:"onboardingVersion"`
 	Theme             string `json:"theme,omitempty"`
-	// SkillsEnabled activa la carga de skills (Claude Agent Skills) desde
-	// ~/.li/skills y ./.li/skills. Off por defecto: sólo se cargan cuando
-	// el usuario lo activa desde /config.
+	// SkillsEnabled activa la carga de Agent Skills desde rutas compatibles de
+	// Lilith/Claude/Agent, tanto globales como del proyecto. Off por defecto:
+	// sólo se cargan cuando el usuario lo activa desde /config.
 	SkillsEnabled bool `json:"skillsEnabled,omitempty"`
 }
 
