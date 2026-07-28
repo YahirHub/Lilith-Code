@@ -66,12 +66,39 @@ body
 	}
 }
 
-func TestFormatForPromptPointsToBoundedSkillTools(t *testing.T) {
+func TestFormatForPromptRequiresMatchingSkillBeforeProjectWork(t *testing.T) {
 	t.Parallel()
-	block := FormatForPrompt([]Skill{{Name: "demo", Description: "Demo skill", FilePath: "/tmp/demo/SKILL.md"}})
-	for _, want := range []string{"skill_search", "skill_read", "skill_files", "Avoid loading large skill resources wholesale"} {
+	block := FormatForPrompt([]Skill{{Name: "demo", Description: "Use for demo tasks.", FilePath: "/tmp/demo/SKILL.md", BaseDir: "/tmp/demo"}})
+	for _, want := range []string{
+		"The following skills provide specialized instructions for specific tasks.",
+		"you MUST load that skill's SKILL.md with skill_read before inspecting the project",
+		"Skills are mandatory when applicable, not optional hints.",
+		"do not claim to follow a skill that you have not loaded",
+		"skill_search",
+		"skill_files",
+		"<location>/tmp/demo/SKILL.md</location>",
+	} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("prompt block missing %q:\n%s", want, block)
+		}
+	}
+	if strings.Contains(block, "<path>") {
+		t.Fatalf("prompt should use pi/Agent Skills compatible <location>, got:\n%s", block)
+	}
+}
+
+func TestFormatInvocationUsesPiStyleSkillEnvelope(t *testing.T) {
+	t.Parallel()
+	sk := Skill{Name: "demo", FilePath: "/tmp/demo/SKILL.md", BaseDir: "/tmp/demo"}
+	got := FormatInvocation(sk, "# Demo\nFollow these rules.", "Fix the dashboard.")
+	for _, want := range []string{
+		`<skill name="demo" location="/tmp/demo/SKILL.md">`,
+		"References are relative to /tmp/demo.",
+		"# Demo\nFollow these rules.",
+		"</skill>\n\nFix the dashboard.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("skill invocation missing %q:\n%s", want, got)
 		}
 	}
 }

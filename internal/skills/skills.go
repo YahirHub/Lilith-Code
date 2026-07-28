@@ -240,24 +240,44 @@ func ReadContent(s Skill) (string, error) {
 	return strings.TrimSpace(rest[end+len(fmDelim):]), nil
 }
 
-// FormatForPrompt renderiza el bloque XML con las skills disponibles para
-// que el modelo sepa que existen sin cargar sus recursos. El acceso detallado
-// se hace con skill_search/skill_files/skill_read para mantener el contexto acotado.
+// FormatForPrompt renderiza el bloque XML de Agent Skills siguiendo el patrón
+// de pi.dev: el catálogo sólo expone metadata y la SKILL.md se carga bajo demanda.
+// Lilith refuerza la instrucción para que una skill aplicable sea obligatoria,
+// no una sugerencia que el modelo pueda ignorar.
 func FormatForPrompt(skills []Skill) string {
 	if len(skills) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n\nThe following user-defined skills provide expert instructions for specific tasks. ")
-	b.WriteString("When a task matches a skill, prefer the dedicated skill tools: use skill_search to find relevant instructions/assets/scripts, skill_read for bounded reads, and skill_files to inspect resources. If those tools are not active, enable them with tool_search. ")
-	b.WriteString("Avoid loading large skill resources wholesale when a targeted search/read is enough. Resolve relative paths against the skill directory.\n")
+	b.WriteString("\n\nThe following skills provide specialized instructions for specific tasks.\n")
+	b.WriteString("Before taking any substantive action, compare the user's task with the descriptions in <available_skills>.\n")
+	b.WriteString("If the task clearly matches a skill description, you MUST load that skill's SKILL.md with skill_read before inspecting the project, editing files, running commands, or answering the task. Skills are mandatory when applicable, not optional hints. If skill_read reports that more of SKILL.md is available, continue reading it until the complete SKILL.md has been loaded before acting.\n")
+	b.WriteString("Do not rely on the description alone and do not claim to follow a skill that you have not loaded. If multiple skills clearly apply, load each one that is needed. Do not load unrelated skills.\n")
+	b.WriteString("After loading SKILL.md, follow its instructions as task-specific guidance. For large secondary references, scripts, examples, or assets, use skill_search, skill_files, and bounded skill_read calls instead of loading entire resources wholesale.\n")
+	b.WriteString("When a skill references a relative path, resolve it against the skill directory (the parent of SKILL.md).\n")
 	b.WriteString("\n<available_skills>\n")
 	for _, s := range skills {
-		fmt.Fprintf(&b, "  <skill>\n    <name>%s</name>\n    <description>%s</description>\n    <path>%s</path>\n  </skill>\n",
+		fmt.Fprintf(&b, "  <skill>\n    <name>%s</name>\n    <description>%s</description>\n    <location>%s</location>\n  </skill>\n",
 			escapeXML(s.Name), escapeXML(s.Description), escapeXML(s.FilePath))
 	}
 	b.WriteString("</available_skills>\n")
-	b.WriteString("\nExplicit invocation: the user may run `/skills:<name>` to force a skill; when this happens, follow the injected instructions immediately without asking for confirmation.\n")
+	b.WriteString("\nExplicit invocation with `/skill:<name>` or `/skills:<name>` forces that skill and must be followed immediately.\n")
+	return b.String()
+}
+
+// FormatInvocation genera la inyección de una skill explícita con el mismo
+// contrato estructural que usa pi.dev: cuerpo completo, ubicación absoluta y
+// base clara para resolver references/assets/scripts relativos.
+func FormatInvocation(s Skill, content, additionalInstructions string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "<skill name=\"%s\" location=\"%s\">\n", escapeXML(s.Name), escapeXML(s.FilePath))
+	fmt.Fprintf(&b, "References are relative to %s.\n\n", filepath.ToSlash(s.BaseDir))
+	b.WriteString(strings.TrimSpace(content))
+	b.WriteString("\n</skill>")
+	if extra := strings.TrimSpace(additionalInstructions); extra != "" {
+		b.WriteString("\n\n")
+		b.WriteString(extra)
+	}
 	return b.String()
 }
 

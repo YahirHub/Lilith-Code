@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,6 +79,55 @@ func TestToolSearchCanMaterializeSkillTools(t *testing.T) {
 	}
 	if !strings.Contains(out, "skill_search") {
 		t.Fatalf("tool_search output missing skill_search:\n%s", out)
+	}
+}
+
+func TestSkillReadLoadsLargeMainSkillByDefault(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	var body strings.Builder
+	for i := 1; i <= 180; i++ {
+		fmt.Fprintf(&body, "instruction line %03d\n", i)
+	}
+	path := filepath.Join(root, "SKILL.md")
+	if err := os.WriteFile(path, []byte(body.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sk := skills.Skill{Name: "large-skill", Description: "Large test skill.", FilePath: path, BaseDir: root, Source: "project"}
+	out, err := Execute(context.Background(), "skill_read", map[string]any{"skill": "large-skill"}, Env{Skills: []skills.Skill{sk}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "lines 1-180 of 180") || !strings.Contains(out, "instruction line 180") {
+		t.Fatalf("main SKILL.md should load completely by default when below the safety cap:\n%s", out)
+	}
+	if strings.Contains(out, "more available") {
+		t.Fatalf("unexpected pagination for 180-line SKILL.md:\n%s", out)
+	}
+}
+
+func TestWithSkillToolsKeepsSkillBootstrapSurfaceAvailable(t *testing.T) {
+	t.Parallel()
+	got := WithSkillTools([]string{"tool_search", "read_files"}, true)
+	for _, want := range []string{"tool_search", "read_files", "skill_read", "skill_search", "skill_files"} {
+		if !containsString(got, want) {
+			t.Fatalf("missing %s from skill-aware tool set: %v", want, got)
+		}
+	}
+	without := WithSkillTools([]string{"tool_search"}, false)
+	if containsString(without, "skill_read") || containsString(without, "skill_search") || containsString(without, "skill_files") {
+		t.Fatalf("skill tools should stay lazy when there are no visible skills: %v", without)
+	}
+}
+
+func TestSkillToolPromptRequiresMainSkillBeforeSecondarySearch(t *testing.T) {
+	t.Parallel()
+	lines, guidelines := PromptInfo([]string{"skill_read", "skill_search"})
+	joined := strings.Join(append(lines, guidelines...), "\n")
+	for _, want := range []string{"SKILL.md", "must be loaded", "not a substitute"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("skill prompt metadata missing %q:\n%s", want, joined)
+		}
 	}
 }
 

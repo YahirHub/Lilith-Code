@@ -211,6 +211,33 @@ func Select(prompt string) []string {
 	return out
 }
 
+// WithSkillTools keeps the small skill-navigation surface available whenever
+// model-visible skills exist. Pi can rely on its generic read tool being always
+// present; Lilith uses dedicated skill tools, so hiding them behind tool_search
+// makes automatic skill activation needlessly easy for models to skip.
+func WithSkillTools(names []string, hasSkills bool) []string {
+	if !hasSkills {
+		return names
+	}
+	active := make(map[string]bool, len(names)+3)
+	for _, name := range names {
+		if _, ok := registry[name]; ok {
+			active[name] = true
+		}
+	}
+	for _, name := range []string{"skill_read", "skill_search", "skill_files"} {
+		if _, ok := registry[name]; ok {
+			active[name] = true
+		}
+	}
+	out := make([]string, 0, len(active))
+	for name := range active {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // -----------------------------------------------------------------------------
 // tool_search: la meta-herramienta que materializa el resto bajo demanda.
 // -----------------------------------------------------------------------------

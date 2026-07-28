@@ -2354,6 +2354,9 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 	m.appendHistory(openai.Message{Role: "user", Content: val})
 	// Selección perezosa: sólo los esquemas que este turno puede necesitar.
 	m.activeTools = tools.Select(val)
+	if !tools.IsDirectChat(val) && m.skillsEnabled() {
+		m.activeTools = tools.WithSkillTools(m.activeTools, len(m.loadSkills()) > 0)
+	}
 	m.toolSteps = 0
 	m.toolFallback = ""
 	if err := m.beginTurn(); err != nil {
@@ -2914,23 +2917,7 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 		m.AddError("No se pudo leer la skill " + name + ": " + err.Error())
 		return nil
 	}
-	var b strings.Builder
-	b.WriteString("The user explicitly invoked skill `")
-	b.WriteString(sk.Name)
-	b.WriteString("` (from ")
-	b.WriteString(sk.FilePath)
-	b.WriteString("). Follow the instructions below exactly, then perform the requested task.\n\n")
-	b.WriteString("--- SKILL: ")
-	b.WriteString(sk.Name)
-	b.WriteString(" ---\n")
-	b.WriteString(body)
-	b.WriteString("\n--- END SKILL ---\n")
-	if strings.TrimSpace(args) != "" {
-		b.WriteString("\nUser arguments: ")
-		b.WriteString(args)
-		b.WriteString("\n")
-	}
-	payload := b.String()
+	payload := skills.FormatInvocation(*sk, body, args)
 
 	visible := "/skills:" + sk.Name
 	if strings.TrimSpace(args) != "" {

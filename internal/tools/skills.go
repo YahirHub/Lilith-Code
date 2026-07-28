@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,8 +59,8 @@ func init() {
 			"Search is deterministic and local; binary assets can match by path/name.",
 		PromptSnippet: "Search one skill and return the most relevant bounded snippets/resources",
 		PromptGuidelines: []string{
-			"Prefer skill_search over reading large skill files wholesale. Narrow with path, pattern, kinds or extensions when possible.",
-			"Use skill_read only for the exact result/range you need after skill_search identifies it.",
+			"A matching skill's SKILL.md must be loaded with skill_read before project work; skill_search is for its large secondary resources, not a substitute for the main instructions.",
+			"Narrow skill_search with path, pattern, kinds or extensions when possible, then use bounded skill_read for the exact result/range you need.",
 		},
 		Parameters: map[string]any{
 			"type": "object",
@@ -184,11 +185,13 @@ func init() {
 
 	register(Definition{
 		Name: "skill_read",
-		Description: "Read a bounded line range from one skill resource. Path defaults to SKILL.md. " +
-			"Use offset/limit after skill_search so large reference or source files do not flood context. Binary assets return metadata only.",
+		Description: "Load a skill's instructions or read a bounded line range from one of its resources. Path defaults to SKILL.md. " +
+			"If the current task matches an available skill description, call skill_read for that skill's SKILL.md before inspecting the project, editing files, running commands, or answering; if more SKILL.md lines are reported, keep reading until the main skill is complete. " +
+			"For large secondary references/scripts/assets, use skill_search first and then bounded offset/limit reads. Binary assets return metadata only.",
 		PromptSnippet: "Read a bounded line range from a selected skill resource",
 		PromptGuidelines: []string{
-			"Read only the range needed; use skill_search first for large references and scripts.",
+			"When an available skill clearly matches the user's task, load its complete SKILL.md first with skill_read; if the result says more lines are available, continue until the main file is complete before substantive project actions.",
+			"For secondary references and scripts, read only the range needed and use skill_search first when the resource is large.",
 		},
 		Parameters: map[string]any{
 			"type": "object",
@@ -369,7 +372,15 @@ func runSkillRead(_ context.Context, args map[string]any, env Env) (string, erro
 	if err != nil {
 		return "", err
 	}
-	res, err := skills.ReadFile(*sk, str(args, "path"), intArg(args, "offset", 1), intArg(args, "limit", 120))
+	path := str(args, "path")
+	limit := intArg(args, "limit", 120)
+	if _, explicitlyLimited := args["limit"]; !explicitlyLimited && (strings.TrimSpace(path) == "" || strings.EqualFold(filepath.ToSlash(strings.TrimSpace(path)), "SKILL.md")) {
+		// SKILL.md is the mandatory entry point. Read as much of the main
+		// instructions as the safety cap permits in one call; secondary resources
+		// keep the smaller default to preserve progressive disclosure.
+		limit = 500
+	}
+	res, err := skills.ReadFile(*sk, path, intArg(args, "offset", 1), limit)
 	if err != nil {
 		return "", err
 	}
