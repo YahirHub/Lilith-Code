@@ -65,3 +65,59 @@ func TestSlugSeparatesProjectsWithSameBaseName(t *testing.T) {
 		t.Fatal("dos rutas distintas no deben compartir historial")
 	}
 }
+
+func TestLiveCheckpointRoundTripAndRevisionGuard(t *testing.T) {
+	cfg := t.TempDir()
+	project := t.TempDir()
+	st := NewStore(cfg)
+
+	s := New(project)
+	s.Messages = []openai.Message{{Role: "user", Content: "haz una tarea"}}
+	s.Transcript = []TranscriptEntry{{Kind: "user", Content: "haz una tarea"}}
+	s.Revision = 1
+	if err := st.Save(s); err != nil {
+		t.Fatalf("save estable: %v", err)
+	}
+
+	live := &LiveCheckpoint{
+		Revision:            2,
+		BaseTranscriptCount: 1,
+		BaseHistoryCount:    1,
+		Entries: []TranscriptEntry{{
+			Kind:     "thinking",
+			Thinking: &ThinkingProgress{Content: "analizando..."},
+		}},
+		History: []openai.Message{{Role: "assistant", Content: "avance parcial"}},
+	}
+	if err := st.SaveLive(project, s.ID, live); err != nil {
+		t.Fatalf("save live: %v", err)
+	}
+
+	loaded, err := st.Load(project, s.ID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.Live == nil || loaded.Live.Revision != 2 || len(loaded.Live.Entries) != 1 {
+		t.Fatalf("checkpoint live no recuperado: %+v", loaded.Live)
+	}
+
+	// Un snapshot estable más nuevo invalida cualquier sidecar atrasado, incluso
+	// si una escritura asíncrona vieja intenta llegar después del clear.
+	s.Revision = 3
+	if err := st.Save(s); err != nil {
+		t.Fatalf("save rev3: %v", err)
+	}
+	if err := st.ClearLive(project, s.ID, 3); err != nil {
+		t.Fatalf("clear live: %v", err)
+	}
+	if err := st.SaveLive(project, s.ID, live); err != nil {
+		t.Fatalf("stale live debería ignorarse, no fallar: %v", err)
+	}
+	loaded, err = st.Load(project, s.ID)
+	if err != nil {
+		t.Fatalf("load rev3: %v", err)
+	}
+	if loaded.Live != nil {
+		t.Fatalf("un checkpoint rev2 no puede revivir sobre snapshot rev3: %+v", loaded.Live)
+	}
+}

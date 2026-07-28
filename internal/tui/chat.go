@@ -192,6 +192,18 @@ type ChatModel struct {
 	contextCacheProvider string
 	contextCacheModel    string
 	contextCacheToolSig  string
+
+	// Persistencia incremental del turno activo. El historial API se guarda
+	// completo en fronteras semánticas; entre ellas sólo escribimos un sidecar
+	// con la cola mutable del transcript para no reserializar conversaciones
+	// largas por cada token.
+	liveBaseMessageCount int
+	liveBaseHistoryCount int
+	persistRevision      uint64
+	livePersistPending   bool
+	livePersistDirty     bool
+	livePersistTimer     bool
+	lastLivePersist      time.Time
 }
 
 // chatStreamMsg is emitted by the streaming pump for each SSE chunk.
@@ -229,6 +241,16 @@ type cmdElapsedTickMsg struct{}
 // refreshTranscriptStreaming.
 type transcriptRefreshTickMsg struct{}
 
+// livePersistDoneMsg confirma la escritura asíncrona del checkpoint mutable.
+type livePersistDoneMsg struct {
+	revision uint64
+	err      error
+}
+
+// livePersistTickMsg despierta la escritura agrupada cuando llegaron muchos
+// deltas dentro de la misma ventana de persistencia.
+type livePersistTickMsg struct{}
+
 // pasteEnterDecisionMsg resuelve un Enter ambiguo que llegó sin marcador de
 // paste. Si durante la ventana no aparece más contenido, era un Enter humano y
 // se ejecuta el submit. Un seq antiguo nunca puede enviar un valor más nuevo.
@@ -241,6 +263,7 @@ type pasteFallbackIdleMsg struct{ seq uint64 }
 const (
 	transcriptRefreshInterval         = 50 * time.Millisecond
 	transcriptScrolledRefreshInterval = 250 * time.Millisecond
+	livePersistInterval               = 200 * time.Millisecond
 
 	// Sin bracketed paste no existe información suficiente para distinguir un
 	// CR pegado de la tecla Enter. En vez de adivinar mirando la tecla ANTERIOR,
@@ -422,6 +445,16 @@ func (m *ChatModel) endTurn() {
 	m.runningCalls = nil
 }
 
+func (m *ChatModel) checkpointPartialAssistantHistory() {
+	text := m.streamBuf.String()
+	reasoning := m.reasoningBuf.String()
+	if strings.TrimSpace(text) != "" {
+		m.appendHistory(openai.Message{Role: "assistant", Content: text, ReasoningContent: reasoning})
+	}
+	m.streamBuf.Reset()
+	m.reasoningBuf.Reset()
+}
+
 // cancelTurn is deliberately cheap on the Bubble Tea Update goroutine. It only
 // signals cancellation, invalidates the turn, repairs tool-call history and
 // refreshes the small mutable tail. Process-tree termination happens in the
@@ -430,6 +463,11 @@ func (m *ChatModel) cancelTurn() string {
 	if m.activeTurnID == 0 {
 		return ""
 	}
+	// Preserve any text already received from the current provider request in
+	// the protocol history before invalidating the turn. Partial tool arguments
+	// remain transcript-only because sending an unfinished call back to the API
+	// would be invalid.
+	m.checkpointPartialAssistantHistory()
 	// Invalidate FIRST. A provider chunk, tool result or canceled-request event
 	// that was already waiting in Bubble Tea must become stale before we even
 	// signal the OS. This is the hard guarantee that a process closing later can
@@ -463,6 +501,11 @@ func (m *ChatModel) cancelTurn() string {
 	m.runningCalls = nil
 	m.pendingCall = nil
 
+	for _, p := range m.livePanels {
+		if p != nil && !p.Done {
+			p.Cancel()
+		}
+	}
 	for _, cp := range m.cmdPanels {
 		if cp != nil && !cp.Done {
 			cp.Cancel()
@@ -478,25 +521,241 @@ func (m *ChatModel) cancelTurn() string {
 	}
 	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: notice + " Pulsa Ctrl+C otra vez para salir, o /exit.", Time: time.Now()})
 
+	// Ctrl+C writes only the mutable checkpoint synchronously. The completed
+	// history was already saved at semantic boundaries, so cancellation stays
+	// instant even in very long conversations while still surviving an
+	// immediate process exit.
+	m.forceLivePersist()
 	// Refresh only the mutable tail while streaming aún conserva la caché del
 	// prefijo estable; después sí cerramos el estado de streaming.
 	m.refreshTranscript(true)
 	m.streaming = false
-	m.reasoningBuf.Reset()
 	m.turnProvider = ""
 	m.turnModel = ""
 	m.quitPrimedAt = time.Now()
 	return notice
 }
 
-// persist guarda la conversación actual (silencioso: la persistencia nunca
-// debe romper el turno del usuario).
+func cloneHistoryMessages(in []openai.Message) []openai.Message {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]openai.Message, len(in))
+	copy(out, in)
+	for i := range out {
+		if len(in[i].ToolCalls) > 0 {
+			out[i].ToolCalls = append([]openai.ToolCall(nil), in[i].ToolCalls...)
+		}
+	}
+	return out
+}
+
+// persist guarda un snapshot estable completo. Además del historial API
+// protocol-correcto conserva el transcript visual, de modo que una sesión
+// cancelada puede volver a mostrar razonamiento, paneles y avisos exactamente
+// como estaban. Los checkpoints de streaming viven en un sidecar separado.
 func (m *ChatModel) persist() {
 	if m.store == nil || m.sess == nil {
 		return
 	}
-	m.sess.Messages = m.history
-	_ = m.store.Save(m.sess)
+	m.persistRevision++
+	m.sess.Messages = cloneHistoryMessages(m.history)
+	m.sess.Transcript = m.snapshotTranscriptRange(0, len(m.messages))
+	m.sess.Revision = m.persistRevision
+	if err := m.store.Save(m.sess); err != nil {
+		return
+	}
+	m.liveBaseMessageCount = len(m.messages)
+	m.liveBaseHistoryCount = len(m.history)
+	m.livePersistDirty = false
+	_ = m.store.ClearLive(m.project, m.sess.ID, m.sess.Revision)
+	// El snapshot estable ya absorbió cualquier checkpoint que pudiera venir
+	// de LoadSession. No conservar un puntero Live obsoleto en memoria.
+	m.sess.Live = nil
+}
+
+func transcriptKindName(kind MessageKind) string {
+	switch kind {
+	case MsgUser:
+		return "user"
+	case MsgAssistant:
+		return "assistant"
+	case MsgSystem:
+		return "system"
+	case MsgError:
+		return "error"
+	case MsgTool:
+		return "tool"
+	case MsgFile:
+		return "file"
+	case MsgCommand:
+		return "command"
+	case MsgThinking:
+		return "thinking"
+	default:
+		return "system"
+	}
+}
+
+func messageKindFromName(name string) MessageKind {
+	switch name {
+	case "user":
+		return MsgUser
+	case "assistant":
+		return MsgAssistant
+	case "error":
+		return MsgError
+	case "tool":
+		return MsgTool
+	case "file":
+		return MsgFile
+	case "command":
+		return MsgCommand
+	case "thinking":
+		return MsgThinking
+	default:
+		return MsgSystem
+	}
+}
+
+func (m *ChatModel) snapshotTranscriptRange(start, end int) []session.TranscriptEntry {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(m.messages) {
+		end = len(m.messages)
+	}
+	if start >= end {
+		return nil
+	}
+	out := make([]session.TranscriptEntry, 0, end-start)
+	for _, msg := range m.messages[start:end] {
+		e := session.TranscriptEntry{
+			Kind:    transcriptKindName(msg.Kind),
+			Content: msg.Content,
+			Time:    msg.Time,
+		}
+		if p := msg.Panel; p != nil {
+			fp := &session.FileProgress{
+				Tool: p.Tool, CallID: p.CallID, Index: p.Index, Path: p.Path,
+				Content: p.Content, Old: p.Old, New: p.New, Done: p.Done,
+				Failed: p.Failed, Skipped: p.Skipped, Canceled: p.Canceled,
+				Superseded: p.Superseded, Result: p.Result, Expanded: p.Expanded,
+			}
+			if len(p.Edits) > 0 {
+				fp.Edits = make([]session.TextEdit, 0, len(p.Edits))
+				for _, edit := range p.Edits {
+					fp.Edits = append(fp.Edits, session.TextEdit{Old: edit.Old, New: edit.New})
+				}
+			}
+			e.File = fp
+		}
+		if cp := msg.Command; cp != nil {
+			e.Command = &session.CommandProgress{
+				CallID: cp.CallID, Index: cp.Index, Command: cp.Command, Timeout: cp.Timeout,
+				Done: cp.Done, Failed: cp.Failed, Superseded: cp.Superseded,
+				ExitCode: cp.ExitCode, Stdout: cp.Stdout, Stderr: cp.Stderr,
+				TimedOut: cp.TimedOut, Canceled: cp.Canceled, StartedAt: cp.StartedAt,
+				Elapsed: cp.Elapsed, Expanded: cp.Expanded,
+			}
+		}
+		if tp := msg.Thinking; tp != nil {
+			e.Thinking = &session.ThinkingProgress{Content: tp.Content, Done: tp.Done, Expanded: tp.Expanded}
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// requestLivePersist coalesces token-level changes into a compact sidecar at
+// most five times per second. Disk IO runs as a Bubble Tea command, never on
+// the Update goroutine, so long chats do not become laggy again.
+func (m *ChatModel) requestLivePersist() tea.Cmd {
+	if m.store == nil || m.sess == nil || m.activeTurnID == 0 {
+		return nil
+	}
+	if m.livePersistPending {
+		m.livePersistDirty = true
+		return nil
+	}
+	if !m.lastLivePersist.IsZero() {
+		elapsed := time.Since(m.lastLivePersist)
+		if elapsed < livePersistInterval {
+			m.livePersistDirty = true
+			if m.livePersistTimer {
+				return nil
+			}
+			m.livePersistTimer = true
+			wait := livePersistInterval - elapsed
+			return tea.Tick(wait, func(time.Time) tea.Msg { return livePersistTickMsg{} })
+		}
+	}
+	return m.startLivePersist()
+}
+
+func (m *ChatModel) startLivePersist() tea.Cmd {
+	if m.store == nil || m.sess == nil {
+		m.livePersistDirty = false
+		return nil
+	}
+	entries := m.snapshotTranscriptRange(m.liveBaseMessageCount, len(m.messages))
+	historyStart := m.liveBaseHistoryCount
+	if historyStart < 0 {
+		historyStart = 0
+	}
+	if historyStart > len(m.history) {
+		historyStart = len(m.history)
+	}
+	if len(entries) == 0 && historyStart == len(m.history) {
+		m.livePersistDirty = false
+		return nil
+	}
+	m.persistRevision++
+	revision := m.persistRevision
+	checkpoint := &session.LiveCheckpoint{
+		Revision: revision, BaseTranscriptCount: m.liveBaseMessageCount,
+		BaseHistoryCount: historyStart, UpdatedAt: time.Now(), Entries: entries,
+		History: cloneHistoryMessages(m.history[historyStart:]),
+	}
+	store := m.store
+	project := m.project
+	sessionID := m.sess.ID
+	m.livePersistPending = true
+	m.livePersistDirty = false
+	m.livePersistTimer = false
+	m.lastLivePersist = time.Now()
+	return func() tea.Msg {
+		err := store.SaveLive(project, sessionID, checkpoint)
+		return livePersistDoneMsg{revision: revision, err: err}
+	}
+}
+
+// forceLivePersist writes the small mutable checkpoint synchronously. It is
+// used by Ctrl+C because the user may exit immediately afterwards. Unlike a
+// full session save it never rewrites the completed chat history.
+func (m *ChatModel) forceLivePersist() {
+	if m.store == nil || m.sess == nil {
+		return
+	}
+	entries := m.snapshotTranscriptRange(m.liveBaseMessageCount, len(m.messages))
+	historyStart := m.liveBaseHistoryCount
+	if historyStart < 0 {
+		historyStart = 0
+	}
+	if historyStart > len(m.history) {
+		historyStart = len(m.history)
+	}
+	if len(entries) == 0 && historyStart == len(m.history) {
+		return
+	}
+	m.persistRevision++
+	checkpoint := &session.LiveCheckpoint{
+		Revision: m.persistRevision, BaseTranscriptCount: m.liveBaseMessageCount,
+		BaseHistoryCount: historyStart, UpdatedAt: time.Now(), Entries: entries,
+		History: cloneHistoryMessages(m.history[historyStart:]),
+	}
+	_ = m.store.SaveLive(m.project, m.sess.ID, checkpoint)
+	m.lastLivePersist = time.Now()
 }
 
 func (m *ChatModel) invalidateContextUsage() {
@@ -509,6 +768,105 @@ func (m *ChatModel) appendHistory(msgs ...openai.Message) {
 	}
 	m.history = append(m.history, msgs...)
 	m.invalidateContextUsage()
+}
+
+func (m *ChatModel) restoreTranscriptEntries(entries []session.TranscriptEntry, interrupted bool) {
+	for _, e := range entries {
+		msg := ChatMessage{Kind: messageKindFromName(e.Kind), Content: e.Content, Time: e.Time}
+		if e.File != nil {
+			fp := e.File
+			p := &FilePanel{
+				Tool: fp.Tool, CallID: fp.CallID, Index: fp.Index, Path: fp.Path,
+				Content: fp.Content, Old: fp.Old, New: fp.New, Done: fp.Done,
+				Failed: fp.Failed, Skipped: fp.Skipped, Canceled: fp.Canceled,
+				Superseded: fp.Superseded, Result: fp.Result, Expanded: fp.Expanded,
+			}
+			for _, edit := range fp.Edits {
+				p.Edits = append(p.Edits, filePanelEdit{Old: edit.Old, New: edit.New})
+			}
+			if interrupted && !p.Done {
+				p.Cancel()
+				p.Result = "interrumpido antes de completar la herramienta"
+			}
+			msg.Kind = MsgFile
+			msg.Panel = p
+			m.livePanels[p.Index] = p
+			if p.CallID != "" {
+				m.panelByCall[p.CallID] = p
+			}
+		}
+		if e.Command != nil {
+			cp := e.Command
+			p := &CommandPanel{
+				CallID: cp.CallID, Index: cp.Index, Command: cp.Command, Timeout: cp.Timeout,
+				Done: cp.Done, Failed: cp.Failed, Superseded: cp.Superseded,
+				ExitCode: cp.ExitCode, Stdout: cp.Stdout, Stderr: cp.Stderr,
+				TimedOut: cp.TimedOut, Canceled: cp.Canceled, StartedAt: cp.StartedAt,
+				Elapsed: cp.Elapsed, Expanded: cp.Expanded,
+			}
+			if interrupted && !p.Done {
+				p.Cancel()
+			}
+			msg.Kind = MsgCommand
+			msg.Command = p
+			m.cmdPanels[p.Index] = p
+			if p.CallID != "" {
+				m.cmdByCall[p.CallID] = p
+			}
+		}
+		if e.Thinking != nil {
+			tp := e.Thinking
+			p := &ThinkingPanel{Content: tp.Content, Done: tp.Done, Expanded: tp.Expanded}
+			if interrupted {
+				p.Done = true
+			}
+			msg.Kind = MsgThinking
+			msg.Thinking = p
+		}
+		m.messages = append(m.messages, msg)
+	}
+}
+
+func (m *ChatModel) recoverLiveAssistantHistory(entries []session.TranscriptEntry) {
+	var reasoning string
+	for _, e := range entries {
+		if e.Thinking != nil && strings.TrimSpace(e.Thinking.Content) != "" {
+			reasoning = e.Thinking.Content
+			continue
+		}
+		if e.Kind != "assistant" || strings.TrimSpace(e.Content) == "" {
+			continue
+		}
+		m.appendHistory(openai.Message{Role: "assistant", Content: e.Content, ReasoningContent: reasoning})
+		reasoning = ""
+	}
+}
+
+func (m *ChatModel) repairDanglingToolHistory() bool {
+	outputs := make(map[string]bool)
+	for _, msg := range m.history {
+		if msg.Role == "tool" && msg.ToolCallID != "" {
+			outputs[msg.ToolCallID] = true
+		}
+	}
+	var missing []openai.Message
+	for _, msg := range m.history {
+		if msg.Role != "assistant" {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			if call.ID == "" || outputs[call.ID] {
+				continue
+			}
+			missing = append(missing, toolMessage(call, "cancelado: la sesión anterior terminó antes de completar la herramienta."))
+			outputs[call.ID] = true
+		}
+	}
+	if len(missing) == 0 {
+		return false
+	}
+	m.appendHistory(missing...)
+	return true
 }
 
 // LoadSession reemplaza la conversación activa por una guardada y reconstruye
@@ -528,6 +886,51 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 	m.panelByCall = map[string]*FilePanel{}
 	m.cmdPanels = map[int]*CommandPanel{}
 	m.cmdByCall = map[string]*CommandPanel{}
+	m.persistRevision = s.Revision
+
+	// Sesiones nuevas guardan un transcript independiente del historial API.
+	// Así podemos restaurar razonamiento y paneles parciales sin convertir una
+	// tool call incompleta en un mensaje inválido para el proveedor.
+	if len(s.Transcript) > 0 {
+		m.restoreTranscriptEntries(s.Transcript, true)
+		recoveredLive := false
+		if s.Live != nil && s.Live.Revision > s.Revision {
+			m.restoreTranscriptEntries(s.Live.Entries, true)
+			appendedLiveHistory := false
+			base := s.Live.BaseHistoryCount
+			if base >= 0 && base <= len(m.history) {
+				skip := len(m.history) - base
+				if skip < len(s.Live.History) {
+					m.appendHistory(s.Live.History[skip:]...)
+					appendedLiveHistory = true
+				}
+			}
+			// A hard process crash can happen before a partial assistant delta was
+			// promoted into protocol history. Recover plain assistant text safely;
+			// unfinished tool calls remain transcript-only.
+			if !appendedLiveHistory {
+				m.recoverLiveAssistantHistory(s.Live.Entries)
+			}
+			m.persistRevision = s.Live.Revision
+			recoveredLive = true
+		}
+		repaired := m.repairDanglingToolHistory()
+		if recoveredLive || repaired {
+			// Promote the recovered checkpoint to a stable snapshot immediately;
+			// the stale sidecar is removed and future requests see repaired tool
+			// outputs rather than an incomplete protocol sequence.
+			m.persist()
+		} else {
+			m.liveBaseMessageCount = len(m.messages)
+			m.liveBaseHistoryCount = len(m.history)
+		}
+		if panels := m.panels(); len(panels) > 0 {
+			m.panelSel = len(panels) - 1
+		}
+		m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: "Sesión reanudada: " + s.Title, Time: time.Now()})
+		m.refreshTranscript(true)
+		return
+	}
 	// Índices temporales por CallID para poder emparejar el resultado (rol
 	// "tool") con el panel que lo generó al recorrer el historial.
 	panelByID := map[string]*FilePanel{}
@@ -605,6 +1008,12 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 	if panels := m.panels(); len(panels) > 0 {
 		m.panelSel = len(panels) - 1
 	}
+	if m.repairDanglingToolHistory() {
+		m.persist()
+	} else {
+		m.liveBaseMessageCount = len(m.messages)
+		m.liveBaseHistoryCount = len(m.history)
+	}
 	// Añadimos el aviso antes de un único refresh: AddSystem refrescaría por sí
 	// solo y en una sesión larga eso duplicaría el render completo al reanudar.
 	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: "Sesión reanudada: " + s.Title, Time: time.Now()})
@@ -664,6 +1073,13 @@ func (m *ChatModel) Clear() {
 	m.assistantActive = -1
 	m.reasoningBuf.Reset()
 	m.sess = session.New(m.project)
+	m.liveBaseMessageCount = 0
+	m.liveBaseHistoryCount = 0
+	m.persistRevision = 0
+	m.livePersistPending = false
+	m.livePersistDirty = false
+	m.livePersistTimer = false
+	m.lastLivePersist = time.Time{}
 	m.refreshTranscript(false)
 }
 
@@ -1303,6 +1719,23 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTranscript(autoBottom)
 		return m, nil
 
+	case livePersistDoneMsg:
+		_ = v.err // el guardado en segundo plano nunca debe romper el turno
+		m.livePersistPending = false
+		// Los errores de persistencia de fondo no deben romper la conversación;
+		// la siguiente frontera estable volverá a intentar el guardado completo.
+		if m.livePersistDirty && m.activeTurnID != 0 {
+			return m, m.requestLivePersist()
+		}
+		return m, nil
+
+	case livePersistTickMsg:
+		m.livePersistTimer = false
+		if !m.livePersistDirty || m.activeTurnID == 0 {
+			return m, nil
+		}
+		return m, m.requestLivePersist()
+
 	case pasteEnterDecisionMsg:
 		if v.seq != m.pendingEnterSeq || !m.pendingEnter {
 			return m, nil
@@ -1352,17 +1785,29 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if v.err != nil {
+			m.checkpointPartialAssistantHistory()
 			m.finishThinkingPanel()
+			for _, p := range m.livePanels {
+				if p != nil && !p.Done {
+					p.Cancel()
+				}
+			}
+			for _, cp := range m.cmdPanels {
+				if cp != nil && !cp.Done {
+					cp.Cancel()
+				}
+			}
 			m.streaming = false
 			m.thinking = false
 			m.working = false
 			m.assistantActive = -1
-			m.reasoningBuf.Reset()
 			m.endTurn()
 			m.AddError("Error del proveedor: " + v.err.Error())
+			m.persist()
 			return m, nil
 		}
 		var refreshCmd tea.Cmd
+		liveDirty := false
 		if len(v.superseded) > 0 {
 			for _, idx := range v.superseded {
 				if p := m.livePanels[idx]; p != nil && !p.Failed {
@@ -1370,6 +1815,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			refreshCmd = m.refreshTranscriptStreaming(true)
+			liveDirty = true
 		}
 		if v.thinking != "" {
 			m.reasoningBuf.WriteString(v.thinking)
@@ -1397,16 +1843,19 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cmd := m.refreshTranscriptStreaming(true); cmd != nil {
 				refreshCmd = cmd
 			}
+			liveDirty = true
 		}
 		if v.thinkingDone && m.thinkingActive != nil {
 			m.finishThinkingPanel()
 			if cmd := m.refreshTranscriptStreaming(true); cmd != nil {
 				refreshCmd = cmd
 			}
+			liveDirty = true
 		}
 		if len(v.toolCalls) > 0 {
 			m.finishThinkingPanel()
 			m.applyToolCalls(v.toolCalls)
+			liveDirty = true
 			// Creation/write-like calls are preflighted as soon as a partial tool call exposes
 			// their path. Existing create_file targets and hallucinated write/write_file calls cancel
 			// only this provider request (not the whole turn), synthesize a compact
@@ -1431,10 +1880,11 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if cmd := m.refreshTranscriptStreaming(true); cmd != nil {
 					refreshCmd = cmd
 				}
+				liveCmd := m.requestLivePersist()
 				if v.ch != nil {
-					return m, tea.Batch(refreshCmd, streamPump(v.ch, v.turnID, v.requestID))
+					return m, tea.Batch(refreshCmd, liveCmd, streamPump(v.ch, v.turnID, v.requestID))
 				}
-				return m, refreshCmd
+				return m, tea.Batch(refreshCmd, liveCmd)
 			}
 			m.pendingCall = append(m.pendingCall, v.toolCalls...)
 		}
@@ -1483,6 +1933,10 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.assistantActive = -1
 				m.runningCalls = append(m.runningCalls[:0], calls...)
 				m.refreshTranscript(true)
+				// The assistant tool_call is now protocol-complete. Checkpoint only
+				// the current turn before launching the external tool; rewriting the
+				// entire historical session here would reintroduce long-chat lag.
+				m.forceLivePersist()
 				batch := []tea.Cmd{m.runTools(calls), thinkingTick(m.thinkingFrame)}
 
 				if tick := m.maybeStartElapsedTick(); tick != nil {
@@ -1528,11 +1982,16 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cmd := m.refreshTranscriptStreaming(true); cmd != nil {
 				refreshCmd = cmd
 			}
+			liveDirty = true
+		}
+		var liveCmd tea.Cmd
+		if liveDirty {
+			liveCmd = m.requestLivePersist()
 		}
 		if v.ch != nil {
-			return m, tea.Batch(refreshCmd, streamPump(v.ch, v.turnID, v.requestID))
+			return m, tea.Batch(refreshCmd, liveCmd, streamPump(v.ch, v.turnID, v.requestID))
 		}
-		return m, refreshCmd
+		return m, tea.Batch(refreshCmd, liveCmd)
 
 	case toolResultsMsg:
 		if v.turnID == 0 || v.turnID != m.activeTurnID || m.turnCtx == nil || m.turnCtx.Err() != nil {
@@ -1549,6 +2008,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.runningCalls = nil
 			m.endTurn()
 			m.AddError(v.err.Error())
+			m.persist()
 			return m, nil
 		}
 		m.runningCalls = nil
@@ -1585,6 +2045,10 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		m.refreshTranscript(true)
+		// Tool outputs are a stable API boundary. Checkpoint the current-turn
+		// tail before asking the model to continue so a crash cannot roll back
+		// progress, without reserializing the entire conversation.
+		m.forceLivePersist()
 		return m, m.runTurn()
 
 	case bashResultMsg:
@@ -2192,6 +2656,7 @@ func (m *ChatModel) interceptExistingCreateCall(call openai.ToolCall) (tea.Cmd, 
 	m.thinking = false
 	m.working = true
 	m.refreshTranscript(true)
+	m.forceLivePersist()
 	return m.runTurn(), true
 }
 

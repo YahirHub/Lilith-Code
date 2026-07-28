@@ -27,6 +27,7 @@ type FilePanel struct {
 	Done     bool
 	Failed   bool
 	Skipped  bool
+	Canceled bool
 	// Superseded marca un panel que el backend abandonó a mitad del stream
 	// (Codex reintentó la tool call en otro output_index sin cerrar la
 	// anterior). Se dibuja colapsado y con la nota "reintentado" en vez
@@ -152,6 +153,8 @@ func (p *FilePanel) title() string {
 		switch {
 		case p.Failed:
 			return prefix + "   [failed]"
+		case p.Canceled:
+			return prefix + "   [canceled]"
 		case p.Skipped:
 			return prefix + "   [skipped]"
 		case p.Superseded:
@@ -170,6 +173,18 @@ func (p *FilePanel) MarkSuperseded() {
 	p.Expanded = false
 	if p.Result == "" {
 		p.Result = "retried by the model"
+	}
+}
+
+// Cancel closes an in-flight file panel without pretending the edit finished.
+// The partially streamed diff/content remains visible after Ctrl+C or resume.
+func (p *FilePanel) Cancel() {
+	p.Done = true
+	p.Canceled = true
+	p.Failed = false
+	p.Expanded = false
+	if p.Result == "" {
+		p.Result = "cancelado por el usuario"
 	}
 }
 
@@ -230,6 +245,8 @@ func (p *FilePanel) View(s Styles, width int, selected bool) string {
 		style := s.Muted
 		if p.Failed {
 			style = s.Danger
+		} else if p.Canceled {
+			style = s.Muted
 		} else if p.Skipped {
 			style = s.Warning
 		}

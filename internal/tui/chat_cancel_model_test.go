@@ -147,3 +147,63 @@ func TestStaleRequestFromSameTurnCannotKillReplacementRequest(t *testing.T) {
 	}
 	m.endTurn()
 }
+
+func TestCancelTurnPersistsPartialProgressAndResumeRestoresIt(t *testing.T) {
+	m := newInputTestChat(t)
+	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: "implementa la tarea", Time: time.Now()})
+	m.appendHistory(openai.Message{Role: "user", Content: "implementa la tarea"})
+	if err := m.beginTurn(); err != nil {
+		t.Fatalf("beginTurn: %v", err)
+	}
+	// The user request is the stable base. Everything after this point should be
+	// recoverable from the lightweight live checkpoint.
+	m.persist()
+	m.requestSeq++
+	m.activeRequestID = m.requestSeq
+
+	_, _ = m.Update(activeStreamMsg(m, chatStreamMsg{thinking: "Estoy revisando la estructura..."}))
+	_, _ = m.Update(activeStreamMsg(m, chatStreamMsg{delta: "Ya encontré el archivo que hay que modificar."}))
+
+	m.cancelTurn()
+	loaded, err := m.store.Load(m.project, m.sess.ID)
+	if err != nil {
+		t.Fatalf("load después de Ctrl+C: %v", err)
+	}
+	if loaded.Live == nil {
+		t.Fatal("Ctrl+C debe dejar un checkpoint live más nuevo que el snapshot estable")
+	}
+	var sawThinking, sawAssistant, sawCancel bool
+	for _, entry := range loaded.Live.Entries {
+		if entry.Thinking != nil && strings.Contains(entry.Thinking.Content, "revisando") {
+			sawThinking = true
+		}
+		if entry.Kind == "assistant" && strings.Contains(entry.Content, "encontré el archivo") {
+			sawAssistant = true
+		}
+		if entry.Kind == "system" && strings.Contains(entry.Content, "Tarea cancelada") {
+			sawCancel = true
+		}
+	}
+	if !sawThinking || !sawAssistant || !sawCancel {
+		t.Fatalf("checkpoint incompleto: thinking=%v assistant=%v cancel=%v entries=%+v", sawThinking, sawAssistant, sawCancel, loaded.Live.Entries)
+	}
+
+	m2 := NewChat(m.ctx)
+	m2.Resize(100, 30)
+	m2.LoadSession(loaded)
+	var restoredThinking, restoredAssistant bool
+	for _, msg := range m2.messages {
+		if msg.Thinking != nil && strings.Contains(msg.Thinking.Content, "revisando") {
+			restoredThinking = true
+		}
+		if msg.Kind == MsgAssistant && strings.Contains(msg.Content, "encontré el archivo") {
+			restoredAssistant = true
+		}
+	}
+	if !restoredThinking || !restoredAssistant {
+		t.Fatalf("resume perdió progreso: thinking=%v assistant=%v", restoredThinking, restoredAssistant)
+	}
+	if len(m2.history) < 2 || m2.history[0].Role != "user" || m2.history[1].Role != "assistant" {
+		t.Fatalf("el progreso seguro también debe recuperarse para la siguiente petición: %#v", m2.history)
+	}
+}

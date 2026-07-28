@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lilith/li/internal/providers/openai"
@@ -25,14 +26,91 @@ const (
 	maxTitle = 72
 )
 
+// TranscriptEntry is a UI-safe snapshot of one rendered chat entry. It is
+// deliberately separate from Messages: Messages must remain protocol-correct
+// for the provider, while Transcript may contain partial reasoning, in-flight
+// tool panels and other progress that is valuable to restore after an
+// interruption.
+type TranscriptEntry struct {
+	Kind     string            `json:"kind"`
+	Content  string            `json:"content,omitempty"`
+	Time     time.Time         `json:"time,omitempty"`
+	File     *FileProgress     `json:"file,omitempty"`
+	Command  *CommandProgress  `json:"command,omitempty"`
+	Thinking *ThinkingProgress `json:"thinking,omitempty"`
+}
+
+type TextEdit struct {
+	Old string `json:"old"`
+	New string `json:"new"`
+}
+
+type FileProgress struct {
+	Tool       string     `json:"tool,omitempty"`
+	CallID     string     `json:"callId,omitempty"`
+	Index      int        `json:"index,omitempty"`
+	Path       string     `json:"path,omitempty"`
+	Content    string     `json:"content,omitempty"`
+	Old        string     `json:"old,omitempty"`
+	New        string     `json:"new,omitempty"`
+	Edits      []TextEdit `json:"edits,omitempty"`
+	Done       bool       `json:"done,omitempty"`
+	Failed     bool       `json:"failed,omitempty"`
+	Skipped    bool       `json:"skipped,omitempty"`
+	Canceled   bool       `json:"canceled,omitempty"`
+	Superseded bool       `json:"superseded,omitempty"`
+	Result     string     `json:"result,omitempty"`
+	Expanded   bool       `json:"expanded,omitempty"`
+}
+
+type CommandProgress struct {
+	CallID     string        `json:"callId,omitempty"`
+	Index      int           `json:"index,omitempty"`
+	Command    string        `json:"command,omitempty"`
+	Timeout    int           `json:"timeout,omitempty"`
+	Done       bool          `json:"done,omitempty"`
+	Failed     bool          `json:"failed,omitempty"`
+	Superseded bool          `json:"superseded,omitempty"`
+	ExitCode   int           `json:"exitCode,omitempty"`
+	Stdout     string        `json:"stdout,omitempty"`
+	Stderr     string        `json:"stderr,omitempty"`
+	TimedOut   bool          `json:"timedOut,omitempty"`
+	Canceled   bool          `json:"canceled,omitempty"`
+	StartedAt  time.Time     `json:"startedAt,omitempty"`
+	Elapsed    time.Duration `json:"elapsed,omitempty"`
+	Expanded   bool          `json:"expanded,omitempty"`
+}
+
+type ThinkingProgress struct {
+	Content  string `json:"content,omitempty"`
+	Done     bool   `json:"done,omitempty"`
+	Expanded bool   `json:"expanded,omitempty"`
+}
+
+// LiveCheckpoint is written to a tiny sidecar while a turn is still mutable.
+// It contains only entries added after the last stable session snapshot, so
+// streaming persistence does not rewrite the entire historical conversation
+// on every token.
+type LiveCheckpoint struct {
+	Revision            uint64            `json:"revision"`
+	BaseTranscriptCount int               `json:"baseTranscriptCount"`
+	BaseHistoryCount    int               `json:"baseHistoryCount"`
+	UpdatedAt           time.Time         `json:"updatedAt"`
+	Entries             []TranscriptEntry `json:"entries,omitempty"`
+	History             []openai.Message  `json:"history,omitempty"`
+}
+
 // Session is one persisted conversation.
 type Session struct {
-	ID          string           `json:"id"`
-	Title       string           `json:"title"`
-	ProjectPath string           `json:"projectPath"`
-	CreatedAt   time.Time        `json:"createdAt"`
-	UpdatedAt   time.Time        `json:"updatedAt"`
-	Messages    []openai.Message `json:"messages"`
+	ID          string            `json:"id"`
+	Title       string            `json:"title"`
+	ProjectPath string            `json:"projectPath"`
+	CreatedAt   time.Time         `json:"createdAt"`
+	UpdatedAt   time.Time         `json:"updatedAt"`
+	Messages    []openai.Message  `json:"messages"`
+	Transcript  []TranscriptEntry `json:"transcript,omitempty"`
+	Revision    uint64            `json:"revision,omitempty"`
+	Live        *LiveCheckpoint   `json:"-"`
 }
 
 // Meta is the lightweight row shown in `/history`.
@@ -44,11 +122,15 @@ type Meta struct {
 }
 
 // Store owns the on-disk layout: <configDir>/projects/<slug>/chats/<id>.json
-type Store struct{ root string }
+type Store struct {
+	root         string
+	mu           sync.Mutex
+	liveRevision map[string]uint64
+}
 
 // NewStore builds a store rooted at the Lilith config directory.
 func NewStore(configDir string) *Store {
-	return &Store{root: filepath.Join(configDir, "projects")}
+	return &Store{root: filepath.Join(configDir, "projects"), liveRevision: map[string]uint64{}}
 }
 
 // slug derives a stable, collision-free directory name for a project path:
@@ -147,6 +229,82 @@ func (s *Store) Save(c *Session) error {
 	return os.Rename(tmp, final)
 }
 
+// SaveLive writes only the mutable tail of an active turn. Keeping this in a
+// sidecar avoids serializing a potentially huge completed chat every few
+// hundred milliseconds while the provider is streaming tokens.
+func (s *Store) SaveLive(projectPath, id string, live *LiveCheckpoint) error {
+	if live == nil || strings.TrimSpace(id) == "" {
+		return nil
+	}
+	dir, err := s.ChatsDir(projectPath)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(live)
+	if err != nil {
+		return err
+	}
+	final := filepath.Join(dir, id+".live")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if floor := s.liveRevision[final]; live.Revision <= floor {
+		return nil
+	}
+	// Revision-specific temp names allow an in-flight older write and a forced
+	// Ctrl+C checkpoint to coexist without sharing the same temporary file.
+	tmp := fmt.Sprintf("%s.%d.tmp", final, live.Revision)
+	if err := os.WriteFile(tmp, data, fileMode); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	s.liveRevision[final] = live.Revision
+	return nil
+}
+
+// ClearLive removes the mutable checkpoint after a stable snapshot has been
+// committed. A missing sidecar is already the desired state.
+func (s *Store) ClearLive(projectPath, id string, revision uint64) error {
+	if strings.TrimSpace(id) == "" {
+		return nil
+	}
+	dir, err := s.ChatsDir(projectPath)
+	if err != nil {
+		return err
+	}
+	final := filepath.Join(dir, id+".live")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if revision > s.liveRevision[final] {
+		s.liveRevision[final] = revision
+	}
+	err = os.Remove(final)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+func (s *Store) loadLive(projectPath, id string) (*LiveCheckpoint, error) {
+	dir, err := s.ChatsDir(projectPath)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(dir, id+".live"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var live LiveCheckpoint
+	if err := json.Unmarshal(data, &live); err != nil {
+		return nil, err
+	}
+	return &live, nil
+}
+
 // Load reads one session by ID.
 func (s *Store) Load(projectPath, id string) (*Session, error) {
 	dir, err := s.ChatsDir(projectPath)
@@ -163,6 +321,12 @@ func (s *Store) Load(projectPath, id string) (*Session, error) {
 	}
 	if c.ProjectPath == "" {
 		c.ProjectPath = filepath.Clean(projectPath)
+	}
+	// A live sidecar is valid only when it is newer than the last stable
+	// snapshot. This revision check also makes a late asynchronous write from an
+	// older checkpoint harmless after Save + ClearLive.
+	if live, liveErr := s.loadLive(projectPath, id); liveErr == nil && live != nil && live.Revision > c.Revision {
+		c.Live = live
 	}
 	return &c, nil
 }
@@ -193,7 +357,11 @@ func (s *Store) List(projectPath string) ([]Meta, error) {
 				turns++
 			}
 		}
-		out = append(out, Meta{ID: c.ID, Title: c.Title, UpdatedAt: c.UpdatedAt, Turns: turns})
+		updatedAt := c.UpdatedAt
+		if c.Live != nil && c.Live.UpdatedAt.After(updatedAt) {
+			updatedAt = c.Live.UpdatedAt
+		}
+		out = append(out, Meta{ID: c.ID, Title: c.Title, UpdatedAt: updatedAt, Turns: turns})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
 	return out, nil
@@ -220,5 +388,9 @@ func (s *Store) Delete(projectPath, id string) error {
 	if err != nil {
 		return err
 	}
-	return os.Remove(filepath.Join(dir, id+".json"))
+	if err := os.Remove(filepath.Join(dir, id+".json")); err != nil {
+		return err
+	}
+	_ = os.Remove(filepath.Join(dir, id+".live"))
+	return nil
 }

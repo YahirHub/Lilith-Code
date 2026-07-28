@@ -1,7 +1,7 @@
 # Tarea 09 — Pegado multilínea atómico en terminales degradadas
 
 ## Estado
-en-proceso
+pendiente
 
 ## Objetivo
 Evitar que un texto pegado con saltos de línea se fragmente en múltiples solicitudes o mensajes de cola cuando el host/terminal no conserva el marcador de bracketed paste de Bubble Tea.
