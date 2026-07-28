@@ -32,3 +32,8 @@ Corregir las dos regresiones confirmadas en Windows:
 - Cross-compile de tests de `internal/shell` para `windows/amd64` correcto.
 - `go/parser` valida sintaxis del árbol Go completo.
 - Suite TUI completa pendiente en el equipo del usuario porque el sandbox no puede descargar Go 1.24 ni las dependencias Charm.
+
+## Corrección de compilación posterior
+- Se corrigió la firma de `scanJSONString` de `(string, found, complete bool)` a `(string, bool, bool)`.
+- La firma anterior era sintácticamente válida pero Go interpretaba los tres resultados como `bool`, causando los errores de tipo reportados por `go run`.
+- Validación completa de `internal/tui` sigue pendiente en Windows/Go 1.24+ por falta de dependencias Charm en el sandbox.

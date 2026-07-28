@@ -380,7 +380,7 @@ func completeJSONString(raw, key string) (string, bool) {
 	return value, found && complete
 }
 
-func scanJSONString(raw, key string) (string, found, complete bool) {
+func scanJSONString(raw, key string) (string, bool, bool) {
 	needle := `"` + key + `"`
 	idx := strings.Index(raw, needle)
 	if idx < 0 {
