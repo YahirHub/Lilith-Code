@@ -33,7 +33,7 @@ type Definition struct {
 	// pattern and keeps lazy tool selection useful for prompt tokens too.
 	PromptGuidelines []string
 	// Parameters is a JSON Schema object.
-	Parameters map[string]any
+	Parameters any
 	// Mutating marks tools that write files or run commands.
 	Mutating bool
 	Run      func(ctx context.Context, args map[string]any, env Env) (string, error)
@@ -86,9 +86,9 @@ func PromptInfo(names []string) (toolLines []string, guidelines []string) {
 type Schema struct {
 	Type     string `json:"type"`
 	Function struct {
-		Name        string         `json:"name"`
-		Description string         `json:"description"`
-		Parameters  map[string]any `json:"parameters"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Parameters  any    `json:"parameters"`
 	} `json:"function"`
 }
 
@@ -112,12 +112,19 @@ func Schemas(names []string) []Schema {
 
 // Execute runs a tool by name with decoded arguments.
 func Execute(ctx context.Context, name string, args map[string]any, env Env) (string, error) {
+	if args == nil {
+		args = map[string]any{}
+	}
+	// Compatibility guard, intentionally NOT registered as a schema. Models
+	// trained on other coding agents occasionally hallucinate write/write_file.
+	// Treat those calls as a policy interception: never write, return the exact
+	// tool the model should use next, and keep the current turn recoverable.
+	if name == "write" || name == "write_file" {
+		return InterceptLegacyWrite(env.Root, name, str(args, "path"))
+	}
 	d, ok := registry[name]
 	if !ok {
 		return "", fmt.Errorf("unknown tool: %s", name)
-	}
-	if args == nil {
-		args = map[string]any{}
 	}
 	return d.Run(ctx, args, env)
 }
@@ -138,6 +145,7 @@ var (
 	createFilePattern   = regexp.MustCompile(`(?i)\b(crea|crear|create|genera|generar|generate)\b\s+(?:(un|una|a|the)\s+)?(?:(nuevo|nueva|new)\s+)?(archivo|file|fichero)\b`)
 	newFilePattern      = regexp.MustCompile(`(?i)(\b(nuevo|nueva|new)\s+(archivo|file|fichero)\b|\b(agrega|añade|add)\b.{0,24}\b(archivo|file|fichero)\b)`)
 	writePattern        = regexp.MustCompile(`(?i)\b(escribe|write|implementa|implement|agrega|añade|add|modifica|modify|edita|edit|corrige|fix|refactoriza|refactor|renombra|rename|elimina|borra|delete|remove|guarda|save|haz|hazme|dame)\b`)
+	createSearchPattern = regexp.MustCompile(`(?i)\b(create|new|crear|nuevo|nueva|generar|genera|add new|agrega nuevo|añade nuevo)\b`)
 	searchPattern       = regexp.MustCompile(`(?i)\b(busca|search|encuentra|find|grep|d(o|ó)nde|where|localiza|usages|referencias)\b`)
 	shellPattern        = regexp.MustCompile(`(?i)\b(ejecuta|execute|run|comando|command|terminal|bash|shell|compila|compile|build|test|prueba|git|npm|go run|instala|install)\b`)
 	urlPattern          = regexp.MustCompile(`(?i)(https?://|\b(url|web|p(a|á)gina|docs? online|documentaci(o|ó)n online)\b)`)
@@ -223,8 +231,15 @@ func init() {
 			query := strings.ToLower(str(args, "query"))
 			var matches []string
 			var b strings.Builder
+			allowCreate := createSearchPattern.MatchString(query)
 			for _, n := range order {
 				if n == "tool_search" {
+					continue
+				}
+				// Generic queries such as "write file" or "edit css" must not
+				// materialize create_file. Models strongly associate full-file write
+				// tools with overwriting; require explicit creation intent instead.
+				if n == "create_file" && !allowCreate {
 					continue
 				}
 				d := registry[n]
@@ -236,9 +251,10 @@ func init() {
 				fmt.Fprintf(&b, "- %s: %s\n", d.Name, d.Description)
 			}
 			if len(matches) == 0 {
-				// Sin coincidencias devolvemos el catálogo completo (es corto).
+				// Sin coincidencias devolvemos el catálogo seguro. create_file sólo se
+				// materializa cuando la propia búsqueda expresa intención de crear.
 				for _, n := range order {
-					if n == "tool_search" {
+					if n == "tool_search" || (n == "create_file" && !allowCreate) {
 						continue
 					}
 					matches = append(matches, n)

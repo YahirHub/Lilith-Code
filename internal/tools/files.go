@@ -34,6 +34,33 @@ func resolve(root, p string) (string, error) {
 	return clean, nil
 }
 
+// createFileParameters intentionally uses structs instead of map[string]any.
+// encoding/json preserves struct field order, so `path` is serialized before
+// `content` in the tool schema. Streaming models tend to follow that order;
+// receiving the path first lets Lilith preflight an existing target before the
+// model spends hundreds of tokens generating a body that will be rejected.
+type createFileParameters struct {
+	Type       string               `json:"type"`
+	Properties createFileProperties `json:"properties"`
+	Required   []string             `json:"required"`
+}
+
+type createFileProperties struct {
+	Path    map[string]any `json:"path"`
+	Content map[string]any `json:"content"`
+}
+
+func newCreateFileParameters() createFileParameters {
+	return createFileParameters{
+		Type: "object",
+		Properties: createFileProperties{
+			Path:    map[string]any{"type": "string", "description": "Target file path (project-relative or absolute). Emit this argument before content."},
+			Content: map[string]any{"type": "string", "description": "Full, final content of the NEW file. No placeholders, no `...`, no `// rest of code`."},
+		},
+		Required: []string{"path", "content"},
+	}
+}
+
 var skipDirs = map[string]bool{
 	".git": true, "node_modules": true, "dist": true, "build": true,
 	"vendor": true, ".next": true, "target": true, "bin": true, ".li": true,
@@ -59,6 +86,30 @@ func PreflightCreateFile(root, rel string) (result string, exists bool, err erro
 		return fmt.Sprintf("FILE_EXISTS: %s already exists and is a directory. Choose a new file path; do not retry create_file.", rel), true, nil
 	}
 	return fmt.Sprintf("FILE_EXISTS: %s already exists (%d bytes). Use str_replace for targeted edits or apply_diff for a unified patch. Do not retry create_file.", rel, info.Size()), true, nil
+}
+
+// InterceptLegacyWrite handles model-hallucinated write/write_file calls without
+// ever mutating disk. Those names are deliberately not exposed in Lilith's
+// schemas, but some coding models still emit them because other agents use them
+// for overwrite semantics. Returning a compact actionable tool result lets the
+// same turn recover with create_file or str_replace/apply_diff instead of
+// failing as an unknown tool or rewriting an existing file.
+func InterceptLegacyWrite(root, toolName, rel string) (string, error) {
+	if toolName != "write" && toolName != "write_file" {
+		return "", fmt.Errorf("unsupported legacy write tool: %s", toolName)
+	}
+	path := strings.TrimSpace(rel)
+	if path == "" {
+		return "WRITE_BLOCKED: missing path. Use create_file for a new file or str_replace/apply_diff for an existing file.", nil
+	}
+	result, exists, err := PreflightCreateFile(root, path)
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		return result + " The requested write/write_file call was blocked before writing any bytes.", nil
+	}
+	return fmt.Sprintf("USE_CREATE_FILE: %s does not exist. Use create_file to create it; write/write_file are not executable tools in Lilith.", path), nil
 }
 
 func init() {
@@ -148,15 +199,8 @@ func init() {
 			"Use create_file only when the target path is intended to be new. Never use it to modify, replace, rewrite, fix, refactor or regenerate an existing file. If it returns FILE_EXISTS, do not retry it; use str_replace or apply_diff.",
 			"When calling create_file, emit the path argument before content so Lilith can preflight the target before a large body is generated.",
 		},
-		Mutating: true,
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path":    map[string]any{"type": "string", "description": "Target file path (project-relative or absolute)."},
-				"content": map[string]any{"type": "string", "description": "Full, final content of the file. No placeholders, no `...`, no `// rest of code`."},
-			},
-			"required": []string{"path", "content"},
-		},
+		Mutating:   true,
+		Parameters: newCreateFileParameters(),
 		Run: func(_ context.Context, args map[string]any, env Env) (string, error) {
 			rel := str(args, "path")
 			full, err := resolve(env.Root, rel)

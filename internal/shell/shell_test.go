@@ -69,11 +69,11 @@ func TestRunCancelReturnsPromptly(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-		if elapsed := time.Since(start); elapsed > time.Second {
+		if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 			t.Fatalf("la cancelación tardó demasiado: %s", elapsed)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("el comando no terminó dentro de 1s tras cancelar")
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("el comando no terminó dentro de 500ms tras cancelar")
 	}
 	if runErr != nil {
 		t.Fatalf("Run cancelado devolvió error Go: %v", runErr)

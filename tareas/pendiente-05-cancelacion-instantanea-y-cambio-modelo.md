@@ -1,7 +1,7 @@
 # Tarea 05 — Cancelación instantánea y cambio de modelo
 
 ## Estado
-En proceso.
+Pendiente por revalidación tras la regresión reportada en Windows.
 
 ## Objetivo
 - Hacer que Ctrl+C detenga inmediatamente el turno activo, incluidas las herramientas/procesos en ejecución, sin reanudar el agente por resultados tardíos.

@@ -43,7 +43,7 @@ const previewLines = 12
 
 // IsFileTool indica si una herramienta se representa como ventana de archivo.
 func isCreateFileTool(name string) bool {
-	return name == "create_file" || name == "write_file"
+	return name == "create_file" || name == "write_file" || name == "write"
 }
 
 func IsFileTool(name string) bool {
@@ -57,7 +57,7 @@ func (p *FilePanel) Update(rawArgs string) {
 		p.Path = v
 	}
 	switch p.Tool {
-	case "create_file", "write_file":
+	case "create_file", "write_file", "write":
 		if v, ok := partialJSONString(rawArgs, "content"); ok {
 			p.Content = v
 		}
@@ -132,7 +132,9 @@ func (p *FilePanel) Finish(result string) {
 	p.Done = true
 	p.Result = strings.TrimSpace(result)
 	p.Failed = strings.HasPrefix(p.Result, "error:")
-	p.Skipped = strings.HasPrefix(p.Result, "FILE_EXISTS:")
+	p.Skipped = strings.HasPrefix(p.Result, "FILE_EXISTS:") ||
+		strings.HasPrefix(p.Result, "USE_CREATE_FILE:") ||
+		strings.HasPrefix(p.Result, "WRITE_BLOCKED:")
 }
 
 func (p *FilePanel) title() string {
@@ -361,27 +363,42 @@ func diffLines(a, b []string) []diffLine {
 	return out
 }
 
-// partialJSONString extrae el valor de una clave string de un JSON que puede
-// estar incompleto (el modelo aún lo está emitiendo por SSE).
+// partialJSONString extracts a string value from JSON that may still be
+// streaming. For live previews it intentionally returns the accumulated value
+// even when the closing quote has not arrived yet.
 func partialJSONString(raw, key string) (string, bool) {
+	value, found, _ := scanJSONString(raw, key)
+	return value, found
+}
+
+// completeJSONString is the strict sibling used for decisions with side
+// effects (such as filesystem preflight). It returns true only after the string
+// has a closing quote, so a partial path like "src/render" can never be mistaken
+// for a real existing directory while the model is still typing it.
+func completeJSONString(raw, key string) (string, bool) {
+	value, found, complete := scanJSONString(raw, key)
+	return value, found && complete
+}
+
+func scanJSONString(raw, key string) (string, found, complete bool) {
 	needle := `"` + key + `"`
 	idx := strings.Index(raw, needle)
 	if idx < 0 {
-		return "", false
+		return "", false, false
 	}
 	i := idx + len(needle)
 	for i < len(raw) && (raw[i] == ' ' || raw[i] == ':' || raw[i] == '\n' || raw[i] == '\t' || raw[i] == '\r') {
 		i++
 	}
 	if i >= len(raw) || raw[i] != '"' {
-		return "", false
+		return "", false, false
 	}
 	i++
 	var b strings.Builder
 	for i < len(raw) {
 		c := raw[i]
 		if c == '"' {
-			return b.String(), true
+			return b.String(), true, true
 		}
 		if c != '\\' {
 			b.WriteByte(c)
@@ -389,7 +406,7 @@ func partialJSONString(raw, key string) (string, bool) {
 			continue
 		}
 		if i+1 >= len(raw) {
-			break // escape truncado: devolvemos lo acumulado
+			return b.String(), true, false
 		}
 		switch raw[i+1] {
 		case 'n':
@@ -397,6 +414,7 @@ func partialJSONString(raw, key string) (string, bool) {
 		case 't':
 			b.WriteByte('\t')
 		case 'r':
+			b.WriteByte('\r')
 		case '"':
 			b.WriteByte('"')
 		case '\\':
@@ -404,17 +422,18 @@ func partialJSONString(raw, key string) (string, bool) {
 		case '/':
 			b.WriteByte('/')
 		case 'u':
-			if i+5 < len(raw) {
-				var r rune
-				if _, err := fmt.Sscanf(raw[i+2:i+6], "%04x", &r); err == nil {
-					b.WriteRune(r)
-				}
-				i += 4
+			if i+5 >= len(raw) {
+				return b.String(), true, false
 			}
+			var r rune
+			if _, err := fmt.Sscanf(raw[i+2:i+6], "%04x", &r); err == nil {
+				b.WriteRune(r)
+			}
+			i += 4
 		default:
 			b.WriteByte(raw[i+1])
 		}
 		i += 2
 	}
-	return b.String(), true
+	return b.String(), true, false
 }

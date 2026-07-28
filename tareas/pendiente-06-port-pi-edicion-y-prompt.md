@@ -1,7 +1,7 @@
 # Tarea 06 — Portar edición robusta y prompt de pi.dev
 
 ## Estado
-en-proceso
+pendiente
 
 ## Objetivo
 Analizar la implementación real de pi.dev proporcionada por el usuario y portar a Lilith las conductas de edición que reducen reintentos y gasto de tokens, manteniendo la política de seguridad de Lilith para `write_file`.
@@ -17,7 +17,7 @@ Analizar la implementación real de pi.dev proporcionada por el usuario y portar
 - Añadir pruebas de regresión.
 
 ## Referencia analizada
-Copia de trabajo local fuera del entregable: `/mnt/data/lab/pi/pi-main`.
+Copia de trabajo local fuera del entregable: `/mnt/data/lab/pi-current/pi-main`.
 
 ## Ajuste posterior a prueba real
 La prueba en Windows confirmó que el guard `FILE_EXISTS` funciona, pero el nombre público `write_file` sigue induciendo a algunos modelos a usarlo para sobrescribir archivos porque esa semántica es común en otros agentes. Se ajustará la superficie pública para exponer `create_file` como herramienta de creación exclusiva, manteniendo compatibilidad interna con `write_file` para sesiones antiguas. El objetivo es prevenir la llamada incorrecta antes del preflight, no sólo recuperarse después.

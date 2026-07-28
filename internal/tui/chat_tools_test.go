@@ -56,13 +56,13 @@ func TestPartialToolCallShowsWorkingImmediately(t *testing.T) {
 	ctx := &AppContext{Styles: NewStyles(DefaultTheme())}
 	m := NewChat(ctx)
 	m.Resize(100, 30)
-	m.streaming = true
+	primeTestRequest(t, &m)
 	m.thinking = true
 
-	_, _ = m.Update(chatStreamMsg{
+	_, _ = m.Update(activeStreamMsg(&m, chatStreamMsg{
 		toolCalls: []openai.ToolCall{makeToolCall("create_file", `{"path":"demo.html","content":"<h1>hola</h1>"}`)},
 		partial:   true,
-	})
+	}))
 
 	if m.thinking {
 		t.Fatal("una tool call parcial debe salir del estado pensando")
@@ -89,10 +89,10 @@ func TestReasoningKeepsThinkingIndicatorActive(t *testing.T) {
 	ctx := &AppContext{Styles: NewStyles(DefaultTheme())}
 	m := NewChat(ctx)
 	m.Resize(100, 30)
-	m.streaming = true
+	primeTestRequest(t, &m)
 	m.thinking = true
 
-	_, _ = m.Update(chatStreamMsg{thinking: "Analizando el cambio..."})
+	_, _ = m.Update(activeStreamMsg(&m, chatStreamMsg{thinking: "Analizando el cambio..."}))
 
 	if !m.thinking || m.working {
 		t.Fatalf("reasoning debe mantener Pensando activo: thinking=%v working=%v", m.thinking, m.working)
@@ -173,5 +173,87 @@ func TestSystemPromptUsesPiStyleActiveToolMetadata(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "validate against the current on-disk file") {
 		t.Fatalf("prompt should explain current-file validation:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "`write` and `write_file`") {
+		t.Fatal("legacy-write guidance should not consume prompt tokens when no file-creation/edit family is active")
+	}
+
+	filePrompt := systemPrompt([]string{"create_file", "str_replace"}, "")
+	if !strings.Contains(filePrompt, "`write` and `write_file` are unsupported legacy tool names") {
+		t.Fatalf("file prompt must explicitly prohibit legacy overwrite-style tool names:\n%s", filePrompt)
+	}
+	if !strings.Contains(filePrompt, "FILE_EXISTS, USE_CREATE_FILE and WRITE_BLOCKED") {
+		t.Fatalf("file prompt must teach the recovery protocol:\n%s", filePrompt)
+	}
+}
+
+func TestPreflightStreamingLegacyWriteExistingStopsBeforeBodyCompletes(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "styles.css"), []byte("body{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	call := makeToolCall("write_file", `{"path":"styles.css","content":"`+strings.Repeat("x", 200))
+	got, result, ok := preflightStreamingCreateCall(root, call)
+	if !ok || !strings.HasPrefix(result, "FILE_EXISTS:") {
+		t.Fatalf("legacy write to existing file must be intercepted: ok=%v result=%q", ok, result)
+	}
+	if strings.Contains(got.Function.Arguments, strings.Repeat("x", 20)) {
+		t.Fatalf("rejected legacy body leaked into compact call: %s", got.Function.Arguments)
+	}
+}
+
+func TestPreflightStreamingLegacyWriteMissingRedirectsToCreateFile(t *testing.T) {
+	root := t.TempDir()
+	call := makeToolCall("write", `{"path":"new.css","content":"partial`)
+	got, result, ok := preflightStreamingCreateCall(root, call)
+	if !ok || !strings.HasPrefix(result, "USE_CREATE_FILE:") {
+		t.Fatalf("legacy write to a new path must redirect to create_file: ok=%v result=%q", ok, result)
+	}
+	if !strings.Contains(got.Function.Arguments, `"content":""`) {
+		t.Fatalf("legacy call should be compacted before continuation: %s", got.Function.Arguments)
+	}
+}
+
+func TestFilePanelTreatsLegacyWriteInterceptionAsSkipped(t *testing.T) {
+	p := &FilePanel{Tool: "write_file", Path: "styles.css", Content: strings.Repeat("x\n", 50)}
+	p.Finish("FILE_EXISTS: styles.css already exists. Use str_replace or apply_diff.")
+	if !p.Done || !p.Skipped || p.Failed {
+		t.Fatalf("legacy interception should be a recoverable skip: %+v", p)
+	}
+}
+
+func TestPreflightWaitsForCompletePathString(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "node-ocr", "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The partial prefix happens to be an existing directory. Preflight must not
+	// mistake it for the final target until the closing quote for path arrives.
+	call := makeToolCall("create_file", `{"path":"node-ocr/src`)
+	_, _, ok := preflightStreamingCreateCall(root, call)
+	if ok {
+		t.Fatal("an incomplete path string must never trigger filesystem preflight")
+	}
+}
+
+func TestPartialJSONStringStillSupportsLivePreview(t *testing.T) {
+	value, ok := partialJSONString(`{"content":"abc`, "content")
+	if !ok || value != "abc" {
+		t.Fatalf("live preview should keep partial string support: ok=%v value=%q", ok, value)
+	}
+	if _, ok := completeJSONString(`{"content":"abc`, "content"); ok {
+		t.Fatal("strict extraction must reject an unterminated JSON string")
+	}
+}
+
+func TestLegacyWriteIsStoppedAsSoonAsToolNameIsKnown(t *testing.T) {
+	root := t.TempDir()
+	call := makeToolCall("write_file", `{"content":"`+strings.Repeat("x", 200))
+	got, result, ok := preflightStreamingCreateCall(root, call)
+	if !ok || !strings.HasPrefix(result, "WRITE_BLOCKED:") {
+		t.Fatalf("legacy write should be rejected before path/body completes: ok=%v result=%q", ok, result)
+	}
+	if strings.Contains(got.Function.Arguments, strings.Repeat("x", 20)) {
+		t.Fatalf("legacy body should be discarded immediately: %s", got.Function.Arguments)
 	}
 }

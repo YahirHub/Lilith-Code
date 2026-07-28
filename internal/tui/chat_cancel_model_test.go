@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +15,9 @@ func TestCancelTurnIsImmediateAndInvalidatesLateToolResult(t *testing.T) {
 		t.Fatalf("beginTurn: %v", err)
 	}
 	oldTurn := m.activeTurnID
+	m.requestSeq++
+	m.activeRequestID = m.requestSeq
+	oldRequest := m.activeRequestID
 	done := m.turnCtx.Done()
 
 	call := makeToolCall("run_terminal_command", `{"command":"sleep 30"}`)
@@ -32,8 +37,8 @@ func TestCancelTurnIsImmediateAndInvalidatesLateToolResult(t *testing.T) {
 	default:
 		t.Fatal("Ctrl+C debe cancelar el contexto del turno de inmediato")
 	}
-	if m.streaming || m.thinking || m.working || m.activeTurnID != 0 {
-		t.Fatalf("turno no quedó detenido: streaming=%v thinking=%v working=%v id=%d", m.streaming, m.thinking, m.working, m.activeTurnID)
+	if m.streaming || m.thinking || m.working || m.activeTurnID != 0 || m.activeRequestID != 0 {
+		t.Fatalf("turno no quedó detenido: streaming=%v thinking=%v working=%v turn=%d request=%d", m.streaming, m.thinking, m.working, m.activeTurnID, m.activeRequestID)
 	}
 	if !cp.Done || !cp.Canceled {
 		t.Fatalf("el panel debe reflejar cancelación inmediatamente: %+v", cp)
@@ -49,8 +54,17 @@ func TestCancelTurnIsImmediateAndInvalidatesLateToolResult(t *testing.T) {
 	if len(m.history) != before {
 		t.Fatalf("resultado tardío contaminó el historial: before=%d after=%d", before, len(m.history))
 	}
+	// The previous guard accepted turnID==0. Keep anonymous async results
+	// invalid too; otherwise an edge path can revive a canceled agent.
+	_, cmd = m.Update(toolResultsMsg{
+		turnID:  0,
+		results: []openai.Message{{Role: "tool", ToolCallID: call.ID, Name: call.Function.Name, Content: "exit_code: 0"}},
+	})
+	if cmd != nil || len(m.history) != before || m.thinking || m.working {
+		t.Fatal("un resultado asíncrono sin turnID válido debe ignorarse después de cancelar")
+	}
 	messageCount := len(m.messages)
-	_, cmd = m.Update(chatStreamMsg{turnID: oldTurn, delta: "respuesta tardía"})
+	_, cmd = m.Update(chatStreamMsg{turnID: oldTurn, requestID: oldRequest, delta: "respuesta tardía"})
 	if cmd != nil || len(m.messages) != messageCount {
 		t.Fatal("un delta SSE tardío de un turno cancelado debe ignorarse")
 	}
@@ -85,6 +99,51 @@ func TestBeginTurnUsesLatestModelOnlyOnNextUserTurn(t *testing.T) {
 	}
 	if got := m.turnModel; got != "deepseek-v4-flash" {
 		t.Fatalf("la siguiente petición no tomó el modelo nuevo: %q", got)
+	}
+	m.endTurn()
+}
+
+func TestStaleRequestFromSameTurnCannotKillReplacementRequest(t *testing.T) {
+	m := newInputTestChat(t)
+	if err := m.beginTurn(); err != nil {
+		t.Fatalf("beginTurn: %v", err)
+	}
+	turnID := m.activeTurnID
+	m.requestSeq++
+	oldRequest := m.requestSeq
+	m.activeRequestID = oldRequest
+
+	// Simula el preflight de una create_file: corta sólo el request HTTP viejo y
+	// abre una continuación dentro del MISMO turno.
+	m.requestSeq++
+	newRequest := m.requestSeq
+	m.activeRequestID = newRequest
+	m.thinking = true
+	m.streaming = true
+
+	beforeMessages := len(m.messages)
+	_, cmd := m.Update(chatStreamMsg{
+		turnID:    turnID,
+		requestID: oldRequest,
+		err:       context.Canceled,
+	})
+	if cmd != nil {
+		t.Fatal("el cierre tardío del request viejo no debe programar trabajo")
+	}
+	if m.activeTurnID != turnID || m.activeRequestID != newRequest || !m.streaming {
+		t.Fatalf("el request viejo mató la continuación: turn=%d request=%d streaming=%v", m.activeTurnID, m.activeRequestID, m.streaming)
+	}
+	if len(m.messages) != beforeMessages {
+		t.Fatal("el request viejo no debe añadir errores ni mensajes")
+	}
+
+	_, _ = m.Update(chatStreamMsg{
+		turnID:    turnID,
+		requestID: newRequest,
+		delta:     "continuación válida",
+	})
+	if m.assistantActive < 0 || !strings.Contains(m.messages[m.assistantActive].Content, "continuación válida") {
+		t.Fatalf("el request de reemplazo debe seguir aceptando deltas: %#v", m.messages)
 	}
 	m.endTurn()
 }

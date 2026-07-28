@@ -118,12 +118,12 @@ func TestReasoningSeMuestraAntesDeLaRespuestaTextual(t *testing.T) {
 	m := NewChat(ctx)
 	m.Resize(100, 30)
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: "prueba", Time: time.Now()})
-	m.streaming = true
+	primeTestRequest(t, &m)
 	m.thinking = true
 	m.assistantActive = -1
 	m.lastTranscriptRefresh = time.Time{}
 
-	_, _ = m.Update(chatStreamMsg{thinking: "Analizando el proyecto..."})
+	_, _ = m.Update(activeStreamMsg(&m, chatStreamMsg{thinking: "Analizando el proyecto..."}))
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "Analizando el proyecto") {
 		t.Fatalf("el razonamiento debe mostrarse en vivo:\n%s", view)
@@ -147,7 +147,7 @@ func TestReasoningSeMuestraAntesDeLaRespuestaTextual(t *testing.T) {
 	}
 
 	m.lastTranscriptRefresh = time.Time{}
-	_, _ = m.Update(chatStreamMsg{delta: "Respuesta"})
+	_, _ = m.Update(activeStreamMsg(&m, chatStreamMsg{delta: "Respuesta"}))
 	if !panel.Done {
 		t.Fatal("el panel de razonamiento debe finalizar al comenzar la respuesta")
 	}
@@ -163,14 +163,14 @@ func TestReasoningDeToolCallSeConservaEnHistorial(t *testing.T) {
 	ctx := &AppContext{ConfigDir: t.TempDir(), Styles: NewStyles(DefaultTheme())}
 	m := NewChat(ctx)
 	m.Resize(100, 30)
-	m.streaming = true
+	primeTestRequest(t, &m)
 	m.thinking = true
 	m.assistantActive = -1
 
-	_, _ = m.Update(chatStreamMsg{thinking: "Necesito inspeccionar el archivo."})
+	_, _ = m.Update(activeStreamMsg(&m, chatStreamMsg{thinking: "Necesito inspeccionar el archivo."}))
 	call := makeToolCall("read_files", `{"paths":["README.md"]}`)
-	_, _ = m.Update(chatStreamMsg{toolCalls: []openai.ToolCall{call}})
-	_, cmd := m.Update(chatStreamMsg{done: true})
+	_, _ = m.Update(activeStreamMsg(&m, chatStreamMsg{toolCalls: []openai.ToolCall{call}}))
+	_, cmd := m.Update(activeStreamMsg(&m, chatStreamMsg{done: true}))
 	if cmd == nil {
 		t.Fatal("una tool call final debe iniciar su ejecución")
 	}

@@ -72,6 +72,14 @@ type ChatModel struct {
 	cancel        context.CancelFunc
 	requestCancel context.CancelFunc
 
+	// Cada request HTTP/SSE dentro de un mismo turno recibe un ID propio. Esto
+	// es distinto de activeTurnID: un turno puede hacer varias peticiones al
+	// proveedor entre tool calls. Si una petición se cancela de forma local
+	// (por ejemplo por preflight FILE_EXISTS), sus chunks tardíos no deben
+	// confundirse con la siguiente petición del mismo turno.
+	requestSeq      uint64
+	activeRequestID uint64
+
 	// turnCtx abarca TODO el turno del usuario: streaming del proveedor y
 	// herramientas. Ctrl+C cancela este contexto una sola vez y los resultados
 	// tardíos quedan invalidados por activeTurnID.
@@ -177,6 +185,7 @@ type ChatModel struct {
 // chatStreamMsg is emitted by the streaming pump for each SSE chunk.
 type chatStreamMsg struct {
 	turnID       uint64
+	requestID    uint64
 	ch           <-chan openai.Chunk
 	delta        string
 	toolCalls    []openai.ToolCall
@@ -193,6 +202,8 @@ type toolResultsMsg struct {
 	turnID         uint64
 	results        []openai.Message
 	compactCallIDs []string
+	recoverEditors bool
+	recoverCreate  bool
 	err            error
 }
 
@@ -309,6 +320,10 @@ func (m *ChatModel) beginTurn() error {
 // endTurn releases the root context after a normal completion/error and makes
 // any message still in flight from the old turn stale.
 func (m *ChatModel) endTurn() {
+	// Invalidar IDs antes de cancelar evita que cualquier evento que ya estaba
+	// encolado en Bubble Tea pueda confundirse con trabajo aún vigente.
+	m.activeRequestID = 0
+	m.activeTurnID = 0
 	if m.requestCancel != nil {
 		m.requestCancel()
 		m.requestCancel = nil
@@ -318,7 +333,6 @@ func (m *ChatModel) endTurn() {
 	}
 	m.cancel = nil
 	m.turnCtx = nil
-	m.activeTurnID = 0
 	m.turnProvider = ""
 	m.turnModel = ""
 	m.runningCalls = nil
@@ -332,6 +346,19 @@ func (m *ChatModel) cancelTurn() string {
 	if m.activeTurnID == 0 {
 		return ""
 	}
+	// Invalidate FIRST. A provider chunk, tool result or canceled-request event
+	// that was already waiting in Bubble Tea must become stale before we even
+	// signal the OS. This is the hard guarantee that a process closing later can
+	// never re-enter runTurn().
+	m.activeRequestID = 0
+	m.activeTurnID = 0
+	// Mantener streaming=true sólo hasta refrescar el transcript permite reutilizar
+	// el prefijo cacheado de conversaciones largas. El indicador ya desaparece
+	// porque thinking/working se limpian inmediatamente.
+	m.thinking = false
+	m.working = false
+	m.assistantActive = -1
+
 	if m.requestCancel != nil {
 		m.requestCancel()
 		m.requestCancel = nil
@@ -339,9 +366,6 @@ func (m *ChatModel) cancelTurn() string {
 	if m.cancel != nil {
 		m.cancel()
 	}
-	// Invalidate first: provider/tool results racing with Ctrl+C can no longer
-	// re-enter the agent loop even if the OS needs a moment to reap a child.
-	m.activeTurnID = 0
 	m.cancel = nil
 	m.turnCtx = nil
 
@@ -370,14 +394,10 @@ func (m *ChatModel) cancelTurn() string {
 	}
 	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: notice + " Pulsa Ctrl+C otra vez para salir, o /exit.", Time: time.Now()})
 
-	// Keep streaming=true just for this refresh so the already-rendered stable
-	// prefix is reused; setting it false first would rebuild the full history and
-	// is what made Ctrl+C feel delayed on long chats.
+	// Refresh only the mutable tail while streaming aún conserva la caché del
+	// prefijo estable; después sí cerramos el estado de streaming.
 	m.refreshTranscript(true)
 	m.streaming = false
-	m.thinking = false
-	m.working = false
-	m.assistantActive = -1
 	m.reasoningBuf.Reset()
 	m.turnProvider = ""
 	m.turnModel = ""
@@ -1211,7 +1231,12 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmdElapsedTick()
 
 	case chatStreamMsg:
-		if v.turnID != 0 && v.turnID != m.activeTurnID {
+		// Todo chunk de proveedor debe pertenecer tanto al turno como al request
+		// HTTP/SSE actualmente activo. Esto evita que el cierre tardío de un
+		// request cancelado (preflight, Ctrl+C, retry) altere el siguiente request.
+		if v.turnID == 0 || v.turnID != m.activeTurnID ||
+			v.requestID == 0 || v.requestID != m.activeRequestID ||
+			m.turnCtx == nil || m.turnCtx.Err() != nil {
 			return m, nil
 		}
 		if v.err != nil {
@@ -1270,10 +1295,10 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(v.toolCalls) > 0 {
 			m.finishThinkingPanel()
 			m.applyToolCalls(v.toolCalls)
-			// create_file is create-only. As soon as a partial tool call exposes
-			// its path, preflight it against disk. If it already exists we cancel
-			// only this provider request (not the whole turn), synthesize the
-			// FILE_EXISTS result, and continue with edit tools. This prevents a
+			// Creation/write-like calls are preflighted as soon as a partial tool call exposes
+			// their path. Existing create_file targets and hallucinated write/write_file calls cancel
+			// only this provider request (not the whole turn), synthesize a compact
+			// recovery result, and continue with the supported file tools. This prevents a
 			// model from streaming hundreds of useless lines before the normal
 			// execution-time guard can reject the call.
 			if v.partial && len(v.toolCalls) == 1 {
@@ -1295,13 +1320,20 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					refreshCmd = cmd
 				}
 				if v.ch != nil {
-					return m, tea.Batch(refreshCmd, streamPump(v.ch, v.turnID))
+					return m, tea.Batch(refreshCmd, streamPump(v.ch, v.turnID, v.requestID))
 				}
 				return m, refreshCmd
 			}
 			m.pendingCall = append(m.pendingCall, v.toolCalls...)
 		}
 		if v.done {
+			// Este request ya terminó. Las tools pueden tardar, pero ningún chunk
+			// adicional de esta conexión debe volver a aceptarse mientras esperamos.
+			m.activeRequestID = 0
+			if m.requestCancel != nil {
+				m.requestCancel()
+				m.requestCancel = nil
+			}
 			m.finishThinkingPanel()
 			text := m.streamBuf.String()
 			reasoning := m.reasoningBuf.String()
@@ -1386,12 +1418,12 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if v.ch != nil {
-			return m, tea.Batch(refreshCmd, streamPump(v.ch, v.turnID))
+			return m, tea.Batch(refreshCmd, streamPump(v.ch, v.turnID, v.requestID))
 		}
 		return m, refreshCmd
 
 	case toolResultsMsg:
-		if v.turnID != 0 && v.turnID != m.activeTurnID {
+		if v.turnID == 0 || v.turnID != m.activeTurnID || m.turnCtx == nil || m.turnCtx.Err() != nil {
 			return m, nil
 		}
 		// No apagamos m.working aquí: el turno sigue activo (vamos a llamar de
@@ -1411,15 +1443,20 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, callID := range v.compactCallIDs {
 			m.compactRejectedCreateCall(callID)
 		}
-		if len(v.compactCallIDs) > 0 {
+		if v.recoverEditors {
 			m.switchCreateToolToEditors()
+		}
+		if v.recoverCreate {
+			m.enableCreateTool()
 		}
 		m.appendHistory(v.results...)
 		m.toolFallback = summarizeToolResults(v.results)
 
 		for _, r := range v.results {
 			if p := m.panelByCall[r.ToolCallID]; p != nil {
-				if isCreateFileTool(p.Tool) && strings.HasPrefix(strings.TrimSpace(r.Content), "FILE_EXISTS:") {
+				if isCreateFileTool(p.Tool) && (strings.HasPrefix(strings.TrimSpace(r.Content), "FILE_EXISTS:") ||
+					strings.HasPrefix(strings.TrimSpace(r.Content), "USE_CREATE_FILE:") ||
+					strings.HasPrefix(strings.TrimSpace(r.Content), "WRITE_BLOCKED:")) {
 					// The body was never applied; do not keep hundreds of rejected
 					// lines occupying the transcript after the skip.
 					p.Content = ""
@@ -1686,7 +1723,7 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 // activos y arranca el streaming.
 func (m *ChatModel) runTurn() tea.Cmd {
 	turnID := m.activeTurnID
-	if turnID == 0 || m.turnCtx == nil {
+	if turnID == 0 || m.turnCtx == nil || m.turnCtx.Err() != nil {
 		return nil
 	}
 	provider := m.ctx.Providers.FindProvider(m.turnProvider)
@@ -1736,10 +1773,13 @@ func (m *ChatModel) runTurn() tea.Cmd {
 	if m.requestCancel != nil {
 		m.requestCancel()
 	}
+	m.requestSeq++
+	requestID := m.requestSeq
+	m.activeRequestID = requestID
 	requestCtx, requestCancel := context.WithCancel(m.turnCtx)
 	m.requestCancel = requestCancel
 	ch := m.ctx.Client.Stream(requestCtx, req)
-	batch := []tea.Cmd{streamPump(ch, turnID), thinkingTick(0)}
+	batch := []tea.Cmd{streamPump(ch, turnID, requestID), thinkingTick(0)}
 	if tick := m.maybeStartElapsedTick(); tick != nil {
 		batch = append(batch, tick)
 	}
@@ -1825,6 +1865,8 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 	return func() tea.Msg {
 		results := make([]openai.Message, 0, len(calls))
 		compactCallIDs := make([]string, 0, 1)
+		recoverEditors := false
+		recoverCreate := false
 		for _, c := range calls {
 			if runCtx == nil || runCtx.Err() != nil {
 				return toolResultsMsg{turnID: turnID, err: context.Canceled}
@@ -1839,23 +1881,62 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 			out, err := tools.Execute(runCtx, c.Function.Name, args, env)
 			if err != nil {
 				out = "error: " + err.Error()
-			} else if isCreateFileTool(c.Function.Name) && strings.HasPrefix(out, "FILE_EXISTS:") {
+			} else if isCreateFileTool(c.Function.Name) &&
+				(strings.HasPrefix(out, "FILE_EXISTS:") || strings.HasPrefix(out, "USE_CREATE_FILE:") || strings.HasPrefix(out, "WRITE_BLOCKED:")) {
 				// The file was never written. Keep the visible panel, but compact the
 				// rejected full-file payload before the next API request so thousands
 				// of useless generated tokens are not re-sent on every continuation.
 				compactCallIDs = append(compactCallIDs, c.ID)
+				switch {
+				case strings.HasPrefix(out, "USE_CREATE_FILE:"):
+					recoverCreate = true
+				case strings.HasPrefix(out, "WRITE_BLOCKED:"):
+					recoverEditors = true
+					recoverCreate = true
+				default:
+					recoverEditors = true
+				}
+			}
+			if runCtx == nil || runCtx.Err() != nil {
+				return toolResultsMsg{turnID: turnID, err: context.Canceled}
 			}
 			results = append(results, toolMessage(c, out))
 		}
-		return toolResultsMsg{turnID: turnID, results: results, compactCallIDs: compactCallIDs}
+		return toolResultsMsg{
+			turnID: turnID, results: results, compactCallIDs: compactCallIDs,
+			recoverEditors: recoverEditors, recoverCreate: recoverCreate,
+		}
 	}
 }
 
 func preflightStreamingCreateCall(root string, call openai.ToolCall) (openai.ToolCall, string, bool) {
-	if call.Function.Name != "create_file" || strings.TrimSpace(call.ID) == "" {
+	name := call.Function.Name
+	if !isCreateFileTool(name) || strings.TrimSpace(call.ID) == "" {
 		return call, "", false
 	}
-	path, ok := partialJSONString(call.Function.Arguments, "path")
+
+	// Legacy overwrite-style names are never executable in Lilith. Unlike
+	// create_file, we do not need to know the target to reject them: stop the
+	// provider as soon as name+call ID are visible. If path has already arrived,
+	// return the more precise existing/new redirect; otherwise a generic policy
+	// redirect is enough and avoids generating the entire body just to learn path.
+	if name == "write" || name == "write_file" {
+		path, _ := completeJSONString(call.Function.Arguments, "path")
+		result, err := tools.InterceptLegacyWrite(root, name, path)
+		if err != nil {
+			return call, "", false
+		}
+		compactArgs, err := json.Marshal(map[string]any{"path": path, "content": ""})
+		if err != nil {
+			return call, "", false
+		}
+		call.Function.Arguments = string(compactArgs)
+		return call, result, true
+	}
+
+	// create_file is valid only for a genuinely new path. Wait until the path
+	// string is complete, then preflight it while content is still streaming.
+	path, ok := completeJSONString(call.Function.Arguments, "path")
 	path = strings.TrimSpace(path)
 	if !ok || path == "" {
 		return call, "", false
@@ -1882,8 +1963,10 @@ func (m *ChatModel) interceptExistingCreateCall(call openai.ToolCall) (tea.Cmd, 
 		return nil, false
 	}
 
-	// Stop only the current HTTP/SSE request. The turn context must stay alive
-	// so the next model call and any edit tools can continue normally.
+	// Stop only the current HTTP/SSE request. Invalidate its request ID first so
+	// the inevitable context.Canceled / EOF event from that old stream cannot be
+	// mistaken for the replacement request we are about to start in this turn.
+	m.activeRequestID = 0
 	if m.requestCancel != nil {
 		m.requestCancel()
 		m.requestCancel = nil
@@ -1913,7 +1996,15 @@ func (m *ChatModel) interceptExistingCreateCall(call openai.ToolCall) (tea.Cmd, 
 		p.Finish(result)
 	}
 
-	m.switchCreateToolToEditors()
+	switch {
+	case strings.HasPrefix(result, "USE_CREATE_FILE:"):
+		m.enableCreateTool()
+	case strings.HasPrefix(result, "WRITE_BLOCKED:"):
+		m.switchCreateToolToEditors()
+		m.enableCreateTool()
+	default:
+		m.switchCreateToolToEditors()
+	}
 	m.toolFallback = result
 	m.toolSteps++
 	m.thinking = false
@@ -1945,6 +2036,18 @@ func (m *ChatModel) switchCreateToolToEditors() {
 		next = append(next, name)
 	}
 	m.activeTools = next
+}
+
+func (m *ChatModel) enableCreateTool() {
+	for _, name := range m.activeTools {
+		if name == "create_file" {
+			return
+		}
+	}
+	if _, ok := tools.Get("create_file"); ok {
+		m.activeTools = append(m.activeTools, "create_file")
+		sort.Strings(m.activeTools)
+	}
 }
 
 func (m *ChatModel) compactRejectedCreateCall(callID string) {
@@ -2247,6 +2350,8 @@ func systemPrompt(activeTools []string, skillsBlock string) string {
 		add("Never write partial files or placeholders such as `...`, `// rest of code`, `TODO: fill in`, or equivalent; changes must leave real files usable as-is.")
 		add("For existing files, prefer str_replace for precise replacements or apply_diff for unified patches. Both validate against the current on-disk file, so do not perform a ceremonial read solely to unlock them; read when you need context or after a mismatch/ambiguity.")
 		add("create_file is creation-only in Lilith. Never use it to modify, replace, rewrite, fix, refactor or regenerate an existing file. If it returns FILE_EXISTS, do not retry it; switch to str_replace/apply_diff.")
+		add("`write` and `write_file` are unsupported legacy tool names. Never call them. Use create_file only for a genuinely new path, and str_replace/apply_diff for an existing path.")
+		add("Treat FILE_EXISTS, USE_CREATE_FILE and WRITE_BLOCKED as tool-policy redirects, not failures to brute-force: follow the tool named by the result exactly on the next call.")
 		add("Preserve the project's conventions, imports, formatting and unrelated content. Make the smallest safe change that satisfies the request.")
 	}
 	if hasTool("run_terminal_command") {
@@ -2273,19 +2378,19 @@ func activeToolsSignature(names []string) string {
 
 // streamPump reads one chunk and forwards it as a chatStreamMsg, keeping the
 // channel handle so the next tick can continue pumping.
-func streamPump(ch <-chan openai.Chunk, turnID uint64) tea.Cmd {
+func streamPump(ch <-chan openai.Chunk, turnID, requestID uint64) tea.Cmd {
 	return func() tea.Msg {
 		c, ok := <-ch
 		if !ok {
-			return chatStreamMsg{turnID: turnID, done: true}
+			return chatStreamMsg{turnID: turnID, requestID: requestID, done: true}
 		}
 		if c.Err != nil {
-			return chatStreamMsg{turnID: turnID, err: c.Err}
+			return chatStreamMsg{turnID: turnID, requestID: requestID, err: c.Err}
 		}
 		if c.Done {
-			return chatStreamMsg{turnID: turnID, done: true}
+			return chatStreamMsg{turnID: turnID, requestID: requestID, done: true}
 		}
-		return chatStreamMsg{turnID: turnID, ch: ch, delta: c.Delta, toolCalls: c.ToolCalls, partial: c.Partial, superseded: c.SupersededIndices, thinking: c.Thinking, thinkingDone: c.ThinkingDone}
+		return chatStreamMsg{turnID: turnID, requestID: requestID, ch: ch, delta: c.Delta, toolCalls: c.ToolCalls, partial: c.Partial, superseded: c.SupersededIndices, thinking: c.Thinking, thinkingDone: c.ThinkingDone}
 	}
 }
 

@@ -95,7 +95,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	cmd.Cancel = func() error { return killProcessGroup(cmd) }
 	// Ctrl+C is a hard stop. After killing the process tree, do not let stale
 	// inherited pipes keep the command goroutine around for seconds.
-	cmd.WaitDelay = 150 * time.Millisecond
+	cmd.WaitDelay = 100 * time.Millisecond
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

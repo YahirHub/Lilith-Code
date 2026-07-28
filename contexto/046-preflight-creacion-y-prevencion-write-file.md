@@ -55,3 +55,7 @@ Validar en Windows con el proveedor/modelo usado en la captura que el stream ent
 
 # Próximos pasos
 Ejecutar `go test ./...` y `go vet ./...` con Go 1.24+ en el equipo del usuario y repetir una tarea de rediseño sobre un CSS existente para confirmar que no se ofrece `create_file` o, si el modelo la materializa, que el preflight corta la generación antes del cuerpo completo.
+
+
+# Corrección posterior
+La prueba real mostró dos límites de esta versión: el modelo todavía podía generar gran parte de `content` antes de que `path` quedara disponible para preflight, y una cancelación local de request compartía sólo el ID de turno con la continuación. Ambos puntos quedan superados por `047-intercepcion-escritura-y-cancelacion-definitiva.md`: schema ordenado con `path` primero, aliases `write/write_file` interceptados apenas se conoce la tool call, ID independiente por request SSE y cancelación de árbol de procesos alineada con pi.dev.
