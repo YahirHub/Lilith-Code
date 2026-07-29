@@ -71,3 +71,11 @@ go build ./cmd/li
 ```
 
 Además, validar manualmente en una terminal ancha y una estrecha que la búsqueda y las tarjetas compartan exactamente el mismo ancho útil, que los modelos permanezcan en una sola línea y que el borde de selección nunca desaparezca al navegar.
+
+
+## Nota de evolución
+
+El estándar de tarjetas sigue vigente para `/config`. El selector de tarjetas
+que este documento introdujo para `/models` y `/history` fue sustituido más
+tarde por el selector compacto basado en un viewport físico documentado en
+`057-selector-viewport-modelos-history.md`.

@@ -120,21 +120,21 @@ func (m *HistoryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *HistoryModel) View() string {
 	filter := m.filter
-	if w := selectionSearchWidth(m.ctx.Width) - 10; w > 4 {
+	if w := viewportSelectorWidth(m.ctx.Width) - 10; w > 4 {
 		filter.Width = w
 	}
-	cards := make([]selectionSurfaceCard, 0, len(m.filtered))
+	items := make([]viewportSelectorItem, 0, len(m.filtered))
 	for _, row := range m.filtered {
-		cards = append(cards, selectionSurfaceCard{
-			Title:       row.Title,
-			Description: humanAgo(row.UpdatedAt) + " · " + fmtInt(row.Turns) + " turnos",
+		items = append(items, viewportSelectorItem{
+			Primary:   row.Title,
+			Secondary: humanAgo(row.UpdatedAt) + " · " + fmtInt(row.Turns) + " turnos",
 		})
 	}
-	return renderSelectionSurface(m.ctx.Styles, selectionSurfaceSpec{
+	return renderViewportSelector(m.ctx.Styles, viewportSelectorSpec{
 		Title:         "Historial de conversaciones",
 		Subtitle:      m.project,
 		SearchContent: "Buscar  " + filter.View(),
-		Cards:         cards,
+		Items:         items,
 		Selected:      m.cursor,
 		EmptyText:     "No hay conversaciones guardadas en este proyecto.",
 		Footer:        "↑↓ navegar · Enter reanudar · Ctrl+D borrar · Esc cancelar",

@@ -139,23 +139,22 @@ func (m ModelSelectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m ModelSelectorModel) View() string {
 	filter := m.filter
-	if w := selectionSearchWidth(m.ctx.Width) - 10; w > 4 {
+	if w := viewportSelectorWidth(m.ctx.Width) - 10; w > 4 {
 		filter.Width = w
 	}
 	active := m.ctx.Providers.Active()
-	cards := make([]selectionSurfaceCard, 0, len(m.filtered))
+	items := make([]viewportSelectorItem, 0, len(m.filtered))
 	for _, row := range m.filtered {
-		cards = append(cards, selectionSurfaceCard{
-			Title:      row.provName + " · " + row.label + " · " + row.desc,
-			Active:     row.providerID == active.ProviderID && row.modelID == active.ModelID,
-			SingleLine: true,
+		items = append(items, viewportSelectorItem{
+			Primary: row.provName + " · " + row.label + " · " + row.desc,
+			Active:  row.providerID == active.ProviderID && row.modelID == active.ModelID,
 		})
 	}
-	return renderSelectionSurface(m.ctx.Styles, selectionSurfaceSpec{
+	return renderViewportSelector(m.ctx.Styles, viewportSelectorSpec{
 		Title:         "Selecciona un modelo",
 		Subtitle:      "Proveedor · modelo · contexto",
 		SearchContent: "Buscar  " + filter.View(),
-		Cards:         cards,
+		Items:         items,
 		Selected:      m.cursor,
 		EmptyText:     "Sin resultados.",
 		Footer:        "↑↓ navegar · Enter elegir · Esc cancelar",

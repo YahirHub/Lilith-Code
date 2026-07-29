@@ -179,8 +179,8 @@ Multi-paso: Nombre → Base URL → API Key → descubrir modelos
 ### 6.7 Slash commands (`tui/commands.go`)
 Registrados: `/help`, `/login`, `/providers`, `/models`, `/model`,
 `/clear`, `/history`, `/config`, `/exit`.
-- `/models` abre el `model_selector` (fuzzy search en subsequence
-  con resaltado de matches, agrupado por proveedor).
+- `/models` abre el `model_selector` con búsqueda fuzzy por modelo/proveedor y
+  selector compacto compartido basado en `bubbles/viewport`.
 - `/login` reinicia el form custom.
 - `/clear` vacía el transcript.
 

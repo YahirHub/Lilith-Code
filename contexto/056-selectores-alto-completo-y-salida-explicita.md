@@ -52,3 +52,11 @@ go build ./cmd/li
 ```
 
 Prueba manual recomendada: redimensionar Windows Terminal a varias alturas, abrir `/models` y `/history`, verificar que el footer quede en la zona inferior y que al aumentar la altura aparezcan más resultados sin perder el foco. Durante una tarea, comprobar que `Ctrl+C`/`Ctrl+Z` no cambian el estado, `Esc` cancela y `/exit` termina el CLI inmediatamente.
+
+
+## Nota de evolución
+
+La política de salida explícita (`/exit`) de este cambio continúa vigente. La
+implementación de altura de `selection_surface.go` ya no es la utilizada por
+`/models` ni `/history`; fue reemplazada por un selector compacto con
+`viewport` real, descrito en `057-selector-viewport-modelos-history.md`.
