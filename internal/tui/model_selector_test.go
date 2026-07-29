@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -68,5 +69,27 @@ func TestModelSelectorAppliesSelectionImmediatelyInMemoryAndOnDisk(t *testing.T)
 	}
 	if got := persisted.ActiveModelID; got != "deepseek-v4-flash" {
 		t.Fatalf("selección persistida = %q", got)
+	}
+}
+
+func TestModelSelectorRendersProviderModelAndContextOnOneLine(t *testing.T) {
+	cfg := providers.Config{
+		Version:          providers.CurrentVersion,
+		ActiveProviderID: "opencode",
+		ActiveModelID:    "deepseek-v4-flash",
+		Providers: []providers.Provider{{
+			ID:   "opencode",
+			Name: "Opencode",
+			Models: []providers.Model{{
+				ID:               "deepseek-v4-flash",
+				MaxContextTokens: 1_000_000,
+			}},
+		}},
+	}
+	ctx := &AppContext{Providers: cfg, Styles: NewStyles(DefaultTheme()), Width: 120, Height: 30}
+	m := NewModelSelector(ctx)
+	view := m.View()
+	if !strings.Contains(view, "Opencode · deepseek-v4-flash · 1M ctx") {
+		t.Fatalf("model row missing compact provider/model/context line: %q", view)
 	}
 }

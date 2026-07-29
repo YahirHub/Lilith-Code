@@ -7,12 +7,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-func TestSelectionSurfaceUsesFullSearchAndCompactCards(t *testing.T) {
+func TestSelectionSurfaceAlignsSearchAndCardsToFullUsableWidth(t *testing.T) {
 	if got := selectionSearchWidth(120); got != 118 {
 		t.Fatalf("search width = %d, want 118", got)
 	}
-	if got := selectionCardWidth(120); got != 72 {
-		t.Fatalf("card width = %d, want 72", got)
+	if got := selectionCardWidth(120); got != 118 {
+		t.Fatalf("card width = %d, want 118", got)
 	}
 	if got := selectionCardWidth(60); got != 58 {
 		t.Fatalf("card width on narrow terminal = %d, want 58", got)
@@ -58,5 +58,18 @@ func TestSelectionSurfaceContainsNoSearchEmoji(t *testing.T) {
 	})
 	if strings.Contains(view, "🔍") {
 		t.Fatal("selection surface must use text instead of emoji search icon")
+	}
+}
+
+func TestSettingsFitSingleLineTruncatesInsteadOfWrapping(t *testing.T) {
+	got := settingsFitSingleLine("Proveedor · modelo-muy-largo · 200K ctx", 20)
+	if strings.Contains(got, "\n") {
+		t.Fatalf("single-line text wrapped: %q", got)
+	}
+	if lipgloss.Width(got) > 20 {
+		t.Fatalf("single-line width = %d, want <= 20", lipgloss.Width(got))
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("truncated text = %q, want ellipsis", got)
 	}
 }

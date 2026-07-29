@@ -287,7 +287,27 @@ type settingsCardSpec struct {
 	Meta        string
 	Selected    bool
 	Active      bool
+	SingleLine  bool
 	Width       int
+}
+
+func settingsFitSingleLine(text string, width int) string {
+	if width < 1 || lipgloss.Width(text) <= width {
+		return text
+	}
+	if width == 1 {
+		return "…"
+	}
+	var out strings.Builder
+	limit := width - 1
+	for _, r := range []rune(text) {
+		candidate := out.String() + string(r)
+		if lipgloss.Width(candidate) > limit {
+			break
+		}
+		out.WriteRune(r)
+	}
+	return out.String() + "…"
 }
 
 func settingsCard(s Styles, spec settingsCardSpec) settingsBlock {
@@ -317,7 +337,12 @@ func settingsCard(s Styles, spec settingsCardSpec) settingsBlock {
 		titleWidth = innerWidth
 		suffix = ""
 	}
-	titleLines := strings.Split(settingsWrapPlain(spec.Title, titleWidth), "\n")
+	var titleLines []string
+	if spec.SingleLine {
+		titleLines = []string{settingsFitSingleLine(spec.Title, titleWidth)}
+	} else {
+		titleLines = strings.Split(settingsWrapPlain(spec.Title, titleWidth), "\n")
+	}
 	lines := make([]string, 0, len(titleLines)+2)
 	for i, titleLine := range titleLines {
 		head := s.Title.Render(titleLine)

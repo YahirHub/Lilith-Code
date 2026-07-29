@@ -53,16 +53,16 @@ func (m *ModelSelectorModel) rebuild() {
 	rows := []modelRow{}
 	for _, p := range m.ctx.Providers.Providers {
 		for _, mod := range p.Models {
-			desc := p.Name
+			context := "sin contexto definido"
 			if mod.MaxContextTokens > 0 {
-				desc += " · " + humanTokens(mod.MaxContextTokens)
+				context = humanTokens(mod.MaxContextTokens)
 			}
 			rows = append(rows, modelRow{
 				providerID: p.ID,
 				provName:   p.Name,
 				modelID:    mod.ID,
 				label:      mod.ID,
-				desc:       desc,
+				desc:       context,
 			})
 		}
 	}
@@ -148,14 +148,14 @@ func (m ModelSelectorModel) View() string {
 	cards := make([]selectionSurfaceCard, 0, len(m.filtered))
 	for _, row := range m.filtered {
 		cards = append(cards, selectionSurfaceCard{
-			Title:       row.label,
-			Description: row.desc,
-			Active:      row.providerID == active.ProviderID && row.modelID == active.ModelID,
+			Title:      row.provName + " · " + row.label + " · " + row.desc,
+			Active:     row.providerID == active.ProviderID && row.modelID == active.ModelID,
+			SingleLine: true,
 		})
 	}
 	return renderSelectionSurface(m.ctx.Styles, selectionSurfaceSpec{
 		Title:         "Selecciona un modelo",
-		Subtitle:      "Resultados compactos por proveedor y modelo.",
+		Subtitle:      "Proveedor · modelo · contexto",
 		SearchContent: "Buscar  " + filter.View(),
 		Cards:         cards,
 		Selected:      m.cursor,

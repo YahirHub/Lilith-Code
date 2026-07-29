@@ -6,11 +6,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// selectionSurface is the shared visual shell for compact searchable lists
+// selectionSurface is the shared visual shell for searchable lists
 // such as /models and /history. It deliberately reuses the same settings
 // primitives as /config: a focused input and rounded cards with a moving
-// border. Search spans the usable terminal width while result cards stay
-// compact and centered.
+// border. Search and result cards share the same usable terminal width so
+// selectors remain visually aligned at every terminal size.
 type selectionSurfaceSpec struct {
 	Title         string
 	Subtitle      string
@@ -29,6 +29,7 @@ type selectionSurfaceCard struct {
 	Description string
 	Meta        string
 	Active      bool
+	SingleLine  bool
 }
 
 func renderSelectionSurface(s Styles, spec selectionSurfaceSpec) string {
@@ -50,6 +51,7 @@ func renderSelectionSurface(s Styles, spec selectionSurfaceSpec) string {
 			Meta:        card.Meta,
 			Selected:    i == spec.Selected,
 			Active:      card.Active,
+			SingleLine:  card.SingleLine,
 			Width:       cardWidth,
 		}))
 	}
@@ -93,17 +95,9 @@ func selectionSearchWidth(screenWidth int) int {
 }
 
 func selectionCardWidth(screenWidth int) int {
-	w := selectionSearchWidth(screenWidth)
-	if w > 72 {
-		w = 72
-	}
-	if w < 12 {
-		w = 12
-		if screenWidth > 0 && w > screenWidth {
-			w = screenWidth
-		}
-	}
-	return w
+	// Cards deliberately match the search field. Keeping a single horizontal
+	// measure avoids the narrow floating column effect on wide terminals.
+	return selectionSearchWidth(screenWidth)
 }
 
 func selectionCentered(screenWidth, width int, content string) string {

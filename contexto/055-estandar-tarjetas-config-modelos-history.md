@@ -26,7 +26,7 @@ Se agregó `internal/tui/selection_surface.go` para `/models` y `/history`.
 El componente reutiliza las primitivas ya existentes de settings (`settingsInput`, `settingsCard`, `settingsHeader` y `settingsFooter`) y sólo resuelve lo que ambas pantallas necesitan en común:
 
 - búsqueda a todo el ancho útil de la terminal;
-- tarjetas de resultados compactas, centradas y con máximo de 72 columnas;
+- tarjetas de resultados alineadas al mismo ancho útil completo que la barra de búsqueda;
 - borde completo sobre la tarjeta seleccionada;
 - cálculo de ventana visible usando la altura real renderizada de cada tarjeta;
 - estado vacío, footer y error comunes.
@@ -35,9 +35,9 @@ No se añadió un framework de componentes nuevo: es una capa pequeña sobre los
 
 ## `/models`
 
-- Se sustituyó la lista plana por tarjetas compactas.
+- Se sustituyó la lista plana por tarjetas de ancho completo, alineadas con la búsqueda.
 - La barra de búsqueda ocupa el ancho útil completo de la terminal.
-- Se eliminaron las filas separadas de cabecera de proveedor; cada tarjeta lleva el proveedor en su descripción, reduciendo ruido y simplificando navegación.
+- Cada modelo ocupa una sola línea dentro de su tarjeta: `Proveedor · Modelo · Contexto`; ya no existen cabeceras separadas por proveedor.
 - La búsqueda fuzzy sigue funcionando por ID de modelo y ahora también por nombre de proveedor.
 - El modelo activo continúa identificado visualmente con `ACTIVO`.
 - Se eliminó el emoji de lupa; la búsqueda usa texto (`Buscar`) y elementos TUI normales.
@@ -45,7 +45,7 @@ No se añadió un framework de componentes nuevo: es una capa pequeña sobre los
 ## `/history`
 
 - Usa exactamente la misma superficie visual que `/models`.
-- Cada conversación es una tarjeta compacta con título, antigüedad y cantidad de turnos.
+- Cada conversación usa una tarjeta de ancho completo, alineada con la búsqueda, conservando título, antigüedad y cantidad de turnos.
 - La búsqueda usa todo el ancho útil de la terminal y ya no muestra emoji.
 - Se conservan `Enter` para reanudar, `Ctrl+D` para borrar y `Esc` para volver.
 
@@ -70,4 +70,4 @@ go vet ./...
 go build ./cmd/li
 ```
 
-Además, validar manualmente en una terminal ancha y una estrecha que la búsqueda se extienda horizontalmente mientras las tarjetas permanecen compactas y que el borde de selección nunca desaparezca al navegar.
+Además, validar manualmente en una terminal ancha y una estrecha que la búsqueda y las tarjetas compartan exactamente el mismo ancho útil, que los modelos permanezcan en una sola línea y que el borde de selección nunca desaparezca al navegar.
