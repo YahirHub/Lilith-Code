@@ -14,9 +14,10 @@ import (
 type searchConfigView string
 
 const (
-	searchViewMain  searchConfigView = "main"
-	searchViewKey   searchConfigView = "key"
-	searchViewOrder searchConfigView = "order"
+	searchViewList     searchConfigView = "list"
+	searchViewProvider searchConfigView = "provider"
+	searchViewKey      searchConfigView = "key"
+	searchViewOrder    searchConfigView = "order"
 )
 
 type searchConfigState struct {
@@ -57,12 +58,16 @@ func newSearchConfigState(ctx *AppContext) *searchConfigState {
 	input.EchoCharacter = '•'
 	state := &searchConfigState{
 		ctx:      ctx,
-		view:     searchViewMain,
-		focus:    "search-provider:tavily",
+		view:     searchViewList,
+		focus:    "search-key",
 		selected: websearch.Tavily,
 		input:    input,
 	}
 	state.reload()
+	if websearch.ValidProvider(state.settings.DefaultProvider) {
+		state.selected = state.settings.DefaultProvider
+	}
+	state.ensureSelectedProvider()
 	return state
 }
 
@@ -74,32 +79,82 @@ func (s *searchConfigState) reload() {
 	}
 	s.settings = settings
 	s.auth = auth
+	s.ensureSelectedProvider()
 }
 
-func (s *searchConfigState) mainFocusOrder() []string {
-	ids := make([]string, 0, len(websearch.ProviderIDs)+8)
-	for _, id := range websearch.ProviderIDs {
-		ids = append(ids, "search-provider:"+string(id))
-	}
-	ids = append(ids,
-		"search-key", "search-test", "search-toggle", "search-default",
-		"search-remove", "search-order", "search-test-all", "back",
-	)
-	return ids
-}
-
-func (s *searchConfigState) moveFocus(delta int) {
-	if s.view == searchViewOrder {
-		if len(s.order) == 0 {
-			return
-		}
-		s.orderAt = (s.orderAt + delta) % len(s.order)
-		if s.orderAt < 0 {
-			s.orderAt += len(s.order)
-		}
+func (s *searchConfigState) ensureSelectedProvider() {
+	if websearch.ValidProvider(s.selected) {
 		return
 	}
-	order := s.mainFocusOrder()
+	if websearch.ValidProvider(s.settings.DefaultProvider) {
+		s.selected = s.settings.DefaultProvider
+		return
+	}
+	if len(websearch.ProviderIDs) > 0 {
+		s.selected = websearch.ProviderIDs[0]
+	}
+}
+
+func (s *searchConfigState) resetToList() {
+	s.view = searchViewList
+	s.input.Blur()
+	s.busy = false
+	s.message = ""
+	s.danger = ""
+	s.ensureSelectedProvider()
+}
+
+func (s *searchConfigState) inNestedView() bool {
+	return s.view != searchViewList
+}
+
+func (s *searchConfigState) nestedSubtitle() string {
+	switch s.view {
+	case searchViewKey:
+		return "Búsqueda / " + websearch.Labels[s.selected] + " / API key"
+	case searchViewOrder:
+		return "Búsqueda / Orden de respaldo"
+	default:
+		return "Búsqueda / " + websearch.Labels[s.selected]
+	}
+}
+
+func (s *searchConfigState) providerIndex() int {
+	for i, id := range websearch.ProviderIDs {
+		if id == s.selected {
+			return i
+		}
+	}
+	return 0
+}
+
+func (s *searchConfigState) atListTop() bool {
+	return s.view == searchViewList && s.providerIndex() == 0
+}
+
+func (s *searchConfigState) moveProvider(delta int) {
+	if len(websearch.ProviderIDs) == 0 {
+		return
+	}
+	idx := s.providerIndex() + delta
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(websearch.ProviderIDs) {
+		idx = len(websearch.ProviderIDs) - 1
+	}
+	s.selected = websearch.ProviderIDs[idx]
+}
+
+func (s *searchConfigState) detailFocusOrder() []string {
+	return []string{
+		"search-key", "search-test", "search-toggle", "search-default",
+		"search-remove", "search-order", "search-test-all", "search-detail-back",
+	}
+}
+
+func (s *searchConfigState) moveDetailFocus(delta int) {
+	order := s.detailFocusOrder()
 	idx := 0
 	for i, id := range order {
 		if id == s.focus {
@@ -107,24 +162,32 @@ func (s *searchConfigState) moveFocus(delta int) {
 			break
 		}
 	}
-	idx = (idx + delta) % len(order)
-	if idx < 0 {
-		idx += len(order)
+	next := idx + delta
+	if next < 0 {
+		next = 0
 	}
-	s.focus = order[idx]
-	if strings.HasPrefix(s.focus, "search-provider:") {
-		id := websearch.ProviderID(strings.TrimPrefix(s.focus, "search-provider:"))
-		if websearch.ValidProvider(id) {
-			s.selected = id
-		}
+	if next >= len(order) {
+		next = len(order) - 1
 	}
+	s.focus = order[next]
+}
+
+func (s *searchConfigState) openProvider(provider websearch.ProviderID) {
+	if !websearch.ValidProvider(provider) {
+		return
+	}
+	s.selected = provider
+	s.view = searchViewProvider
+	s.focus = "search-key"
+	s.message = ""
+	s.danger = ""
 }
 
 func (s *searchConfigState) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	if s.view == searchViewKey {
 		if s.busy {
 			if msg.String() == "esc" {
-				s.view = searchViewMain
+				s.view = searchViewProvider
 				s.input.Blur()
 				return true, nil
 			}
@@ -132,7 +195,7 @@ func (s *searchConfigState) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "esc":
-			s.view = searchViewMain
+			s.view = searchViewProvider
 			s.input.Blur()
 			s.danger = ""
 			return true, nil
@@ -147,14 +210,14 @@ func (s *searchConfigState) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	if s.view == searchViewOrder {
 		switch msg.String() {
 		case "esc":
-			s.view = searchViewMain
+			s.view = searchViewProvider
 			s.danger = ""
 			return true, nil
 		case "up", "k":
-			s.moveFocus(-1)
+			s.moveOrderCursor(-1)
 			return true, nil
 		case "down", "j":
-			s.moveFocus(1)
+			s.moveOrderCursor(1)
 			return true, nil
 		case "left", "h":
 			s.moveOrder(-1)
@@ -167,7 +230,7 @@ func (s *searchConfigState) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 				s.danger = err.Error()
 			} else {
 				s.reload()
-				s.view = searchViewMain
+				s.view = searchViewProvider
 				s.message = "Orden de respaldo guardado."
 				s.danger = ""
 			}
@@ -176,32 +239,48 @@ func (s *searchConfigState) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		return true, nil
 	}
 
-	// Tab/Shift+Tab remain reserved for /config section navigation.
-	if msg.String() == "tab" || msg.String() == "shift+tab" {
-		return false, nil
+	if s.view == searchViewProvider {
+		switch msg.String() {
+		case "esc":
+			s.view = searchViewList
+			s.message = ""
+			s.danger = ""
+			return true, nil
+		case "up", "k":
+			s.moveDetailFocus(-1)
+			return true, nil
+		case "down", "j":
+			s.moveDetailFocus(1)
+			return true, nil
+		case "left", "right", "h", "l", "tab", "shift+tab":
+			// Horizontal navigation belongs to this nested screen. It must never
+			// leak back to the General/Búsqueda/Seguridad section picker.
+			return true, nil
+		case "enter", " ":
+			return true, s.activate(s.focus)
+		}
+		return true, nil
 	}
+
+	// Provider list. Horizontal keys are intentionally consumed while this
+	// list has focus so they cannot switch the top /config section.
 	switch msg.String() {
 	case "up", "k":
-		s.moveFocus(-1)
+		s.moveProvider(-1)
 		return true, nil
 	case "down", "j":
-		s.moveFocus(1)
+		s.moveProvider(1)
+		return true, nil
+	case "left", "right", "h", "l", "tab", "shift+tab":
 		return true, nil
 	case "enter", " ":
-		return true, s.activate(s.focus)
+		s.openProvider(s.selected)
+		return true, nil
 	}
 	return false, nil
 }
 
 func (s *searchConfigState) activate(id string) tea.Cmd {
-	if strings.HasPrefix(id, "search-provider:") {
-		provider := websearch.ProviderID(strings.TrimPrefix(id, "search-provider:"))
-		if websearch.ValidProvider(provider) {
-			s.selected = provider
-			s.focus = id
-		}
-		return nil
-	}
 	provider := s.selected
 	state := websearch.Resolve(provider, s.settings, s.auth)
 	s.message = ""
@@ -247,6 +326,10 @@ func (s *searchConfigState) activate(id string) tea.Cmd {
 		s.enterOrder()
 	case "search-test-all":
 		return s.testAllCmd()
+	case "search-detail-back":
+		s.view = searchViewList
+		s.message = ""
+		s.danger = ""
 	}
 	return nil
 }
@@ -259,7 +342,7 @@ func (s *searchConfigState) handleHit(id string) (bool, tea.Cmd) {
 		case "search-key-save":
 			return true, s.saveAndTestKeyCmd()
 		case "search-key-cancel":
-			s.view = searchViewMain
+			s.view = searchViewProvider
 			s.input.Blur()
 			return true, nil
 		}
@@ -281,30 +364,32 @@ func (s *searchConfigState) handleHit(id string) (bool, tea.Cmd) {
 				s.danger = err.Error()
 			} else {
 				s.reload()
-				s.view = searchViewMain
+				s.view = searchViewProvider
 				s.message = "Orden de respaldo guardado."
 			}
 			return true, nil
 		}
 		if id == "search-order-back" {
-			s.view = searchViewMain
+			s.view = searchViewProvider
 			return true, nil
+		}
+		return false, nil
+	}
+	if s.view == searchViewProvider {
+		for _, candidate := range s.detailFocusOrder() {
+			if candidate == id {
+				s.focus = id
+				return true, s.activate(id)
+			}
 		}
 		return false, nil
 	}
 	if strings.HasPrefix(id, "search-provider:") {
 		provider := websearch.ProviderID(strings.TrimPrefix(id, "search-provider:"))
 		if websearch.ValidProvider(provider) {
-			s.selected = provider
-			s.focus = id
+			s.openProvider(provider)
 		}
 		return true, nil
-	}
-	for _, candidate := range s.mainFocusOrder() {
-		if candidate == id && id != "back" {
-			s.focus = id
-			return true, s.activate(id)
-		}
 	}
 	return false, nil
 }
@@ -393,7 +478,7 @@ func (s *searchConfigState) applyTest(msg searchTestMsg) {
 		s.danger = websearch.Labels[msg.provider] + ": " + msg.message
 	}
 	if s.view == searchViewKey {
-		s.view = searchViewMain
+		s.view = searchViewProvider
 		s.input.Blur()
 		s.input.SetValue("")
 	}
@@ -431,6 +516,20 @@ func (s *searchConfigState) enterOrder() {
 	s.danger = ""
 }
 
+func (s *searchConfigState) moveOrderCursor(delta int) {
+	if len(s.order) == 0 {
+		return
+	}
+	next := s.orderAt + delta
+	if next < 0 {
+		next = 0
+	}
+	if next >= len(s.order) {
+		next = len(s.order) - 1
+	}
+	s.orderAt = next
+}
+
 func (s *searchConfigState) moveOrder(delta int) {
 	if len(s.order) < 2 || s.orderAt < 0 || s.orderAt >= len(s.order) {
 		return
@@ -463,14 +562,10 @@ func (s *searchConfigState) stateLabel(id websearch.ProviderID) string {
 	state := websearch.Resolve(id, s.settings, s.auth)
 	switch {
 	case state.Available:
-		return "VALIDADO"
-	case state.Configured && !state.EnabledByUser:
-		return "OFF"
-	case state.Configured && state.LastTest != nil && !state.LastTest.OK:
-		return "ERROR"
+		return "ACTIVO"
 	case state.Configured:
-		return "PENDIENTE"
+		return "CONFIGURADO"
 	default:
-		return "SIN TOKEN"
+		return "SIN CONFIGURAR"
 	}
 }

@@ -167,6 +167,7 @@ type settingsButtonSpec struct {
 	Label    string
 	Danger   bool
 	Disabled bool
+	Active   bool
 	Focused  bool
 }
 
@@ -180,8 +181,11 @@ func settingsButtonRow(s Styles, specs ...settingsButtonSpec) settingsBlock {
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(s.Theme.Border).
 			Foreground(s.Theme.Foreground)
+		if spec.Active && !spec.Disabled {
+			style = style.BorderForeground(s.Theme.Secondary).Foreground(s.Theme.Secondary)
+		}
 		if spec.Focused && !spec.Disabled {
-			style = style.BorderForeground(s.Theme.Primary).Bold(true)
+			style = style.BorderForeground(s.Theme.Primary).Foreground(s.Theme.Foreground).Bold(true)
 		}
 		if spec.Danger && !spec.Disabled {
 			style = style.Foreground(s.Theme.Danger)

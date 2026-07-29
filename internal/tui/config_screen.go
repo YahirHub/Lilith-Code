@@ -19,15 +19,18 @@ const (
 	configSectionSecurity configSection = "security"
 )
 
+const configSectionNavFocus = "section-nav"
+
 var configSections = []configSection{
 	configSectionGeneral,
 	configSectionSearch,
 	configSectionSecurity,
 }
 
-// ConfigScreen is the interactive `/config` screen. The card design is now the
-// stable settings treatment: sections share the same top navigation and the
-// focused interactive card receives the complete moving border.
+// ConfigScreen is the interactive `/config` screen. The top section picker is
+// a real focus region: horizontal keys only change sections while that region
+// owns focus. Once focus moves into a section, the section can use left/right
+// for its own controls without accidentally switching pages.
 type ConfigScreen struct {
 	ctx      *AppContext
 	settings config.Settings
@@ -47,17 +50,9 @@ func NewConfigScreen(ctx *AppContext) *ConfigScreen {
 		settings: s,
 		loaded:   loaded,
 		section:  configSectionGeneral,
-		focus:    "skills",
+		focus:    configSectionNavFocus,
 		search:   newSearchConfigState(ctx),
 	}
-}
-
-// NewSearchConfigScreen opens /config directly on the Búsqueda section. It is
-// also used by the /setup-search compatibility command.
-func NewSearchConfigScreen(ctx *AppContext) *ConfigScreen {
-	c := NewConfigScreen(ctx)
-	c.setSection(configSectionSearch)
-	return c
 }
 
 func (c *ConfigScreen) Init() tea.Cmd { return nil }
@@ -82,10 +77,12 @@ func (c *ConfigScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if strings.HasPrefix(hit.id, "section:") {
 			c.setSection(configSection(strings.TrimPrefix(hit.id, "section:")))
+			c.focus = configSectionNavFocus
 			return c, nil
 		}
 		if c.section == configSectionSearch {
 			if handled, cmd := c.search.handleHit(hit.id); handled {
+				c.focus = "search-content"
 				return c, cmd
 			}
 		}
@@ -98,20 +95,51 @@ func (c *ConfigScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
-		if c.section == configSectionSearch {
+		// Nested search screens (provider detail, API key and fallback order)
+		// own their keyboard completely until they return to the provider list.
+		if c.section == configSectionSearch && c.search.inNestedView() {
 			if handled, cmd := c.search.handleKey(v); handled {
 				return c, cmd
 			}
 		}
+
 		switch v.String() {
 		case "esc", "q":
 			return c, switchToChat()
-		case "tab", "right", "l":
-			c.rotateSection(1)
+		}
+
+		if c.focus == configSectionNavFocus {
+			switch v.String() {
+			case "tab", "right", "l":
+				c.rotateSection(1)
+				return c, nil
+			case "shift+tab", "left", "h":
+				c.rotateSection(-1)
+				return c, nil
+			case "down", "j", "enter":
+				c.focusFirstContent()
+				return c, nil
+			case "up", "k":
+				return c, nil
+			}
 			return c, nil
-		case "shift+tab", "left", "h":
-			c.rotateSection(-1)
+		}
+
+		if c.section == configSectionSearch && c.focus == "search-content" {
+			// Pressing up on the first provider deliberately returns focus to the
+			// top section navigation. Horizontal keys remain owned by the search
+			// content while focus is below that navigation.
+			if (v.String() == "up" || v.String() == "k") && c.search.atListTop() {
+				c.focus = configSectionNavFocus
+				return c, nil
+			}
+			if handled, cmd := c.search.handleKey(v); handled {
+				return c, cmd
+			}
 			return c, nil
+		}
+
+		switch v.String() {
 		case "down", "j":
 			c.moveFocus(1)
 			return c, nil
@@ -138,16 +166,10 @@ func (c *ConfigScreen) setSection(section configSection) {
 			continue
 		}
 		c.section = section
-		switch section {
-		case configSectionGeneral:
-			c.focus = "skills"
-		case configSectionSearch:
-			if c.search != nil {
-				c.search.reload()
-			}
-			c.focus = ""
-		default:
-			c.focus = "back"
+		c.focus = configSectionNavFocus
+		if section == configSectionSearch && c.search != nil {
+			c.search.resetToList()
+			c.search.reload()
 		}
 		return
 	}
@@ -168,6 +190,18 @@ func (c *ConfigScreen) rotateSection(delta int) {
 	c.setSection(configSections[idx])
 }
 
+func (c *ConfigScreen) focusFirstContent() {
+	switch c.section {
+	case configSectionGeneral:
+		c.focus = "skills"
+	case configSectionSearch:
+		c.focus = "search-content"
+		c.search.ensureSelectedProvider()
+	case configSectionSecurity:
+		c.focus = "back"
+	}
+}
+
 func (c *ConfigScreen) moveFocus(delta int) {
 	order := []string{"back"}
 	if c.section == configSectionGeneral {
@@ -180,11 +214,18 @@ func (c *ConfigScreen) moveFocus(delta int) {
 			break
 		}
 	}
-	idx = (idx + delta) % len(order)
-	if idx < 0 {
-		idx += len(order)
+	if delta < 0 && idx == 0 {
+		c.focus = configSectionNavFocus
+		return
 	}
-	c.focus = order[idx]
+	next := idx + delta
+	if next < 0 {
+		next = 0
+	}
+	if next >= len(order) {
+		next = len(order) - 1
+	}
+	c.focus = order[next]
 }
 
 func (c *ConfigScreen) toggleSkills() (tea.Model, tea.Cmd) {
@@ -209,8 +250,12 @@ func (c *ConfigScreen) layout() (string, []settingsHit) {
 	canvas := newSettingsCanvas(w)
 	canvas.block(settingsHeader(s, "Configuración", c.sectionSubtitle()))
 	canvas.blank()
-	canvas.block(c.sectionPicker(w))
-	canvas.blank()
+
+	searchNested := c.section == configSectionSearch && c.search != nil && c.search.inNestedView()
+	if !searchNested {
+		canvas.block(c.sectionPicker(w))
+		canvas.blank()
+	}
 
 	switch c.section {
 	case configSectionGeneral:
@@ -225,7 +270,7 @@ func (c *ConfigScreen) layout() (string, []settingsHit) {
 		canvas.blank()
 		canvas.block(c.backFocusCard(w))
 	case configSectionSearch:
-		c.search.appendLayout(canvas, w)
+		c.search.appendLayout(canvas, w, c.focus == "search-content")
 	case configSectionSecurity:
 		canvas.block(settingsCard(s, settingsCardSpec{
 			Title:       "Características en desarrollo",
@@ -247,20 +292,23 @@ func (c *ConfigScreen) layout() (string, []settingsHit) {
 	}
 	if c.section != configSectionSearch {
 		canvas.blank()
-		canvas.block(settingsFooter(s, "Tab/Shift+Tab o ←→ cambiar sección · ↑↓ mover foco · Enter/Espacio usar · clic · Esc volver"))
+		canvas.block(settingsFooter(s, c.footerText()))
 	}
 	return canvas.render(c.ctx.Width)
 }
 
 func (c *ConfigScreen) sectionPicker(width int) settingsBlock {
 	return settingsButtonGroup(c.ctx.Styles, width,
-		settingsButtonSpec{ID: "section:general", Label: "General", Focused: c.section == configSectionGeneral},
-		settingsButtonSpec{ID: "section:search", Label: "Búsqueda", Focused: c.section == configSectionSearch},
-		settingsButtonSpec{ID: "section:security", Label: "Seguridad", Focused: c.section == configSectionSecurity},
+		settingsButtonSpec{ID: "section:general", Label: "General", Active: c.section == configSectionGeneral, Focused: c.section == configSectionGeneral && c.focus == configSectionNavFocus},
+		settingsButtonSpec{ID: "section:search", Label: "Búsqueda", Active: c.section == configSectionSearch, Focused: c.section == configSectionSearch && c.focus == configSectionNavFocus},
+		settingsButtonSpec{ID: "section:security", Label: "Seguridad", Active: c.section == configSectionSecurity, Focused: c.section == configSectionSecurity && c.focus == configSectionNavFocus},
 	)
 }
 
 func (c *ConfigScreen) sectionSubtitle() string {
+	if c.section == configSectionSearch && c.search != nil && c.search.inNestedView() {
+		return c.search.nestedSubtitle()
+	}
 	switch c.section {
 	case configSectionSearch:
 		return "Motores de búsqueda y fuentes externas."
@@ -272,10 +320,14 @@ func (c *ConfigScreen) sectionSubtitle() string {
 }
 
 func (c *ConfigScreen) developmentDescription() string {
-	if c.section == configSectionSearch {
-		return "La configuración de motores de búsqueda se añadirá en esta sección."
-	}
 	return "Los controles de seguridad se añadirán en esta sección."
+}
+
+func (c *ConfigScreen) footerText() string {
+	if c.focus == configSectionNavFocus {
+		return "←→ cambiar sección · ↓ entrar · clic · Esc volver"
+	}
+	return "↑↓ mover foco · ↑ hasta la barra superior · Enter/Espacio usar · clic · Esc volver"
 }
 
 func (c *ConfigScreen) skillsFocusCard(width int) settingsBlock {

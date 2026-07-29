@@ -6,7 +6,7 @@ Fecha: 2026-07-28
 
 Integrar en Lilith la infraestructura de búsqueda web multiproveedor usada como
 referencia en Codewolf y exponer su configuración dentro de `/config > Búsqueda`.
-Se conserva `/setup-search` como acceso directo a la misma pantalla.
+La configuración vive en `/config > Búsqueda`; no existe un flujo de configuración separado.
 
 La condición de seguridad/activación es más estricta que la referencia: guardar
 una API key no basta. Un motor sólo queda disponible para el agente después de
@@ -103,7 +103,7 @@ Por lo tanto, cuando no existe ningún motor validado y habilitado, el modelo no
 recibe `web_search`, no puede descubrirlo con `tool_search` y no se añade texto
 sobre la herramienta a su prompt.
 
-## `/config > Búsqueda` y `/setup-search`
+## `/config > Búsqueda`
 
 La sección deja de ser un placeholder y permite:
 
@@ -117,8 +117,8 @@ La sección deja de ser un placeholder y permite:
 - ordenar fallbacks;
 - probar todos los motores configurados.
 
-`/setup-search` abre directamente esta misma sección; no existe una segunda
-implementación de configuración.
+La configuración se centraliza exclusivamente en `/config > Búsqueda`; cualquier
+comando directo de configuración queda fuera del contrato público del CLI.
 
 ## Fallback
 

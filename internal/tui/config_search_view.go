@@ -5,55 +5,157 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/lilith/li/internal/websearch"
 )
 
-func (s *searchConfigState) appendLayout(canvas *settingsCanvas, width int) {
+func (s *searchConfigState) appendLayout(canvas *settingsCanvas, width int, contentFocused bool) {
 	s.reload()
 	switch s.view {
 	case searchViewKey:
 		s.appendKeyLayout(canvas, width)
 	case searchViewOrder:
 		s.appendOrderLayout(canvas, width)
+	case searchViewProvider:
+		s.appendProviderLayout(canvas, width)
 	default:
-		s.appendMainLayout(canvas, width)
+		s.appendListLayout(canvas, width, contentFocused)
 	}
 }
 
-func (s *searchConfigState) appendMainLayout(canvas *settingsCanvas, width int) {
+func (s *searchConfigState) appendListLayout(canvas *settingsCanvas, width int, contentFocused bool) {
 	styles := s.ctx.Styles
 	available := websearch.AvailableOrder(s.settings, s.auth)
-	status := "INACTIVO"
-	if len(available) > 0 {
-		status = "ACTIVO"
-	}
-	defaultLabel := "ninguno"
-	if s.settings.DefaultProvider != "" && websearch.Resolve(s.settings.DefaultProvider, s.settings, s.auth).Available {
-		defaultLabel = websearch.Labels[s.settings.DefaultProvider]
-	}
-	canvas.block(settingsCard(styles, settingsCardSpec{
-		Title:       "Búsqueda web · " + status,
-		Description: fmt.Sprintf("%d motor(es) validados · predeterminado: %s", len(available), defaultLabel),
-		Meta:        "La herramienta web_search sólo existe para el agente cuando hay al menos un motor validado y habilitado.",
-		Badge:       status,
-		Width:       width,
-	}))
-	canvas.blank()
+	configured := s.configuredCount()
 
-	providerButtons := make([]settingsButtonSpec, 0, len(websearch.ProviderIDs))
+	canvas.line(styles.Title.Render("Motores de búsqueda"))
+	canvas.line(styles.Muted.Render(fmt.Sprintf("%d configurados · %d activos · Enter o clic para configurar", configured, len(available))))
+	canvas.blank()
+	canvas.block(s.providerListBlock(width, contentFocused))
+
+	if s.busy {
+		canvas.blank()
+		canvas.line(styles.Accent.Render("Probando conexiones..."))
+	}
+	s.appendMessages(canvas, width)
+	canvas.blank()
+	if contentFocused {
+		canvas.block(settingsFooter(styles, "↑↓ navegar · Enter configurar · ↑ desde el primero vuelve a secciones · Esc volver"))
+	} else {
+		canvas.block(settingsFooter(styles, "←→ cambiar sección · ↓ entrar a motores · clic para abrir · Esc volver"))
+	}
+}
+
+func (s *searchConfigState) providerListBlock(width int, contentFocused bool) settingsBlock {
+	styles := s.ctx.Styles
+	if width < 12 {
+		width = 12
+	}
+	lines := make([]string, 0, len(websearch.ProviderIDs)*2)
+	hits := make([]settingsHit, 0, len(websearch.ProviderIDs))
+	y := 0
 	for _, provider := range websearch.ProviderIDs {
-		id := "search-provider:" + string(provider)
-		providerButtons = append(providerButtons, settingsButtonSpec{
-			ID:      id,
-			Label:   websearch.Labels[provider] + " " + s.stateLabel(provider),
-			Focused: s.focus == id,
-		})
-	}
-	canvas.block(settingsButtonGroup(styles, width, providerButtons...))
-	canvas.blank()
+		state := websearch.Resolve(provider, s.settings, s.auth)
+		selected := contentFocused && provider == s.selected
+		prefix := "  "
+		if selected {
+			prefix = "> "
+		}
 
+		labelStyle := styles.Title
+		if state.Configured {
+			labelStyle = styles.Success.Bold(true)
+		}
+		status := s.providerListStatus(provider)
+		statusRaw := "[" + status + "]"
+		labelWidth := width - lipgloss.Width(prefix) - lipgloss.Width(statusRaw) - 2
+		if labelWidth < 1 {
+			labelWidth = 1
+		}
+		label := labelStyle.Render(settingsFitSingleLine(websearch.Labels[provider], labelWidth))
+		statusStyled := s.providerStatusStyle(state).Render(statusRaw)
+		gap := width - lipgloss.Width(prefix) - lipgloss.Width(label) - lipgloss.Width(statusStyled)
+		if gap < 1 {
+			gap = 1
+		}
+		first := prefix + label + strings.Repeat(" ", gap) + statusStyled
+
+		metaWidth := width - 4
+		if metaWidth < 1 {
+			metaWidth = 1
+		}
+		second := "    " + settingsFitSingleLine(s.providerListMeta(provider), metaWidth)
+		second = styles.Muted.Render(second)
+
+		if selected {
+			rowStyle := lipgloss.NewStyle().Width(width).Background(styles.Theme.Surface)
+			first = rowStyle.Render(first)
+			second = rowStyle.Render(second)
+		}
+		lines = append(lines, first, second)
+		hits = append(hits, settingsHit{
+			id:   "search-provider:" + string(provider),
+			rect: settingsRect{x: 0, y: y, w: width, h: 2},
+		})
+		y += 2
+	}
+	return settingsBlock{text: strings.Join(lines, "\n"), hits: hits}
+}
+
+func (s *searchConfigState) providerStatusStyle(state websearch.State) lipgloss.Style {
+	styles := s.ctx.Styles
+	switch {
+	case state.Available:
+		return styles.Success.Bold(true)
+	case state.Configured && state.LastTest != nil && !state.LastTest.OK:
+		return styles.Danger.Bold(true)
+	case state.Configured:
+		return styles.Success
+	default:
+		return styles.Muted
+	}
+}
+
+func (s *searchConfigState) providerListStatus(id websearch.ProviderID) string {
+	state := websearch.Resolve(id, s.settings, s.auth)
+	switch {
+	case state.Available:
+		return "ACTIVO"
+	case state.Configured:
+		return "CONFIGURADO"
+	default:
+		return "SIN CONFIGURAR"
+	}
+}
+
+func (s *searchConfigState) providerListMeta(id websearch.ProviderID) string {
+	state := websearch.Resolve(id, s.settings, s.auth)
+	parts := []string{}
+	switch {
+	case !state.Configured:
+		return "API key no configurada"
+	case !state.EnabledByUser:
+		parts = append(parts, "Configurado", "deshabilitado")
+	case state.LastTest != nil && !state.LastTest.OK:
+		parts = append(parts, "Configurado", "error de validación")
+	case !state.Validated:
+		parts = append(parts, "Configurado", "pendiente de validar")
+	default:
+		parts = append(parts, "Configurado", "validado y habilitado")
+	}
+	if id == s.settings.DefaultProvider && state.Available {
+		parts = append(parts, "predeterminado")
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (s *searchConfigState) appendProviderLayout(canvas *settingsCanvas, width int) {
+	styles := s.ctx.Styles
 	provider := s.selected
 	state := websearch.Resolve(provider, s.settings, s.auth)
+	available := websearch.AvailableOrder(s.settings, s.auth)
+
 	meta := "Última prueba: sin ejecutar"
 	if state.LastTest != nil {
 		result := "ERROR"
@@ -68,7 +170,6 @@ func (s *searchConfigState) appendMainLayout(canvas *settingsCanvas, width int) 
 		Meta:        meta,
 		Badge:       s.stateLabel(provider),
 		Active:      provider == s.settings.DefaultProvider && state.Available,
-		Selected:    strings.HasPrefix(s.focus, "search-provider:") && s.focus == "search-provider:"+string(provider),
 		Width:       width,
 	}))
 	canvas.blank()
@@ -92,7 +193,7 @@ func (s *searchConfigState) appendMainLayout(canvas *settingsCanvas, width int) 
 	canvas.block(settingsButtonGroup(styles, width,
 		settingsButtonSpec{ID: "search-order", Label: "Ordenar respaldos", Focused: s.focus == "search-order", Disabled: s.busy || len(available) < 2},
 		settingsButtonSpec{ID: "search-test-all", Label: "Probar configurados", Focused: s.focus == "search-test-all", Disabled: s.busy || !s.hasConfigured()},
-		settingsButtonSpec{ID: "back", Label: "Volver al chat", Focused: s.focus == "back"},
+		settingsButtonSpec{ID: "search-detail-back", Label: "Volver a motores", Focused: s.focus == "search-detail-back"},
 	))
 	if s.busy {
 		canvas.blank()
@@ -100,7 +201,7 @@ func (s *searchConfigState) appendMainLayout(canvas *settingsCanvas, width int) 
 	}
 	s.appendMessages(canvas, width)
 	canvas.blank()
-	canvas.block(settingsFooter(styles, "Tab/Shift+Tab cambiar sección · ↑↓ mover foco · Enter usar · clic · Esc volver"))
+	canvas.block(settingsFooter(styles, "↑↓ mover foco · Enter usar · Esc volver a motores"))
 }
 
 func (s *searchConfigState) appendKeyLayout(canvas *settingsCanvas, width int) {
@@ -137,7 +238,7 @@ func (s *searchConfigState) appendKeyLayout(canvas *settingsCanvas, width int) {
 	}
 	s.appendMessages(canvas, width)
 	canvas.blank()
-	canvas.block(settingsFooter(styles, "Enter guardar y probar · Esc cancelar"))
+	canvas.block(settingsFooter(styles, "Enter guardar y probar · Esc volver a "+websearch.Labels[provider]))
 }
 
 func (s *searchConfigState) appendOrderLayout(canvas *settingsCanvas, width int) {
@@ -193,10 +294,15 @@ func (s *searchConfigState) appendMessages(canvas *settingsCanvas, width int) {
 }
 
 func (s *searchConfigState) hasConfigured() bool {
+	return s.configuredCount() > 0
+}
+
+func (s *searchConfigState) configuredCount() int {
+	count := 0
 	for _, provider := range websearch.ProviderIDs {
 		if strings.TrimSpace(s.auth.APIKeys[provider]) != "" {
-			return true
+			count++
 		}
 	}
-	return false
+	return count
 }
