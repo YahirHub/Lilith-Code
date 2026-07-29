@@ -5,20 +5,18 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/lilith/li/internal/providers"
 )
 
-// modelRow is one row of the selector list (either a provider header or a model).
+// modelRow is one selectable model. Provider information stays on the card so
+// the list no longer needs separate provider header rows.
 type modelRow struct {
-	isHeader   bool
 	providerID string
 	provName   string
 	modelID    string
 	label      string
 	desc       string
-	matchIdx   []int // subsequence match indices on label
 }
 
 // ModelSelectorModel implements the /models screen.
@@ -32,16 +30,18 @@ type ModelSelectorModel struct {
 
 func NewModelSelector(ctx *AppContext) ModelSelectorModel {
 	ti := textinput.New()
-	ti.Prompt = "  "
-	ti.Placeholder = "Buscar modelo…"
+	ti.Prompt = ""
+	ti.Placeholder = "Escribe para filtrar modelos"
 	ti.Focus()
 	ti.CharLimit = 64
+	if ctx.Width > 12 {
+		ti.Width = ctx.Width - 12
+	}
 	m := ModelSelectorModel{ctx: ctx, filter: ti}
 	m.rebuild()
-	// Position cursor on the currently active model.
 	active := ctx.Providers.Active()
 	for i, r := range m.filtered {
-		if !r.isHeader && r.providerID == active.ProviderID && r.modelID == active.ModelID {
+		if r.providerID == active.ProviderID && r.modelID == active.ModelID {
 			m.cursor = i
 			break
 		}
@@ -52,11 +52,10 @@ func NewModelSelector(ctx *AppContext) ModelSelectorModel {
 func (m *ModelSelectorModel) rebuild() {
 	rows := []modelRow{}
 	for _, p := range m.ctx.Providers.Providers {
-		rows = append(rows, modelRow{isHeader: true, providerID: p.ID, provName: p.Name, label: p.Name})
 		for _, mod := range p.Models {
 			desc := p.Name
 			if mod.MaxContextTokens > 0 {
-				desc = p.Name + "  ·  " + humanTokens(mod.MaxContextTokens)
+				desc += " · " + humanTokens(mod.MaxContextTokens)
 			}
 			rows = append(rows, modelRow{
 				providerID: p.ID,
@@ -77,24 +76,12 @@ func (m *ModelSelectorModel) applyFilter() {
 		m.filtered = m.all
 	} else {
 		out := []modelRow{}
-		var lastHeader *modelRow
-		var headerAdded bool
-		for i, r := range m.all {
-			if r.isHeader {
-				lastHeader = &m.all[i]
-				headerAdded = false
-				continue
+		for _, r := range m.all {
+			_, modelMatch := subsequenceMatch(strings.ToLower(r.label), q)
+			_, providerMatch := subsequenceMatch(strings.ToLower(r.provName), q)
+			if modelMatch || providerMatch {
+				out = append(out, r)
 			}
-			indices, ok := subsequenceMatch(strings.ToLower(r.label), q)
-			if !ok {
-				continue
-			}
-			if !headerAdded && lastHeader != nil {
-				out = append(out, *lastHeader)
-				headerAdded = true
-			}
-			r.matchIdx = indices
-			out = append(out, r)
 		}
 		m.filtered = out
 	}
@@ -103,25 +90,6 @@ func (m *ModelSelectorModel) applyFilter() {
 	}
 	if m.cursor < 0 {
 		m.cursor = 0
-	}
-	m.snapCursorToModel(+1)
-}
-
-func (m *ModelSelectorModel) snapCursorToModel(dir int) {
-	if len(m.filtered) == 0 {
-		return
-	}
-	for i := 0; i < len(m.filtered); i++ {
-		if !m.filtered[m.cursor].isHeader {
-			return
-		}
-		m.cursor += dir
-		if m.cursor < 0 {
-			m.cursor = len(m.filtered) - 1
-		}
-		if m.cursor >= len(m.filtered) {
-			m.cursor = 0
-		}
 	}
 }
 
@@ -135,30 +103,21 @@ func (m ModelSelectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "esc":
 			return m, switchToChat()
-		case "up":
+		case "up", "ctrl+p":
 			if m.cursor > 0 {
 				m.cursor--
 			}
-			m.snapCursorToModel(-1)
 			return m, nil
-		case "down":
+		case "down", "ctrl+n":
 			if m.cursor < len(m.filtered)-1 {
 				m.cursor++
 			}
-			m.snapCursorToModel(+1)
 			return m, nil
 		case "enter":
 			if len(m.filtered) == 0 {
 				return m, nil
 			}
 			row := m.filtered[m.cursor]
-			if row.isHeader {
-				return m, nil
-			}
-			// La fila ya pertenece al catálogo cargado en memoria, así que no hace
-			// falta volver a consultar proveedores remotos para validarla. Persistimos
-			// sólo la selección y actualizamos el contexto compartido: el siguiente
-			// turno toma este modelo sin reiniciar la CLI.
 			cfg := m.ctx.Providers
 			cfg.ActiveProviderID = row.providerID
 			cfg.ActiveModelID = row.modelID
@@ -174,68 +133,37 @@ func (m ModelSelectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	prev := m.filter.Value()
 	m.filter, cmd = m.filter.Update(msg)
 	if m.filter.Value() != prev {
-		m.applyFilter()
 		m.cursor = 0
-		m.snapCursorToModel(+1)
+		m.applyFilter()
 	}
 	return m, cmd
 }
 
 func (m ModelSelectorModel) View() string {
-	s := m.ctx.Styles
-	w := min(m.ctx.Width-4, 90)
-	header := s.Accent.Render("Selecciona un modelo") + "  " + s.Muted.Render("· escribe para filtrar")
-
-	filterBox := s.InputBoxFocused.Width(w).Render("🔍 " + m.filter.View())
-
-	maxVisible := m.ctx.Height - 10
-	if maxVisible < 5 {
-		maxVisible = 5
+	filter := m.filter
+	if w := selectionSearchWidth(m.ctx.Width) - 10; w > 4 {
+		filter.Width = w
 	}
-	start := 0
-	if m.cursor >= maxVisible {
-		start = m.cursor - maxVisible + 1
+	active := m.ctx.Providers.Active()
+	cards := make([]selectionSurfaceCard, 0, len(m.filtered))
+	for _, row := range m.filtered {
+		cards = append(cards, selectionSurfaceCard{
+			Title:       row.label,
+			Description: row.desc,
+			Active:      row.providerID == active.ProviderID && row.modelID == active.ModelID,
+		})
 	}
-	end := start + maxVisible
-	if end > len(m.filtered) {
-		end = len(m.filtered)
-	}
-
-	rows := []string{}
-	for i := start; i < end; i++ {
-		r := m.filtered[i]
-		if r.isHeader {
-			rows = append(rows, s.Subtitle.Bold(true).Render("▸ "+r.provName))
-			continue
-		}
-		label := highlightMatches(r.label, r.matchIdx, s.Theme.Primary, s.Theme.Foreground)
-		desc := s.Muted.Render(r.desc)
-		line := "  " + label + "   " + desc
-		if i == m.cursor {
-			line = lipgloss.NewStyle().
-				Background(s.Theme.SurfaceHover).
-				Foreground(s.Theme.Foreground).
-				Width(w).
-				Render("❯ " + label + "   " + desc)
-		}
-		rows = append(rows, line)
-	}
-	if len(rows) == 0 {
-		rows = append(rows, s.Muted.Render("  Sin resultados."))
-	}
-
-	footer := s.Muted.Render("↑↓ Navegar   Enter Elegir   Esc Cancelar")
-
-	body := strings.Join([]string{
-		header,
-		"",
-		filterBox,
-		"",
-		strings.Join(rows, "\n"),
-		"",
-		footer,
-	}, "\n")
-	return body
+	return renderSelectionSurface(m.ctx.Styles, selectionSurfaceSpec{
+		Title:         "Selecciona un modelo",
+		Subtitle:      "Resultados compactos por proveedor y modelo.",
+		SearchContent: "Buscar  " + filter.View(),
+		Cards:         cards,
+		Selected:      m.cursor,
+		EmptyText:     "Sin resultados.",
+		Footer:        "↑↓ navegar · Enter elegir · Esc cancelar",
+		ScreenWidth:   m.ctx.Width,
+		ScreenHeight:  m.ctx.Height,
+	})
 }
 
 func humanTokens(n int) string {
@@ -279,7 +207,7 @@ func fmtInt(n int) string {
 	return string(buf[i:])
 }
 
-// subsequenceMatch returns matched indices if all chars of needle appear in order.
+// subsequenceMatch returns true if all chars of needle appear in order.
 func subsequenceMatch(hay, needle string) ([]int, bool) {
 	if needle == "" {
 		return nil, true
@@ -297,25 +225,4 @@ func subsequenceMatch(hay, needle string) ([]int, bool) {
 		return idx, true
 	}
 	return nil, false
-}
-
-func highlightMatches(text string, indices []int, hl, base lipgloss.Color) string {
-	if len(indices) == 0 {
-		return lipgloss.NewStyle().Foreground(base).Render(text)
-	}
-	set := map[int]bool{}
-	for _, i := range indices {
-		set[i] = true
-	}
-	baseStyle := lipgloss.NewStyle().Foreground(base)
-	hlStyle := lipgloss.NewStyle().Foreground(hl).Bold(true)
-	var b strings.Builder
-	for i, r := range text {
-		if set[i] {
-			b.WriteString(hlStyle.Render(string(r)))
-		} else {
-			b.WriteString(baseStyle.Render(string(r)))
-		}
-	}
-	return b.String()
 }

@@ -50,7 +50,7 @@ func TestModelSelectorAppliesSelectionImmediatelyInMemoryAndOnDisk(t *testing.T)
 	ctx := &AppContext{ConfigDir: dir, Providers: cfg, Styles: NewStyles(DefaultTheme()), Width: 100, Height: 30}
 	m := NewModelSelector(ctx)
 	for i, row := range m.filtered {
-		if !row.isHeader && row.modelID == "deepseek-v4-flash" {
+		if row.modelID == "deepseek-v4-flash" {
 			m.cursor = i
 			break
 		}

@@ -6,7 +6,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/lilith/li/internal/session"
 )
@@ -29,10 +28,13 @@ type HistoryModel struct {
 
 func NewHistory(ctx *AppContext, store *session.Store, project string) *HistoryModel {
 	ti := textinput.New()
-	ti.Prompt = "  "
-	ti.Placeholder = "Buscar conversación…"
+	ti.Prompt = ""
+	ti.Placeholder = "Escribe para filtrar conversaciones"
 	ti.Focus()
 	ti.CharLimit = 64
+	if ctx.Width > 12 {
+		ti.Width = ctx.Width - 12
+	}
 	m := &HistoryModel{ctx: ctx, store: store, project: project, filter: ti}
 	m.reload()
 	return m
@@ -78,12 +80,12 @@ func (m *HistoryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "esc":
 			return m, switchToChat()
-		case "up":
+		case "up", "ctrl+p":
 			if m.cursor > 0 {
 				m.cursor--
 			}
 			return m, nil
-		case "down":
+		case "down", "ctrl+n":
 			if m.cursor < len(m.filtered)-1 {
 				m.cursor++
 			}
@@ -119,52 +121,29 @@ func (m *HistoryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *HistoryModel) View() string {
-	s := m.ctx.Styles
-	w := min(m.ctx.Width-4, 90)
-	if w < 30 {
-		w = 30
+	filter := m.filter
+	if w := selectionSearchWidth(m.ctx.Width) - 10; w > 4 {
+		filter.Width = w
 	}
-	header := s.Accent.Render("Historial de conversaciones") + "  " + s.Muted.Render("· "+m.project)
-	filterBox := s.InputBoxFocused.Width(w).Render("🔍 " + m.filter.View())
-
-	maxVisible := m.ctx.Height - 10
-	if maxVisible < 5 {
-		maxVisible = 5
+	cards := make([]selectionSurfaceCard, 0, len(m.filtered))
+	for _, row := range m.filtered {
+		cards = append(cards, selectionSurfaceCard{
+			Title:       row.Title,
+			Description: humanAgo(row.UpdatedAt) + " · " + fmtInt(row.Turns) + " turnos",
+		})
 	}
-	start := 0
-	if m.cursor >= maxVisible {
-		start = m.cursor - maxVisible + 1
-	}
-	end := start + maxVisible
-	if end > len(m.filtered) {
-		end = len(m.filtered)
-	}
-
-	rows := []string{}
-	for i := start; i < end; i++ {
-		r := m.filtered[i]
-		meta := s.Muted.Render(humanAgo(r.UpdatedAt) + "  ·  " + fmtInt(r.Turns) + " turnos")
-		title := lipgloss.NewStyle().Foreground(s.Theme.Foreground).Render(clip(r.Title, w-28))
-		line := "  " + title + "   " + meta
-		if i == m.cursor {
-			line = lipgloss.NewStyle().
-				Background(s.Theme.SurfaceHover).
-				Foreground(s.Theme.Foreground).
-				Width(w).
-				Render("❯ " + clip(r.Title, w-28) + "   " + humanAgo(r.UpdatedAt))
-		}
-		rows = append(rows, line)
-	}
-	if len(rows) == 0 {
-		rows = append(rows, s.Muted.Render("  No hay conversaciones guardadas en este proyecto."))
-	}
-
-	footer := s.Muted.Render("↑↓ Navegar   Enter Reanudar   Ctrl+D Borrar   Esc Cancelar")
-	body := []string{header, "", filterBox, "", strings.Join(rows, "\n"), "", footer}
-	if m.err != "" {
-		body = append(body, s.Danger.Render(m.err))
-	}
-	return strings.Join(body, "\n")
+	return renderSelectionSurface(m.ctx.Styles, selectionSurfaceSpec{
+		Title:         "Historial de conversaciones",
+		Subtitle:      m.project,
+		SearchContent: "Buscar  " + filter.View(),
+		Cards:         cards,
+		Selected:      m.cursor,
+		EmptyText:     "No hay conversaciones guardadas en este proyecto.",
+		Footer:        "↑↓ navegar · Enter reanudar · Ctrl+D borrar · Esc cancelar",
+		Error:         m.err,
+		ScreenWidth:   m.ctx.Width,
+		ScreenHeight:  m.ctx.Height,
+	})
 }
 
 // humanAgo formatea una marca de tiempo de forma compacta y en español.
