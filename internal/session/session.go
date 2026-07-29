@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/providers/openai"
 	litodo "github.com/lilith/li/internal/todo"
 )
@@ -100,6 +101,7 @@ type LiveCheckpoint struct {
 	Entries             []TranscriptEntry `json:"entries,omitempty"`
 	History             []openai.Message  `json:"history,omitempty"`
 	Todo                *litodo.State     `json:"todo,omitempty"`
+	Plan                *planstate.State  `json:"plan,omitempty"`
 }
 
 // Session is one persisted conversation.
@@ -113,6 +115,7 @@ type Session struct {
 	Transcript  []TranscriptEntry `json:"transcript,omitempty"`
 	Revision    uint64            `json:"revision,omitempty"`
 	Todo        *litodo.State     `json:"todo,omitempty"`
+	Plan        *planstate.State  `json:"plan,omitempty"`
 	Live        *LiveCheckpoint   `json:"-"`
 }
 

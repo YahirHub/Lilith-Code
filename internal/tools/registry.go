@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/skills"
 	litodo "github.com/lilith/li/internal/todo"
 )
@@ -30,6 +31,18 @@ type Env struct {
 	Skills []skills.Skill
 	// Todos is the session-local authoritative task plan used by todo_write.
 	Todos *litodo.Manager
+	// Plan is the session-local Build/Plan state used by plan-specific tools.
+	Plan *planstate.Manager
+	// AgentMode is the mode snapshotted for THIS turn. It intentionally differs
+	// from Plan.Mode() when the user presses Tab while a turn is running.
+	AgentMode planstate.Mode
+	// ToolVisible is an optional capability filter applied consistently to lazy
+	// selection, tool_search materialization and direct execution. Plan mode uses
+	// it as a hard read-only ceiling rather than relying on prompt obedience.
+	ToolVisible func(name string, def Definition) bool
+	// ValidateTool performs argument-aware runtime policy checks immediately
+	// before execution (for example the Plan-mode shell allowlist).
+	ValidateTool func(name string, def Definition, args map[string]any) error
 }
 
 // Definition describes one callable tool.
@@ -72,6 +85,16 @@ func Get(name string) (Definition, bool) {
 
 // Names returns every registered tool name, sorted.
 func Names() []string { return append([]string(nil), order...) }
+
+func availableInEnv(name string, d Definition, env Env) bool {
+	if d.Available != nil && !d.Available(env) {
+		return false
+	}
+	if env.ToolVisible != nil && !env.ToolVisible(name, d) {
+		return false
+	}
+	return true
+}
 
 // PromptInfo returns compact prompt metadata for the active tool set. Unknown
 // tools and empty snippets are ignored; guidelines are de-duplicated while
@@ -136,6 +159,9 @@ func Execute(ctx context.Context, name string, args map[string]any, env Env) (st
 	// Treat those calls as a policy interception: never write, return the exact
 	// tool the model should use next, and keep the current turn recoverable.
 	if name == "write" || name == "write_file" {
+		if env.AgentMode == planstate.Plan {
+			return "", fmt.Errorf("Plan mode is read-only: tool %s is blocked until you switch back to Build with Tab", name)
+		}
 		return InterceptLegacyWrite(env.Root, name, str(args, "path"))
 	}
 	// Compatibility aliases for models trained on Claude/Codebuff/Pi naming.
@@ -147,8 +173,13 @@ func Execute(ctx context.Context, name string, args map[string]any, env Env) (st
 	if !ok {
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
-	if d.Available != nil && !d.Available(env) {
+	if !availableInEnv(name, d, env) {
 		return "", fmt.Errorf("tool unavailable: %s", name)
+	}
+	if env.ValidateTool != nil {
+		if err := env.ValidateTool(name, d, args); err != nil {
+			return "", err
+		}
 	}
 	return d.Run(ctx, args, env)
 }
@@ -159,7 +190,7 @@ func Execute(ctx context.Context, name string, args map[string]any, env Env) (st
 
 // alwaysOn is the microscopic unconditional surface: the model can always
 // discover the rest with tool_search, so we never pay for unused schemas.
-var alwaysOn = []string{"tool_search", "todo_write"}
+var alwaysOn = []string{"tool_search", "todo_write", "plan_question", "plan_exit"}
 
 var directChatPattern = regexp.MustCompile(`(?i)^\s*(hola|hello|hi|hey|buenas( (dias|días|tardes|noches))?|gracias|thanks|thank you|ok(ay)?|vale|entendido|perfecto|listo|adios|adiós|bye)[!.?…\s]*$`)
 
@@ -239,7 +270,7 @@ func SelectAvailable(prompt string, env Env) []string {
 	out := make([]string, 0, len(names))
 	for _, name := range names {
 		d, ok := registry[name]
-		if !ok || (d.Available != nil && !d.Available(env)) {
+		if !ok || !availableInEnv(name, d, env) {
 			continue
 		}
 		out = append(out, name)
@@ -253,7 +284,7 @@ func FilterAvailable(names []string, env Env) []string {
 	out := make([]string, 0, len(names))
 	for _, name := range names {
 		d, ok := registry[name]
-		if !ok || (d.Available != nil && !d.Available(env)) {
+		if !ok || !availableInEnv(name, d, env) {
 			continue
 		}
 		out = append(out, name)
@@ -326,7 +357,7 @@ func init() {
 					continue
 				}
 				d := registry[n]
-				if d.Available != nil && !d.Available(env) {
+				if !availableInEnv(n, d, env) {
 					continue
 				}
 				hay := strings.ToLower(d.Name + " " + d.Description)
@@ -347,7 +378,7 @@ func init() {
 						continue
 					}
 					d := registry[n]
-					if d.Available != nil && !d.Available(env) {
+					if !availableInEnv(n, d, env) {
 						continue
 					}
 					matches = append(matches, n)

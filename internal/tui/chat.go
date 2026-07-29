@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/lilith/li/internal/config"
+	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/providers/openai"
 	"github.com/lilith/li/internal/session"
 	"github.com/lilith/li/internal/skills"
@@ -96,12 +97,14 @@ type ChatModel struct {
 	// turnCtx abarca TODO el turno del usuario: streaming del proveedor y
 	// herramientas. Escape cancela este contexto una sola vez y los resultados
 	// tardíos quedan invalidados por activeTurnID.
-	turnCtx      context.Context
-	turnSeq      uint64
-	activeTurnID uint64
-	turnProvider string
-	turnModel    string
-	runningCalls []openai.ToolCall
+	turnCtx         context.Context
+	turnSeq         uint64
+	activeTurnID    uint64
+	turnProvider    string
+	turnModel       string
+	turnAgentMode   planstate.Mode
+	turnPlanHandoff string
+	runningCalls    []openai.ToolCall
 
 	// history is the real conversation sent to the model (incluye mensajes
 	// de herramienta), separada del transcript que se dibuja en pantalla.
@@ -119,6 +122,11 @@ type ChatModel struct {
 	// todos is the model-owned authoritative task plan for this session. It is
 	// concurrency-safe because tools run outside Bubble Tea's Update goroutine.
 	todos *litodo.Manager
+
+	// plans owns the selected primary agent mode (Build/Plan) and any approved
+	// plan/questions for this session. The selected mode applies to the NEXT
+	// turn; turnAgentMode snapshots it when a request starts, like OpenCode.
+	plans *planstate.Manager
 
 	// Paneles de archivo en vivo (creación/edición con diff plegable).
 	livePanels  map[int]*FilePanel
@@ -243,6 +251,8 @@ type toolResultsMsg struct {
 	recoverEditors bool
 	recoverCreate  bool
 	todoChanged    bool
+	planQuestion   bool
+	planCompleted  bool
 	err            error
 }
 
@@ -409,9 +419,11 @@ func NewChat(ctx *AppContext) ChatModel {
 		project:           project,
 		sess:              session.New(project),
 		todos:             litodo.NewManager(nil),
+		plans:             planstate.NewManager(nil),
 		assistantActive:   -1,
 		contextCacheDirty: true,
 	}
+	m.syncAgentModePresentation()
 	return m
 }
 
@@ -435,6 +447,16 @@ func (m *ChatModel) beginTurn() error {
 	m.activeTurnID = m.turnSeq
 	m.turnProvider = active.ProviderID
 	m.turnModel = active.ModelID
+	m.turnAgentMode = m.selectedAgentMode()
+	if m.plans != nil {
+		m.plans.BeginUserTurn(m.turnAgentMode)
+		m.turnPlanHandoff = ""
+		if m.turnAgentMode == planstate.Build {
+			if plan, ok := m.plans.ConsumeBuildHandoff(); ok {
+				m.turnPlanHandoff = plan
+			}
+		}
+	}
 	m.turnCtx, m.cancel = context.WithCancel(context.Background())
 	m.streaming = true
 	return nil
@@ -458,6 +480,8 @@ func (m *ChatModel) endTurn() {
 	m.turnCtx = nil
 	m.turnProvider = ""
 	m.turnModel = ""
+	m.turnAgentMode = ""
+	m.turnPlanHandoff = ""
 	m.runningCalls = nil
 }
 
@@ -543,6 +567,8 @@ func (m *ChatModel) cancelTurn() string {
 	m.streaming = false
 	m.turnProvider = ""
 	m.turnModel = ""
+	m.turnAgentMode = ""
+	m.turnPlanHandoff = ""
 	return notice
 }
 
@@ -572,6 +598,7 @@ func (m *ChatModel) persist() {
 	m.sess.Messages = cloneHistoryMessages(m.history)
 	m.sess.Transcript = m.snapshotTranscriptRange(0, len(m.messages))
 	m.sess.Todo = m.todoStatePointer()
+	m.sess.Plan = m.planStatePointer()
 	m.sess.Revision = m.persistRevision
 	if err := m.store.Save(m.sess); err != nil {
 		return
@@ -728,6 +755,7 @@ func (m *ChatModel) startLivePersist() tea.Cmd {
 		BaseHistoryCount: historyStart, UpdatedAt: time.Now(), Entries: entries,
 		History: cloneHistoryMessages(m.history[historyStart:]),
 		Todo:    m.todoStatePointer(),
+		Plan:    m.planStatePointer(),
 	}
 	store := m.store
 	project := m.project
@@ -757,15 +785,16 @@ func (m *ChatModel) forceLivePersist() {
 	if historyStart > len(m.history) {
 		historyStart = len(m.history)
 	}
-	if len(entries) == 0 && historyStart == len(m.history) {
-		return
-	}
+	// Even when transcript/history have no new entries, a lightweight sidecar
+	// may still be required to persist session state such as the Build/Plan
+	// selection changed with Tab during a running turn.
 	m.persistRevision++
 	checkpoint := &session.LiveCheckpoint{
 		Revision: m.persistRevision, BaseTranscriptCount: m.liveBaseMessageCount,
 		BaseHistoryCount: historyStart, UpdatedAt: time.Now(), Entries: entries,
 		History: cloneHistoryMessages(m.history[historyStart:]),
 		Todo:    m.todoStatePointer(),
+		Plan:    m.planStatePointer(),
 	}
 	_ = m.store.SaveLive(m.project, m.sess.ID, checkpoint)
 	m.lastLivePersist = time.Now()
@@ -899,6 +928,12 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 	} else if err := m.todos.Restore(s.Todo); err != nil {
 		m.todos.Reset()
 	}
+	if m.plans == nil {
+		m.plans = planstate.NewManager(s.Plan)
+	} else if err := m.plans.Restore(s.Plan); err != nil {
+		m.plans.Reset()
+	}
+	m.syncAgentModePresentation()
 	m.invalidateContextUsage()
 	m.livePanels = map[int]*FilePanel{}
 	m.panelByCall = map[string]*FilePanel{}
@@ -915,6 +950,10 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 		if s.Live != nil && s.Live.Revision > s.Revision {
 			if s.Live.Todo != nil {
 				_ = m.todos.Restore(s.Live.Todo)
+			}
+			if s.Live.Plan != nil {
+				_ = m.plans.Restore(s.Live.Plan)
+				m.syncAgentModePresentation()
 			}
 			m.restoreTranscriptEntries(s.Live.Entries, true)
 			appendedLiveHistory := false
@@ -1108,6 +1147,12 @@ func (m *ChatModel) Clear() {
 	} else {
 		m.todos.Reset()
 	}
+	if m.plans == nil {
+		m.plans = planstate.NewManager(nil)
+	} else {
+		m.plans.Reset()
+	}
+	m.syncAgentModePresentation()
 	m.liveBaseMessageCount = 0
 	m.liveBaseHistoryCount = 0
 	m.persistRevision = 0
@@ -1569,7 +1614,11 @@ func (m *ChatModel) inputBoxView(w int) string {
 	if boxWidth < 1 {
 		boxWidth = 1
 	}
-	box := s.InputBoxFocused.Width(boxWidth).Render(m.textarea.View())
+	style := s.InputBoxFocused
+	if m.selectedAgentMode() == planstate.Plan {
+		style = style.BorderForeground(s.Theme.Secondary)
+	}
+	box := style.Width(boxWidth).Render(m.textarea.View())
 	if m.mode == ModeBash {
 		box = s.Badge.Render(" BASH ") + "\n" + box
 	}
@@ -1673,9 +1722,12 @@ func (m *ChatModel) pinnedActivityView(w int) string {
 // del transcript. Mantener una única fuente de verdad evita que Resize y View
 // diverjan cuando aparecen/desaparecen TodoWrite, actividad, cola o paleta.
 func (m *ChatModel) bottomChromeParts(w, usedTokens, maxTokens int) []string {
-	parts := make([]string, 0, 6)
-	if plan := m.todoWidgetView(w); plan != "" {
+	parts := make([]string, 0, 7)
+	if plan := m.planWidgetView(w); plan != "" {
 		parts = append(parts, plan)
+	}
+	if todo := m.todoWidgetView(w); todo != "" && m.effectiveAgentMode() != planstate.Plan {
+		parts = append(parts, todo)
 	}
 	if act := m.pinnedActivityView(w); act != "" {
 		parts = append(parts, act)
@@ -2065,7 +2117,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// the current turn before launching the external tool; rewriting the
 				// entire historical session here would reintroduce long-chat lag.
 				m.forceLivePersist()
-				batch := []tea.Cmd{m.runTools(calls), thinkingTick(m.thinkingFrame)}
+				batch := []tea.Cmd{m.runTools(calls, text), thinkingTick(m.thinkingFrame)}
 
 				if tick := m.maybeStartElapsedTick(); tick != nil {
 					batch = append(batch, tick)
@@ -2167,7 +2219,8 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		for _, r := range v.results {
-			if isTodoToolName(r.Name) && !strings.HasPrefix(strings.TrimSpace(r.Content), "error:") {
+			if (isTodoToolName(r.Name) || isPlanQuestionToolName(r.Name) || isPlanExitToolName(r.Name)) &&
+				!strings.HasPrefix(strings.TrimSpace(r.Content), "error:") {
 				continue
 			}
 			if p := m.panelByCall[r.ToolCallID]; p != nil {
@@ -2194,6 +2247,32 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.refreshTranscript(true)
 		}
+
+		// Plan questions and plan_exit deliberately END the current agent turn.
+		// The user answers normally or presses Tab to select Build; we must not
+		// immediately call the model again and accidentally plan/implement past
+		// that human decision boundary.
+		if v.planQuestion || v.planCompleted {
+			m.toolFallback = ""
+			m.streaming = false
+			m.thinking = false
+			m.working = false
+			m.assistantActive = -1
+			if v.planCompleted && m.plans != nil {
+				if plan := strings.TrimSpace(m.plans.LatestPlan()); plan != "" {
+					m.messages = append(m.messages, ChatMessage{Kind: MsgAssistant, Content: "## Plan\n\n" + plan, Time: time.Now()})
+				}
+			}
+			m.endTurn()
+			m.persist()
+			if m.ctx.Width > 0 && m.ctx.Height > 0 {
+				m.Resize(m.ctx.Width, m.ctx.Height)
+			} else {
+				m.refreshTranscript(true)
+			}
+			return m, nil
+		}
+
 		// Tool outputs are a stable API boundary. This is also the preferred
 		// steering boundary: current calls have completed, so one Enter-queued
 		// instruction can safely influence the very next model request.
@@ -2313,6 +2392,13 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.paletteOpen = false
 				return m, nil
 			}
+		}
+		// OpenCode cycles primary agents with Tab. Lilith has two primary
+		// operational agents: Build and Plan. The running turn keeps its snapshot;
+		// this only changes the agent selected for the next user message.
+		if key == "tab" || key == "shift+tab" {
+			m.toggleAgentMode()
+			return m, nil
 		}
 		switch key {
 		case "ctrl+o", "ctrl+j", "ctrl+k":
@@ -2461,14 +2547,11 @@ func (m *ChatModel) takeQueued(mode queueMode) (queuedMessage, bool) {
 }
 
 func (m *ChatModel) extendActiveToolsForPrompt(text string) {
-	for _, name := range tools.Select(text) {
+	mode := m.effectiveAgentMode()
+	for _, name := range m.selectToolsForPrompt(text, mode) {
 		m.activeTools = appendUniqueTool(m.activeTools, name)
 	}
-	if !tools.IsDirectChat(text) && m.skillsEnabled() {
-		for _, name := range tools.WithSkillTools(nil, len(m.loadSkills()) > 0) {
-			m.activeTools = appendUniqueTool(m.activeTools, name)
-		}
-	}
+	m.activeTools = tools.FilterAvailable(m.activeTools, m.toolEnv("", mode))
 	sort.Strings(m.activeTools)
 	m.invalidateContextUsage()
 }
@@ -2587,6 +2670,10 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 		if cmd == "" {
 			return m, nil
 		}
+		if m.selectedAgentMode() == planstate.Plan && !planstate.IsSafeCommand(cmd) {
+			m.AddError("Plan mode bloquea este comando: cambia a Build con Tab para ejecutar comandos que puedan modificar el sistema.")
+			return m, nil
+		}
 		m.messages = append(m.messages, ChatMessage{Kind: MsgTool, Content: "$ " + cmd, Time: time.Now()})
 		m.refreshTranscript(true)
 		return m, m.runBash(cmd)
@@ -2594,18 +2681,20 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: val, Time: time.Now()})
 	m.appendHistory(openai.Message{Role: "user", Content: val})
-	// Selección perezosa: sólo los esquemas que este turno puede necesitar.
-	m.activeTools = tools.SelectAvailable(val, tools.Env{ConfigDir: m.ctx.ConfigDir})
-	if !tools.IsDirectChat(val) && m.skillsEnabled() {
-		m.activeTools = tools.WithSkillTools(m.activeTools, len(m.loadSkills()) > 0)
-	}
+	// OpenCode treats Build/Plan as primary agents. Capture the currently
+	// selected agent for lazy tool selection; beginTurn snapshots the same mode
+	// so a Tab press during execution only affects the NEXT user turn.
+	selectedMode := m.selectedAgentMode()
+	m.activeTools = m.selectToolsForPrompt(val, selectedMode)
 	m.toolSteps = 0
 	m.toolFallback = ""
 	if err := m.beginTurn(); err != nil {
 		m.AddError(err.Error())
 		return m, nil
 	}
-	m.cleanupCompletedTodos()
+	if m.turnAgentMode != planstate.Plan {
+		m.cleanupCompletedTodos()
+	}
 	m.persist()
 	m.refreshTranscript(true)
 	return m, m.runTurn()
@@ -2649,10 +2738,10 @@ func (m *ChatModel) runTurn() tea.Cmd {
 	// Dynamic tools (notably web_search) may become unavailable while the chat
 	// is open if their configuration changes in /config. Filter them before
 	// both the prompt and wire schemas so hidden tools never leak to the model.
-	m.activeTools = tools.FilterAvailable(m.activeTools, tools.Env{ConfigDir: m.ctx.ConfigDir})
+	m.activeTools = tools.FilterAvailable(m.activeTools, m.toolEnv("", m.turnAgentMode))
 
 	msgs := make([]openai.Message, 0, len(m.history)+1)
-	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(m.activeTools, m.skillsBlock(), m.todoBlock())})
+	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(m.activeTools, m.skillsBlock(), m.todoBlockForMode(m.turnAgentMode), m.promptModeBlock(m.turnAgentMode))})
 	msgs = append(msgs, m.history...)
 
 	var schemas []any
@@ -2704,7 +2793,7 @@ func (m *ChatModel) contextUsage() (int, int) {
 		return m.contextUsedCache, m.contextMaxCache
 	}
 	msgs := make([]openai.Message, 0, len(m.history)+1)
-	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(m.activeTools, m.skillsBlock(), m.todoBlock())})
+	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(m.activeTools, m.skillsBlock(), m.todoBlockForMode(m.effectiveAgentMode()), m.promptModeBlock(m.effectiveAgentMode()))})
 	msgs = append(msgs, m.history...)
 	used := EstimateTokens(msgs)
 	maxCtx := 0
@@ -2726,9 +2815,27 @@ func (m *ChatModel) contextUsage() (int, int) {
 const maxToolSteps = 60
 
 // runTools ejecuta el lote de llamadas y devuelve los mensajes `tool`.
-func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
+func (m *ChatModel) runTools(calls []openai.ToolCall, assistantText string) tea.Cmd {
 	turnID := m.activeTurnID
 	runCtx := m.turnCtx
+	if m.turnAgentMode == planstate.Plan {
+		hasExit := false
+		for _, call := range calls {
+			if isPlanExitToolName(call.Function.Name) {
+				hasExit = true
+				break
+			}
+		}
+		if hasExit && (len(calls) != 1 || strings.TrimSpace(assistantText) != "") {
+			return func() tea.Msg {
+				results := make([]openai.Message, 0, len(calls))
+				for _, call := range calls {
+					results = append(results, toolMessage(call, "error: plan_exit debe ser la única acción final, sin texto ni otras herramientas en la misma respuesta."))
+				}
+				return toolResultsMsg{turnID: turnID, results: results}
+			}
+		}
+	}
 	m.toolSteps++
 	if m.toolSteps > maxToolSteps {
 		// Sanear el historial: el assistant previo dejó tool_calls sin
@@ -2762,13 +2869,17 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 	if m.skillsEnabled() {
 		skillCatalog = m.loadSkills()
 	}
-	env := tools.Env{Root: root, ConfigDir: m.ctx.ConfigDir, Materialize: materialize, Skills: skillCatalog, Todos: m.todos}
+	env := m.toolEnv(root, m.turnAgentMode)
+	env.Materialize = materialize
+	env.Skills = skillCatalog
 	startTodoRevision := m.todoRevision()
 	return func() tea.Msg {
 		results := make([]openai.Message, 0, len(calls))
 		compactCallIDs := make([]string, 0, 1)
 		recoverEditors := false
 		recoverCreate := false
+		planQuestion := false
+		planCompleted := false
 		for _, c := range calls {
 			if runCtx == nil || runCtx.Err() != nil {
 				return toolResultsMsg{turnID: turnID, err: context.Canceled}
@@ -2783,6 +2894,10 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 			out, err := tools.Execute(runCtx, c.Function.Name, args, env)
 			if err != nil {
 				out = "error: " + err.Error()
+			} else if isPlanQuestionToolName(c.Function.Name) {
+				planQuestion = true
+			} else if isPlanExitToolName(c.Function.Name) {
+				planCompleted = true
 			} else if isCreateFileTool(c.Function.Name) &&
 				(strings.HasPrefix(out, "FILE_EXISTS:") || strings.HasPrefix(out, "USE_CREATE_FILE:") || strings.HasPrefix(out, "WRITE_BLOCKED:")) {
 				// The file was never written. Keep the visible panel, but compact the
@@ -2807,7 +2922,9 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 		return toolResultsMsg{
 			turnID: turnID, results: results, compactCallIDs: compactCallIDs,
 			recoverEditors: recoverEditors, recoverCreate: recoverCreate,
-			todoChanged: m.todoRevision() != startTodoRevision,
+			todoChanged:   m.todoRevision() != startTodoRevision,
+			planQuestion:  planQuestion,
+			planCompleted: planCompleted,
 		}
 	}
 }
@@ -3183,7 +3300,8 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: visible, Time: time.Now()})
 	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: "Skill cargada: " + sk.Name + " (" + sk.Source + ")", Time: time.Now()})
 	m.appendHistory(openai.Message{Role: "user", Content: payload})
-	m.activeTools = tools.SelectAvailable(body+"\n"+args, tools.Env{ConfigDir: m.ctx.ConfigDir})
+	selectedMode := m.selectedAgentMode()
+	m.activeTools = m.selectToolsForPrompt(body+"\n"+args, selectedMode)
 	// Una skill explícita puede ser pequeña, pero sus references/assets/scripts
 	// pueden ser enormes. Mantén siempre disponible la navegación acotada nativa
 	// para que el modelo no tenga que leer recursos completos ni usar shell.
@@ -3197,6 +3315,7 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 		// este bloque no sea necesario.
 		m.activeTools = []string{"tool_search", "list_skills", "skill_search", "skill_files", "skill_read"}
 	}
+	m.activeTools = tools.FilterAvailable(m.activeTools, m.toolEnv("", selectedMode))
 	sort.Strings(m.activeTools)
 	m.toolSteps = 0
 	m.toolFallback = ""
@@ -3204,7 +3323,9 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 		m.AddError(err.Error())
 		return nil
 	}
-	m.cleanupCompletedTodos()
+	if m.turnAgentMode != planstate.Plan {
+		m.cleanupCompletedTodos()
+	}
 	m.persist()
 	m.refreshTranscript(true)
 	return m.runTurn()
@@ -3214,13 +3335,13 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 // consistently across providers in English. The structure mirrors pi.dev:
 // full tool contracts stay in JSON schemas, while the system prompt receives
 // only short snippets and guidelines for the tools active in this turn.
-func systemPrompt(activeTools []string, skillsBlock, todoBlock string) string {
+func systemPrompt(activeTools []string, skillsBlock, todoBlock, modeBlock string) string {
 	base := "You are Lilith, an expert coding assistant operating inside the user's terminal. " +
-		"Use tools to inspect the real project, execute commands, and make code changes. " +
+		"Use the tools available for this turn to inspect and work on the real project. " +
 		"Reply in the user's language (Spanish by default), while preserving code, paths, identifiers and shell syntax. " +
 		"Be concise, direct, and keep working until the requested task is actually complete."
 	if len(activeTools) == 0 {
-		return base + skillsBlock + todoBlock
+		return base + skillsBlock + todoBlock + modeBlock
 	}
 
 	toolLines, toolGuidelines := tools.PromptInfo(activeTools)
@@ -3276,6 +3397,7 @@ func systemPrompt(activeTools []string, skillsBlock, todoBlock string) string {
 	b.WriteString("\nCurrent working directory: " + filepath.ToSlash(cwd))
 	b.WriteString(skillsBlock)
 	b.WriteString(todoBlock)
+	b.WriteString(modeBlock)
 	return b.String()
 }
 

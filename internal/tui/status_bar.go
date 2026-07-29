@@ -8,53 +8,62 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// StatusBar renders the bottom status line: cwd · provider/model · contexto · hints.
-func RenderStatusBar(ctx *AppContext, mode string, usedTokens, maxTokens int) string {
+// RenderStatusBar keeps the bottom line intentionally minimal: cwd, provider,
+// model and numeric context usage. Commands/shortcuts live in /help instead of
+// permanently consuming terminal width.
+func RenderStatusBar(ctx *AppContext, _ string, usedTokens, maxTokens int) string {
 	s := ctx.Styles
 	cwd, _ := os.Getwd()
 	if home, err := os.UserHomeDir(); err == nil {
 		if rel, err := filepath.Rel(home, cwd); err == nil && !strings.HasPrefix(rel, "..") {
-			cwd = "~/" + rel
+			cwd = "~/" + filepath.ToSlash(rel)
 		}
 	}
+	cwd = filepath.ToSlash(cwd)
 
 	active := ctx.Providers.Active()
-	provider := "sin proveedor"
-	if active.ProviderName != "" {
-		provider = active.ProviderName
-		if active.ModelID != "" {
-			provider += " · " + active.ModelID
-		}
+	provider := active.ProviderName
+	if provider == "" {
+		provider = "sin proveedor"
+	}
+	model := active.ModelID
+	if model == "" {
+		model = "sin modelo"
 	}
 
-	modeChip := ""
-	if mode != "" && mode != "default" {
-		modeChip = lipgloss.NewStyle().
-			Background(s.Theme.Warning).
-			Foreground(s.Theme.Background).
-			Padding(0, 1).
-			Bold(true).
-			Render(strings.ToUpper(mode)) + " "
-	}
-
+	providerStyle := lipgloss.NewStyle().Foreground(s.Theme.Secondary).Bold(true)
+	modelStyle := lipgloss.NewStyle().Foreground(s.Theme.Primary).Bold(true)
 	contextBar := RenderContextBar(s.Theme, usedTokens, maxTokens, 12)
 
-	left := modeChip + s.Muted.Render(cwd)
-	right := s.Accent.Render("◆ ") + s.Muted.Render(provider)
-	hint := s.Muted.Render("/ comandos · ! bash · Esc cancelar · /exit salir")
+	fixed := "   " + providerStyle.Render(provider) + " · " + modelStyle.Render(model)
+	if contextBar != "" {
+		fixed += "   " + contextBar
+	}
 
 	w := ctx.Width
 	if w <= 0 {
 		w = 80
 	}
-	inner := lipgloss.JoinHorizontal(lipgloss.Left, left, "   ", right)
-	if contextBar != "" {
-		inner = lipgloss.JoinHorizontal(lipgloss.Left, inner, "   ", contextBar)
+	availableCWD := w - lipgloss.Width(fixed) - 2
+	if availableCWD < 4 {
+		availableCWD = 4
 	}
-	pad := w - lipgloss.Width(inner) - lipgloss.Width(hint) - 2
-	if pad < 1 {
-		pad = 1
-	}
-	line := inner + strings.Repeat(" ", pad) + hint
+	cwd = truncateStatusPath(cwd, availableCWD)
+	line := s.Muted.Render(cwd) + fixed
 	return s.StatusBar.Width(w).Render(line)
+}
+
+func truncateStatusPath(path string, maxWidth int) string {
+	if maxWidth <= 0 || lipgloss.Width(path) <= maxWidth {
+		return path
+	}
+	r := []rune(path)
+	if maxWidth <= 1 {
+		return "…"
+	}
+	keep := maxWidth - 1
+	if keep > len(r) {
+		keep = len(r)
+	}
+	return "…" + string(r[len(r)-keep:])
 }

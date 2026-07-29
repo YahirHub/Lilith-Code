@@ -70,13 +70,8 @@ func RenderContextBar(theme Theme, used, max, cells int) string {
 	bar := lipgloss.NewStyle().Foreground(usedColor).Render(strings.Repeat("▰", filled)) +
 		lipgloss.NewStyle().Foreground(theme.Muted).Render(strings.Repeat("▱", cells-filled))
 
-	pct := used * 100 / max
 	label := lipgloss.NewStyle().Foreground(theme.Muted).
-		Render(fmt.Sprintf(" %s/%s (%d%%)", humanTokens(used), humanTokens(max), pct))
+		Render(fmt.Sprintf(" %d/%d", used, max))
 
-	out := bar + label
-	if contextLevel(used, max) >= 1 {
-		out += lipgloss.NewStyle().Foreground(theme.Warning).Render(" /compact")
-	}
-	return out
+	return bar + label
 }
