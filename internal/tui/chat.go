@@ -108,11 +108,18 @@ type ChatModel struct {
 
 	// history is the real conversation sent to the model (incluye mensajes
 	// de herramienta), separada del transcript que se dibuja en pantalla.
-	history      []openai.Message
-	activeTools  []string
-	pendingCall  []openai.ToolCall
-	toolSteps    int
-	toolFallback string
+	history     []openai.Message
+	activeTools []string
+	// Los schemas que ya se materializaron se conservan por modo durante la
+	// sesión. Pi recomienda crecimiento aditivo para no romper el prefijo que
+	// los proveedores pueden reutilizar mediante prompt caching. Antes Lilith
+	// reconstruía/reemplazaba el set en cada prompt, invalidando esa caché aun
+	// cuando el historial anterior era idéntico.
+	buildToolCache []string
+	planToolCache  []string
+	pendingCall    []openai.ToolCall
+	toolSteps      int
+	toolFallback   string
 
 	// Persistencia de la conversación (historial por proyecto).
 	store   *session.Store
@@ -257,6 +264,7 @@ type chatStreamMsg struct {
 type toolResultsMsg struct {
 	turnID         uint64
 	results        []openai.Message
+	materialized   []string
 	compactCallIDs []string
 	recoverEditors bool
 	recoverCreate  bool
@@ -625,6 +633,21 @@ func (m *ChatModel) persist() {
 	// El snapshot estable ya absorbió cualquier checkpoint que pudiera venir
 	// de LoadSession. No conservar un puntero Live obsoleto en memoria.
 	m.sess.Live = nil
+}
+
+// persistTurnStart makes admitting a new prompt cheap on long sessions. A
+// brand-new session still gets one full base snapshot so crash recovery has a
+// durable anchor; subsequent turns only append the small live tail here. The
+// full stable snapshot is already written when the previous turn completes.
+func (m *ChatModel) persistTurnStart() {
+	if m.store == nil || m.sess == nil {
+		return
+	}
+	if len(m.sess.Messages) == 0 && m.liveBaseHistoryCount == 0 {
+		m.persist()
+		return
+	}
+	m.forceLivePersist()
 }
 
 func transcriptKindName(kind MessageKind) string {
@@ -1155,6 +1178,8 @@ func (m *ChatModel) Clear() {
 	m.history = nil
 	m.invalidateContextUsage()
 	m.activeTools = nil
+	m.buildToolCache = nil
+	m.planToolCache = nil
 	m.pendingCall = nil
 	m.toolSteps = 0
 	m.toolFallback = ""
@@ -1470,9 +1495,7 @@ func wrapTranscriptChunk(content string, width int) string {
 func (m *ChatModel) refreshTranscript(scrollBottom bool) {
 	prefixCount := m.stableTranscriptPrefixCount()
 	width := m.viewport.Width
-	if !m.transcriptPrefixValid ||
-		m.transcriptPrefixCount != prefixCount ||
-		m.transcriptPrefixWidth != width {
+	if !m.transcriptPrefixValid || m.transcriptPrefixWidth != width || prefixCount < m.transcriptPrefixCount {
 		m.transcriptPrefix = wrapTranscriptChunk(
 			m.renderTranscriptRange(0, prefixCount, true),
 			width,
@@ -1480,6 +1503,23 @@ func (m *ChatModel) refreshTranscript(scrollBottom bool) {
 		m.transcriptPrefixCount = prefixCount
 		m.transcriptPrefixWidth = width
 		m.transcriptPrefixValid = true
+	} else if prefixCount > m.transcriptPrefixCount {
+		// El historial estable sólo crece en condiciones normales. Renderiza
+		// exclusivamente los mensajes nuevos y añádelos al prefijo ya pintado;
+		// así una conversación de cientos de mensajes no vuelve a pasar completa
+		// por Glamour al terminar un turno y comenzar el siguiente.
+		chunk := wrapTranscriptChunk(
+			m.renderTranscriptRange(m.transcriptPrefixCount, prefixCount, false),
+			width,
+		)
+		if chunk != "" {
+			if m.transcriptPrefix != "" {
+				m.transcriptPrefix += "\n\n"
+			}
+			m.transcriptPrefix += chunk
+		}
+		m.transcriptPrefixCount = prefixCount
+		m.transcriptPrefixWidth = width
 	}
 
 	content := m.transcriptPrefix
@@ -1505,15 +1545,6 @@ func (m *ChatModel) refreshTranscript(scrollBottom bool) {
 	// cada frame lo tire de vuelta al fondo.
 	if scrollBottom && !m.userScrolled {
 		m.viewport.GotoBottom()
-	}
-	// Fuera de un turno activo el viewport ya conserva sus propias líneas y
-	// no necesitamos mantener una segunda copia renderizada de todo el chat.
-	// La caché se reconstruirá al iniciar el siguiente streaming.
-	if !m.streaming {
-		m.transcriptPrefix = ""
-		m.transcriptPrefixCount = 0
-		m.transcriptPrefixWidth = 0
-		m.transcriptPrefixValid = false
 	}
 }
 
@@ -2264,6 +2295,11 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.runningCalls = nil
+		if len(v.materialized) > 0 {
+			m.activeTools = m.rememberToolsForMode(m.turnAgentMode, append(m.activeTools, v.materialized...))
+			m.activeTools = tools.FilterAvailable(m.activeTools, m.toolEnv("", m.turnAgentMode))
+			m.invalidateContextUsage()
+		}
 		for _, callID := range v.compactCallIDs {
 			m.compactRejectedCreateCall(callID)
 		}
@@ -2801,8 +2837,7 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 	if m.turnAgentMode != planstate.Plan {
 		m.cleanupCompletedTodos()
 	}
-	m.persist()
-	m.refreshTranscript(true)
+	m.persistTurnStart()
 	return m, tea.Batch(m.runTurn(), m.chatMouseModeCmd())
 }
 
@@ -2846,9 +2881,7 @@ func (m *ChatModel) runTurn() tea.Cmd {
 	// both the prompt and wire schemas so hidden tools never leak to the model.
 	m.activeTools = tools.FilterAvailable(m.activeTools, m.toolEnv("", m.turnAgentMode))
 
-	msgs := make([]openai.Message, 0, len(m.history)+1)
-	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(m.activeTools, m.skillsBlock(), m.todoBlockForMode(m.turnAgentMode), m.promptModeBlock(m.turnAgentMode))})
-	msgs = append(msgs, m.history...)
+	msgs := m.prepareRequestMessages(m.turnAgentMode)
 
 	var schemas []any
 	for _, s := range tools.Schemas(m.activeTools) {
@@ -2898,9 +2931,7 @@ func (m *ChatModel) contextUsage() (int, int) {
 		m.contextCacheToolSig == toolSig {
 		return m.contextUsedCache, m.contextMaxCache
 	}
-	msgs := make([]openai.Message, 0, len(m.history)+1)
-	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(m.activeTools, m.skillsBlock(), m.todoBlockForMode(m.effectiveAgentMode()), m.promptModeBlock(m.effectiveAgentMode()))})
-	msgs = append(msgs, m.history...)
+	msgs := m.prepareRequestMessages(m.effectiveAgentMode())
 	used := EstimateTokens(msgs)
 	maxCtx := 0
 	if provider := m.ctx.Providers.FindProvider(active.ProviderID); provider != nil {
@@ -2959,28 +2990,21 @@ func (m *ChatModel) runTools(calls []openai.ToolCall, assistantText string) tea.
 	}
 
 	root, _ := os.Getwd()
-	materialize := func(names []string) {
-		set := map[string]bool{}
-		for _, n := range m.activeTools {
-			set[n] = true
-		}
-		for _, n := range names {
-			if !set[n] {
-				set[n] = true
-				m.activeTools = append(m.activeTools, n)
-			}
-		}
-	}
 	var skillCatalog []skills.Skill
 	if m.skillsEnabled() {
 		skillCatalog = m.loadSkills()
 	}
 	env := m.toolEnv(root, m.turnAgentMode)
-	env.Materialize = materialize
 	env.Skills = skillCatalog
 	startTodoRevision := m.todoRevision()
 	return func() tea.Msg {
 		results := make([]openai.Message, 0, len(calls))
+		materialized := make([]string, 0, 4)
+		env.Materialize = func(names []string) {
+			for _, name := range names {
+				materialized = appendUniqueTool(materialized, name)
+			}
+		}
 		compactCallIDs := make([]string, 0, 1)
 		recoverEditors := false
 		recoverCreate := false
@@ -3026,7 +3050,7 @@ func (m *ChatModel) runTools(calls []openai.ToolCall, assistantText string) tea.
 			results = append(results, toolMessage(c, out))
 		}
 		return toolResultsMsg{
-			turnID: turnID, results: results, compactCallIDs: compactCallIDs,
+			turnID: turnID, results: results, materialized: materialized, compactCallIDs: compactCallIDs,
 			recoverEditors: recoverEditors, recoverCreate: recoverCreate,
 			todoChanged:   m.todoRevision() != startTodoRevision,
 			planQuestion:  planQuestion,
@@ -3163,6 +3187,10 @@ func (m *ChatModel) switchCreateToolToEditors() {
 		next = append(next, name)
 	}
 	m.activeTools = next
+	// Cache is intentionally additive across turns for prompt-cache stability.
+	// The current turn may temporarily hide create_file after a policy redirect,
+	// but newly materialized editor tools should remain known on later turns.
+	m.rememberToolsForMode(m.turnAgentMode, next)
 }
 
 func appendUniqueTool(names []string, name string) []string {
@@ -3183,6 +3211,7 @@ func (m *ChatModel) enableCreateTool() {
 	if _, ok := tools.Get("create_file"); ok {
 		m.activeTools = append(m.activeTools, "create_file")
 		sort.Strings(m.activeTools)
+		m.rememberToolsForMode(m.turnAgentMode, []string{"create_file"})
 	}
 }
 
@@ -3421,6 +3450,7 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 		// este bloque no sea necesario.
 		m.activeTools = []string{"tool_search", "list_skills", "skill_search", "skill_files", "skill_read"}
 	}
+	m.activeTools = m.rememberToolsForMode(selectedMode, m.activeTools)
 	m.activeTools = tools.FilterAvailable(m.activeTools, m.toolEnv("", selectedMode))
 	sort.Strings(m.activeTools)
 	m.toolSteps = 0
@@ -3432,15 +3462,14 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 	if m.turnAgentMode != planstate.Plan {
 		m.cleanupCompletedTodos()
 	}
-	m.persist()
-	m.refreshTranscript(true)
+	m.persistTurnStart()
 	return tea.Batch(m.runTurn(), m.chatMouseModeCmd())
 }
 
 // Kept in English on purpose: tool-use guidance is generally followed more
-// consistently across providers in English. The structure mirrors pi.dev:
-// full tool contracts stay in JSON schemas, while the system prompt receives
-// only short snippets and guidelines for the tools active in this turn.
+// consistently across providers in English. Full tool contracts stay in JSON
+// schemas; the system prefix intentionally stays stable as lazy tools are
+// materialized so provider prompt caching can reuse the long conversation.
 func systemPrompt(activeTools []string, skillsBlock, todoBlock, modeBlock string) string {
 	base := "You are Lilith, an expert coding assistant operating inside the user's terminal. " +
 		"Use the tools available for this turn to inspect and work on the real project. " +
@@ -3450,54 +3479,28 @@ func systemPrompt(activeTools []string, skillsBlock, todoBlock, modeBlock string
 		return base + skillsBlock + todoBlock + modeBlock
 	}
 
-	toolLines, toolGuidelines := tools.PromptInfo(activeTools)
+	// Keep this prefix independent from the exact lazy-tool set. Tool contracts
+	// already travel in JSON schemas; repeating per-tool snippets here means that
+	// every tool_search/materialization rewrites the system prefix and destroys
+	// provider prompt-cache reuse. Pi documents the same cache footgun for
+	// promptSnippet/promptGuidelines on lazily activated tools.
 	var b strings.Builder
 	b.WriteString(base)
-	b.WriteString("\n\nAvailable tools:\n")
-	if len(toolLines) == 0 {
-		b.WriteString("- Tool schemas are available for this turn.\n")
-	} else {
-		for _, line := range toolLines {
-			b.WriteString("- " + line + "\n")
-		}
-	}
-
-	b.WriteString("\nGuidelines:\n")
-	seen := map[string]bool{}
-	add := func(rule string) {
-		rule = strings.TrimSpace(rule)
-		if rule == "" || seen[rule] {
-			return
-		}
-		seen[rule] = true
+	b.WriteString("\n\nTool-use guidelines:\n")
+	for _, rule := range []string{
+		"Use only tool names present in the schemas for this turn; tool_search can discover additional capabilities when needed.",
+		"Never write partial files or placeholders such as `...`, `// rest of code`, `TODO: fill in`, or equivalent; changes must leave real files usable as-is.",
+		"For existing files, prefer str_replace for precise replacements or apply_diff for unified patches. Both validate against the current on-disk file; read when you need context or after a mismatch/ambiguity.",
+		"create_file is creation-only. Never use it to overwrite an existing file. `write` and `write_file` are unsupported legacy names.",
+		"Treat FILE_EXISTS, USE_CREATE_FILE and WRITE_BLOCKED as policy redirects and follow the tool named by the result instead of retrying the rejected operation.",
+		"When todo_write is available, use it for work with three or more meaningful implementation steps and keep its snapshot synchronized with actual progress.",
+		"Before finishing code changes, run relevant build/tests when a safe terminal tool is available; never run destructive commands unless the user explicitly requested that destructive action.",
+		"Preserve project conventions and unrelated content. Make the smallest safe change that satisfies the request.",
+		"Do not stop with `do you want me to continue?` when you can keep working; ask only when genuinely blocked by missing information, credentials, or a destructive ambiguity.",
+		"When finished, summarize concrete changes and any action still required from the user in 1-3 lines.",
+	} {
 		b.WriteString("- " + rule + "\n")
 	}
-	for _, rule := range toolGuidelines {
-		add(rule)
-	}
-
-	hasTool := func(name string) bool {
-		for _, active := range activeTools {
-			if active == name {
-				return true
-			}
-		}
-		return false
-	}
-	if hasTool("create_file") || hasTool("str_replace") || hasTool("apply_diff") {
-		add("Never write partial files or placeholders such as `...`, `// rest of code`, `TODO: fill in`, or equivalent; changes must leave real files usable as-is.")
-		add("For existing files, prefer str_replace for precise replacements or apply_diff for unified patches. Both validate against the current on-disk file, so do not perform a ceremonial read solely to unlock them; read when you need context or after a mismatch/ambiguity.")
-		add("create_file is creation-only in Lilith. Never use it to modify, replace, rewrite, fix, refactor or regenerate an existing file. If it returns FILE_EXISTS, do not retry it; switch to str_replace/apply_diff.")
-		add("`write` and `write_file` are unsupported legacy tool names. Never call them. Use create_file only for a genuinely new path, and str_replace/apply_diff for an existing path.")
-		add("Treat FILE_EXISTS, USE_CREATE_FILE and WRITE_BLOCKED as tool-policy redirects, not failures to brute-force: follow the tool named by the result exactly on the next call.")
-		add("Preserve the project's conventions, imports, formatting and unrelated content. Make the smallest safe change that satisfies the request.")
-	}
-	if hasTool("run_terminal_command") {
-		add("Before finishing code changes, run the relevant build/tests when available and fix regressions in the same turn.")
-		add("Never run destructive commands such as rm -rf, force-pushes, or history resets unless the user explicitly requested that destructive action.")
-	}
-	add("Do not stop with `do you want me to continue?` when you can keep working; ask only when genuinely blocked by missing information, credentials, or a destructive ambiguity.")
-	add("When finished, summarize the concrete changes and any action still required from the user in 1-3 lines.")
 
 	cwd, _ := os.Getwd()
 	b.WriteString("\nCurrent working directory: " + filepath.ToSlash(cwd))

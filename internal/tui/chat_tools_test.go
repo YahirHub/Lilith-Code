@@ -160,30 +160,23 @@ func TestSwitchCreateToolToEditorsAfterFileExists(t *testing.T) {
 	}
 }
 
-func TestSystemPromptUsesPiStyleActiveToolMetadata(t *testing.T) {
-	prompt := systemPrompt([]string{"str_replace"}, "", "", "")
-	if !strings.Contains(prompt, "str_replace: Make precise replacements") {
-		t.Fatalf("active tool snippet missing:\n%s", prompt)
+func TestSystemPromptKeepsStableToolGuidanceAcrossLazyToolSets(t *testing.T) {
+	one := systemPrompt([]string{"str_replace"}, "", "", "")
+	two := systemPrompt([]string{"str_replace", "run_terminal_command", "create_file"}, "", "", "")
+	if one != two {
+		t.Fatalf("lazy tool materialization must not rewrite the reusable system prefix:\n--- one ---\n%s\n--- two ---\n%s", one, two)
 	}
-	if strings.Contains(prompt, "run_terminal_command: Execute shell") {
-		t.Fatalf("inactive tool should not consume system-prompt tokens:\n%s", prompt)
+	for _, want := range []string{
+		"validate against the current on-disk file",
+		"`write` and `write_file` are unsupported legacy names",
+		"FILE_EXISTS, USE_CREATE_FILE and WRITE_BLOCKED",
+	} {
+		if !strings.Contains(one, want) {
+			t.Fatalf("stable tool guidance missing %q:\n%s", want, one)
+		}
 	}
-	if strings.Contains(prompt, "first read it with read_files") || strings.Contains(prompt, "MUST have been read") {
-		t.Fatalf("prompt must not enforce a ceremonial read before safe edit:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "validate against the current on-disk file") {
-		t.Fatalf("prompt should explain current-file validation:\n%s", prompt)
-	}
-	if strings.Contains(prompt, "`write` and `write_file`") {
-		t.Fatal("legacy-write guidance should not consume prompt tokens when no file-creation/edit family is active")
-	}
-
-	filePrompt := systemPrompt([]string{"create_file", "str_replace"}, "", "", "")
-	if !strings.Contains(filePrompt, "`write` and `write_file` are unsupported legacy tool names") {
-		t.Fatalf("file prompt must explicitly prohibit legacy overwrite-style tool names:\n%s", filePrompt)
-	}
-	if !strings.Contains(filePrompt, "FILE_EXISTS, USE_CREATE_FILE and WRITE_BLOCKED") {
-		t.Fatalf("file prompt must teach the recovery protocol:\n%s", filePrompt)
+	if strings.Contains(one, "str_replace: Make precise replacements") {
+		t.Fatalf("active-only promptSnippet should not enter the cacheable system prefix:\n%s", one)
 	}
 }
 

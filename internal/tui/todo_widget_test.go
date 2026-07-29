@@ -49,8 +49,8 @@ func TestTodoBlockCarriesExactRevisionIntoSystemPrompt(t *testing.T) {
 	if !strings.Contains(prompt, "[in_progress] implement: Implement todo tool <- inspect") {
 		t.Fatalf("missing exact task state:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "todo_write: Maintain the current multi-step task plan") {
-		t.Fatalf("missing todo tool prompt snippet:\n%s", prompt)
+	if !strings.Contains(prompt, "When todo_write is available") {
+		t.Fatalf("missing stable TodoWrite guidance:\n%s", prompt)
 	}
 }
 

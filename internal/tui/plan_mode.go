@@ -2,6 +2,7 @@ package tui
 
 import (
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -127,12 +128,41 @@ func (m *ChatModel) planWidgetView(_ int) string {
 func isPlanQuestionToolName(name string) bool { return name == "plan_question" }
 func isPlanExitToolName(name string) bool     { return name == "plan_exit" }
 
+func (m *ChatModel) rememberToolsForMode(mode planstate.Mode, names []string) []string {
+	var cache *[]string
+	if mode == planstate.Plan {
+		cache = &m.planToolCache
+	} else {
+		cache = &m.buildToolCache
+	}
+	for _, name := range names {
+		*cache = appendUniqueTool(*cache, name)
+	}
+	sort.Strings(*cache)
+	return append([]string(nil), (*cache)...)
+}
+
 func (m *ChatModel) selectToolsForPrompt(text string, mode planstate.Mode) []string {
 	env := m.toolEnv("", mode)
-	names := tools.SelectAvailable(text, env)
+	selected := tools.SelectAvailable(text, env)
 	if !tools.IsDirectChat(text) && m.skillsEnabled() {
-		names = tools.WithSkillTools(names, len(m.loadSkills()) > 0)
+		selected = tools.WithSkillTools(selected, len(m.loadSkills()) > 0)
 	}
+
+	// A greeting before any real work should stay schema-free. Once a coding
+	// session has materialized tools, however, keep the set additive instead of
+	// replacing it on every prompt. This preserves a stable prompt/tool prefix
+	// for provider-side caching while tool_search can still add capabilities.
+	var cached []string
+	if mode == planstate.Plan {
+		cached = m.planToolCache
+	} else {
+		cached = m.buildToolCache
+	}
+	if tools.IsDirectChat(text) && len(cached) == 0 {
+		return nil
+	}
+	names := m.rememberToolsForMode(mode, selected)
 	return tools.FilterAvailable(names, env)
 }
 
