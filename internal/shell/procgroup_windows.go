@@ -21,7 +21,7 @@ func configureProcessGroup(cmd *exec.Cmd) {
 // killProcessGroup mirrors pi.dev's Windows strategy: launch taskkill for the
 // entire tree and return immediately instead of waiting for taskkill itself.
 // Waiting here used to make context cancellation depend on how quickly Windows
-// could reap Electron/Node descendants, so Ctrl+C could feel delayed and the
+// could reap Electron/Node descendants, so interactive cancellation could feel delayed and the
 // tool goroutine could remain alive until the GUI was closed manually.
 func killProcessGroup(cmd *exec.Cmd) error {
 	if cmd.Process == nil {

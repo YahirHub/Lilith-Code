@@ -19,6 +19,27 @@ func TestSelectionSurfaceAlignsSearchAndCardsToFullUsableWidth(t *testing.T) {
 	}
 }
 
+func TestSelectionSurfaceUsesFullTerminalHeight(t *testing.T) {
+	const height = 42
+	view := renderSelectionSurface(NewStyles(DefaultTheme()), selectionSurfaceSpec{
+		Title:         "Selector",
+		Subtitle:      "Subtítulo",
+		SearchContent: "Buscar  ejemplo",
+		Cards: []selectionSurfaceCard{
+			{Title: "Uno", SingleLine: true},
+			{Title: "Dos", SingleLine: true},
+		},
+		Selected:     0,
+		EmptyText:    "Vacío",
+		Footer:       "Esc volver",
+		ScreenWidth:  100,
+		ScreenHeight: height,
+	})
+	if got := lipgloss.Height(view); got != height {
+		t.Fatalf("selection surface height = %d, want %d", got, height)
+	}
+}
+
 func TestSelectionWindowKeepsFocusedCardVisibleByRenderedHeight(t *testing.T) {
 	s := NewStyles(DefaultTheme())
 	blocks := make([]settingsBlock, 0, 6)

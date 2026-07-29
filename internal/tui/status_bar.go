@@ -41,7 +41,7 @@ func RenderStatusBar(ctx *AppContext, mode string, usedTokens, maxTokens int) st
 
 	left := modeChip + s.Muted.Render(cwd)
 	right := s.Accent.Render("◆ ") + s.Muted.Render(provider)
-	hint := s.Muted.Render("/ comandos · ! bash · Esc cancelar · Ctrl+C limpiar · Ctrl+D salir")
+	hint := s.Muted.Render("/ comandos · ! bash · Esc cancelar · /exit salir")
 
 	w := ctx.Width
 	if w <= 0 {

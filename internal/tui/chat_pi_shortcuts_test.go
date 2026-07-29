@@ -8,7 +8,7 @@ import (
 	"github.com/lilith/li/internal/providers/openai"
 )
 
-func TestCtrlCDoesNotCancelActiveTurnOrDiscardQueue(t *testing.T) {
+func TestCtrlCAndCtrlZAreIgnoredAndNeverExit(t *testing.T) {
 	m := newInputTestChat(t)
 	if err := m.beginTurn(); err != nil {
 		t.Fatalf("beginTurn: %v", err)
@@ -17,24 +17,43 @@ func TestCtrlCDoesNotCancelActiveTurnOrDiscardQueue(t *testing.T) {
 	m.enqueue("sigue con esta corrección", queueSteer)
 	m.textarea.SetValue("borrador")
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if cmd != nil {
-		// The first Ctrl+C only clears input; it must not request process exit.
-		t.Fatal("el primer Ctrl+C no debe cerrar la aplicación")
-	}
-	select {
-	case <-done:
-		t.Fatal("Ctrl+C no debe cancelar el turno activo; Escape es el interrupt")
-	default:
+	for _, key := range []tea.KeyType{tea.KeyCtrlC, tea.KeyCtrlZ} {
+		_, cmd := m.Update(tea.KeyMsg{Type: key})
+		if cmd != nil {
+			t.Fatalf("%v no debe ejecutar salida ni suspensión", key)
+		}
+		select {
+		case <-done:
+			t.Fatalf("%v no debe cancelar el turno activo", key)
+		default:
+		}
 	}
 	if !m.streaming || m.activeTurnID == 0 {
-		t.Fatal("Ctrl+C debe dejar viva la tarea actual")
+		t.Fatal("Ctrl+C/Ctrl+Z deben dejar viva la tarea actual")
 	}
 	if len(m.queue) != 1 || m.queue[0].Text != "sigue con esta corrección" {
-		t.Fatalf("Ctrl+C no debe tocar la cola: %#v", m.queue)
+		t.Fatalf("Ctrl+C/Ctrl+Z no deben tocar la cola: %#v", m.queue)
 	}
-	if got := m.textarea.Value(); got != "" {
-		t.Fatalf("Ctrl+C debe limpiar el editor, obtuvo %q", got)
+	if got := m.textarea.Value(); got != "borrador" {
+		t.Fatalf("Ctrl+C/Ctrl+Z no deben modificar el editor, obtuvo %q", got)
+	}
+}
+
+func TestExitCommandQuitsImmediatelyWhileStreaming(t *testing.T) {
+	m := newInputTestChat(t)
+	if err := m.beginTurn(); err != nil {
+		t.Fatalf("beginTurn: %v", err)
+	}
+
+	_, cmd := m.submit("/exit")
+	if cmd == nil {
+		t.Fatal("/exit debe devolver el comando de salida")
+	}
+	if m.streaming || m.activeTurnID != 0 {
+		t.Fatalf("/exit debe cancelar el turno antes de salir: streaming=%v turn=%d", m.streaming, m.activeTurnID)
+	}
+	if len(m.queue) != 0 {
+		t.Fatalf("/exit no debe entrar a la cola: %#v", m.queue)
 	}
 }
 

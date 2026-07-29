@@ -87,13 +87,13 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	cmd := exec.CommandContext(runCtx, shellPath, args...)
 	cmd.Dir = dir
 	cmd.Stdin = nil
-	// Run the shell in its own process group / job so a cancel (Ctrl+C from
+	// Run the shell in its own process group / job so a cancel (from
 	// the TUI, or a timeout) tears down every descendant it spawned. Without
 	// this, exec.CommandContext only kills the immediate shell PID and leaves
 	// long-running children (npm, tsc, docker, …) orphaned in the background.
 	configureProcessGroup(cmd)
 	cmd.Cancel = func() error { return killProcessGroup(cmd) }
-	// Ctrl+C is a hard stop. After killing the process tree, do not let stale
+	// Interactive cancellation is a hard stop. After killing the process tree, do not let stale
 	// inherited pipes keep the command goroutine around for seconds.
 	cmd.WaitDelay = 100 * time.Millisecond
 

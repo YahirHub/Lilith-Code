@@ -77,9 +77,12 @@ func Commands() []SlashCommand {
 			},
 		},
 		{
-			Name: "exit", Aliases: []string{"quit", "q"},
+			Name:        "exit",
 			Description: "Cierra Lilith",
 			Run: func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd {
+				if chat != nil && chat.activeTurnID != 0 {
+					chat.cancelTurn()
+				}
 				return tea.Quit
 			},
 		},
@@ -137,6 +140,6 @@ func helpText() string {
 		b.WriteString(c.Description)
 		b.WriteString("\n")
 	}
-	b.WriteString("\nAtajos: Enter enviar/dirigir · Alt+Enter seguimiento · Alt+↑ recuperar cola · Esc cancelar · Ctrl+C limpiar · Ctrl+D salir · Ctrl+Z suspender en Unix · Ctrl+R plegar razonamiento")
+	b.WriteString("\nAtajos: Enter enviar/dirigir · Alt+Enter seguimiento · Alt+↑ recuperar cola · Esc cancelar · Ctrl+R plegar razonamiento · /exit salir")
 	return b.String()
 }

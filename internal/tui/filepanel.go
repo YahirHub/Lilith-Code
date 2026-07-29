@@ -177,7 +177,7 @@ func (p *FilePanel) MarkSuperseded() {
 }
 
 // Cancel closes an in-flight file panel without pretending the edit finished.
-// The partially streamed diff/content remains visible after Ctrl+C or resume.
+// The partially streamed diff/content remains visible after cancellation or resume.
 func (p *FilePanel) Cancel() {
 	p.Done = true
 	p.Canceled = true

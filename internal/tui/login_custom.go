@@ -106,8 +106,6 @@ func (m CustomLoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.fetching {
 			switch v.String() {
-			case "ctrl+c":
-				return m, tea.Quit
 			case "esc":
 				// Switch screens instead of pretending to cancel the HTTP command.
 				// Any late result is then delivered to the new model and ignored.
@@ -116,8 +114,6 @@ func (m CustomLoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch v.String() {
-		case "ctrl+c":
-			return m, tea.Quit
 		case "esc":
 			return m.back()
 		case "shift+enter", "alt+enter":
@@ -311,7 +307,7 @@ func (m CustomLoginModel) layout() (string, []settingsHit) {
 		settingsButtonSpec{ID: "cancel", Label: "Cancelar", Danger: true},
 	))
 	c.blank()
-	c.block(settingsFooter(s, "Enter continuar · Alt+Enter salto en modelos · clic en botones · Esc volver · Ctrl+C salir"))
+	c.block(settingsFooter(s, "Enter continuar · Alt+Enter salto en modelos · clic en botones · Esc volver"))
 	return c.render(m.ctx.Width)
 }
 

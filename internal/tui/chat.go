@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -2245,32 +2244,10 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingEnterSeq++
 			m.restoreQueuedToEditor()
 			return m, nil
-		case "ctrl+z":
-			// Mismo criterio de Pi: suspender el proceso en Unix y no asignar el
-			// atajo en Windows, donde no existe SIGTSTP/job control equivalente.
-			if runtime.GOOS == "windows" {
-				return m, nil
-			}
-			return m, tea.Suspend
-		case "ctrl+c":
-			// Pi reserva Ctrl+C para limpiar el editor (o copiar cuando la propia
-			// terminal tiene una selección). Nunca cancela la tarea ni descarta la
-			// cola; Escape es el atajo de interrupción.
-			m.pendingEnter = false
-			m.pendingEnterSeq++
-			m.resetPasteFallback()
-			if m.textarea.Value() != "" {
-				m.textarea.Reset()
-				m.paletteOpen = false
-				m.syncInputHeight()
-			}
+		case "ctrl+z", "ctrl+c":
+			// No hay atajos de teclado para cerrar/suspender Lilith. Esto evita
+			// salidas accidentales y deja /exit como única salida explícita.
 			return m, nil
-		case "ctrl+d":
-			// Pi sale con Ctrl+D sólo cuando el editor está vacío. Con contenido
-			// dejamos que Bubbles procese Ctrl+D como edición normal.
-			if m.textarea.Value() == "" {
-				return m, tea.Quit
-			}
 		case "alt+enter":
 			// Follow-up explícito: durante una tarea espera a que el agente haya
 			// terminado todo el trabajo; en reposo equivale a enviar normalmente.
@@ -2441,6 +2418,15 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 	m.textarea.Reset()
 	m.paletteOpen = false
 	m.syncInputHeight()
+
+	// /exit es una orden de proceso, no un mensaje para el agente. Debe cerrar
+	// inmediatamente incluso si hay streaming, sin quedar atrapado en steering.
+	if strings.EqualFold(strings.TrimSpace(val), "/exit") {
+		if m.activeTurnID != 0 {
+			m.cancelTurn()
+		}
+		return m, tea.Quit
+	}
 
 	// Enter durante una tarea es steering: no abre un turno paralelo. Se
 	// entrega en la siguiente frontera segura (después de las tools actuales)

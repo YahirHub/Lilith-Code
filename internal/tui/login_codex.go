@@ -187,9 +187,6 @@ func (m *CodexLoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch v.String() {
-		case "ctrl+c":
-			m.cleanup()
-			return m, tea.Quit
 		case "esc":
 			m.cleanup()
 			return m, switchTo(NewOnboarding(m.ctx, m.ctx.FirstRun))

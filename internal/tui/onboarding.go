@@ -79,8 +79,6 @@ func (m OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch v.String() {
-		case "ctrl+c":
-			return m, tea.Quit
 		case "esc":
 			if !m.firstRun {
 				return m, switchToChat()

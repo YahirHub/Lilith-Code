@@ -78,8 +78,6 @@ func (c *ConfigScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch v.String() {
-		case "ctrl+c":
-			return c, tea.Quit
 		case "esc", "q":
 			return c, switchToChat()
 		case "tab", "right", "l":

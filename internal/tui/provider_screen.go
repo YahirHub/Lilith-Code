@@ -74,8 +74,6 @@ func (m *ProviderScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch key {
-		case "ctrl+c":
-			return m, tea.Quit
 		case "esc", "q":
 			return m, switchToChat()
 		case "tab":

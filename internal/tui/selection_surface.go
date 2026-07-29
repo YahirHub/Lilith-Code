@@ -56,10 +56,25 @@ func renderSelectionSurface(s Styles, spec selectionSurfaceSpec) string {
 		}))
 	}
 
-	listHeight := spec.ScreenHeight - 10
-	if listHeight < 4 {
-		listHeight = 4
+	footer := settingsFooter(s, spec.Footer).text
+	errorText := ""
+	if spec.Error != "" {
+		errorText = s.Danger.Render(settingsWrapPlain(spec.Error, cardWidth))
 	}
+
+	// Use the real rendered height of the fixed chrome instead of reserving an
+	// arbitrary number of rows. The remaining terminal rows become the result
+	// viewport, so /models and /history can consume the full terminal height and
+	// show as many cards as physically fit.
+	fixedHeight := 1 + lipgloss.Height(header) + lipgloss.Height(search) + lipgloss.Height(footer) + 6
+	if errorText != "" {
+		fixedHeight += 2 + lipgloss.Height(errorText)
+	}
+	listHeight := spec.ScreenHeight - fixedHeight
+	if listHeight < 1 {
+		listHeight = 1
+	}
+
 	start, end := selectionWindow(blocks, spec.Selected, listHeight)
 	listParts := make([]string, 0, end-start)
 	for i := start; i < end; i++ {
@@ -69,17 +84,29 @@ func renderSelectionSurface(s Styles, spec selectionSurfaceSpec) string {
 	if strings.TrimSpace(list) == "" {
 		list = s.Muted.Render(spec.EmptyText)
 	}
+	list = selectionPadHeight(list, listHeight)
 
 	parts := []string{
 		selectionCentered(spec.ScreenWidth, cardWidth, header),
 		selectionCentered(spec.ScreenWidth, searchWidth, search),
 		selectionCentered(spec.ScreenWidth, cardWidth, list),
-		selectionCentered(spec.ScreenWidth, cardWidth, settingsFooter(s, spec.Footer).text),
 	}
-	if spec.Error != "" {
-		parts = append(parts, selectionCentered(spec.ScreenWidth, cardWidth, s.Danger.Render(settingsWrapPlain(spec.Error, cardWidth))))
+	if errorText != "" {
+		parts = append(parts, selectionCentered(spec.ScreenWidth, cardWidth, errorText))
 	}
+	parts = append(parts, selectionCentered(spec.ScreenWidth, cardWidth, footer))
 	return "\n" + strings.Join(parts, "\n\n")
+}
+
+func selectionPadHeight(content string, height int) string {
+	if height < 1 {
+		return content
+	}
+	current := lipgloss.Height(content)
+	if current >= height {
+		return content
+	}
+	return content + strings.Repeat("\n", height-current)
 }
 
 func selectionSearchWidth(screenWidth int) int {

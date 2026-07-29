@@ -17,7 +17,7 @@ func configureProcessGroup(cmd *exec.Cmd) {
 }
 
 // killProcessGroup sends SIGKILL to the entire group. We use SIGKILL rather
-// than SIGTERM because Ctrl+C in the TUI is already a "stop everything now"
+// than SIGTERM because interactive cancellation in the TUI is already a "stop everything now"
 // signal — a polite SIGTERM would leave stubborn children (docker run, tsc
 // --watch, pnpm dev) hanging around, which is exactly what we want to fix.
 func killProcessGroup(cmd *exec.Cmd) error {

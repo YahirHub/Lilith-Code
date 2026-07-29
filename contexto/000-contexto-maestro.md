@@ -156,7 +156,7 @@ Multi-paso: Nombre → Base URL → API Key → descubrir modelos
   - `chatStreamMsg` con `delta` desactiva `thinking` en el primer chunk
     y agrega texto al `streamBuf`.
   - `chatStreamMsg{done:true}` finaliza y resetea flags.
-  - `Ctrl+C` mientras `streaming` cancela el contexto; si no, sale.
+  - `Esc` cancela el turno activo y restaura la cola al editor. `Ctrl+C` y `Ctrl+Z` no cierran ni suspenden el proceso; la salida explícita es `/exit`.
 
 ### 6.5 Animación "Pensando..." (`tui/thinking.go`)
 - `thinkingTickMsg` disparado cada **90ms** vía `tea.Tick`.
@@ -178,7 +178,7 @@ Multi-paso: Nombre → Base URL → API Key → descubrir modelos
 
 ### 6.7 Slash commands (`tui/commands.go`)
 Registrados: `/help`, `/login`, `/providers`, `/models`, `/model`,
-`/clear`, `/quit`.
+`/clear`, `/history`, `/config`, `/exit`.
 - `/models` abre el `model_selector` (fuzzy search en subsequence
   con resaltado de matches, agrupado por proveedor).
 - `/login` reinicia el form custom.
@@ -205,7 +205,7 @@ Funciona:
 - [x] Slash commands + paleta interactiva.
 - [x] **Markdown renderizado en respuestas del asistente** (glamour).
 - [x] **Animación shimmer "Pensando..."** mientras espera el primer chunk.
-- [x] Cancelación con Ctrl+C durante streaming.
+- [x] Cancelación con Esc durante streaming y salida explícita únicamente con `/exit`.
 - [x] Tests: `internal/providers` (store, normalización) e
       `internal/tui` (model selector fuzzy).
 
