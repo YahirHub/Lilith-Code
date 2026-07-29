@@ -23,6 +23,7 @@ import (
 	"github.com/lilith/li/internal/providers/openai"
 	"github.com/lilith/li/internal/session"
 	"github.com/lilith/li/internal/skills"
+	"github.com/lilith/li/internal/subagents"
 	litodo "github.com/lilith/li/internal/todo"
 	"github.com/lilith/li/internal/tools"
 )
@@ -39,6 +40,7 @@ const (
 	MsgFile
 	MsgCommand
 	MsgThinking
+	MsgAgent
 )
 
 // ChatMessage is one rendered entry in the transcript.
@@ -54,6 +56,9 @@ type ChatMessage struct {
 	// Thinking se usa en MsgThinking: resumen de razonamiento del modelo,
 	// con toggle expandir/plegar y altura adaptativa hasta un máximo.
 	Thinking *ThinkingPanel
+	// Agent se usa en MsgAgent: progreso observable de un subagente aislado.
+	// Vive dentro del transcript normal, nunca anclado al footer.
+	Agent *AgentPanel
 }
 
 // InputMode is the state of the input bar (default | bash).
@@ -161,6 +166,10 @@ type ChatModel struct {
 	// Paneles de comando en vivo (run_terminal_command con streaming).
 	cmdPanels map[int]*CommandPanel
 	cmdByCall map[string]*CommandPanel
+	// agentPanels apunta al panel vivo más reciente de cada task_id. Una
+	// reanudación crea un panel nuevo y reemplaza esta entrada sin modificar el
+	// panel histórico anterior que ya quedó en el transcript.
+	agentPanels map[string]*AgentPanel
 
 	thinkingFrame int
 	thinking      bool
@@ -291,6 +300,18 @@ type manualAgentResultMsg struct {
 	err    error
 }
 
+// agentEventBatchMsg streams a short coalesced slice of child-agent progress
+// into Bubble Tea. Token/reasoning deltas can be very frequent; batching them
+// keeps parallel workers observable without forcing a full transcript render
+// for every provider chunk.
+type agentEventBatchMsg struct {
+	events []subagents.Event
+	ch     <-chan subagents.Event
+	done   bool
+}
+
+type agentEventStreamDoneMsg struct{}
+
 // cmdElapsedTickMsg refresca el transcript a intervalo fijo mientras haya
 // paneles de comando en ejecución, para que la línea "Elapsed …" avance de
 // forma suave (antes dependía de que llegara delta streaming y saltaba a
@@ -393,6 +414,59 @@ func cmdElapsedTick() tea.Cmd {
 	// CommandPanel muestra segundos enteros; refrescar dos veces por segundo
 	// reconstruía el viewport sin aportar información visible adicional.
 	return tea.Tick(time.Second, func(time.Time) tea.Msg { return cmdElapsedTickMsg{} })
+}
+
+func agentEventPump(ch <-chan subagents.Event) tea.Cmd {
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		first, ok := <-ch
+		if !ok {
+			return agentEventStreamDoneMsg{}
+		}
+		events := make([]subagents.Event, 0, 32)
+		events = append(events, first)
+		timer := time.NewTimer(35 * time.Millisecond)
+		defer timer.Stop()
+		for len(events) < 128 {
+			select {
+			case event, open := <-ch:
+				if !open {
+					return agentEventBatchMsg{events: events, done: true}
+				}
+				events = append(events, event)
+			case <-timer.C:
+				return agentEventBatchMsg{events: events, ch: ch}
+			}
+		}
+		return agentEventBatchMsg{events: events, ch: ch}
+	}
+}
+
+func (m *ChatModel) applyAgentEvent(event subagents.Event) {
+	if m.agentPanels == nil {
+		m.agentPanels = map[string]*AgentPanel{}
+	}
+	if event.Kind == subagents.EventStarted {
+		panel := newAgentPanel(event)
+		m.agentPanels[event.TaskID] = panel
+		m.messages = append(m.messages, ChatMessage{Kind: MsgAgent, Agent: panel, Time: event.At})
+		m.invalidateTranscriptCache()
+		return
+	}
+	panel := m.agentPanels[event.TaskID]
+	if panel == nil {
+		// Defensive recovery for an event stream that starts after the task was
+		// already created (for example a host attaching late to a resumed task).
+		started := event
+		started.Kind = subagents.EventStarted
+		panel = newAgentPanel(started)
+		m.agentPanels[event.TaskID] = panel
+		m.messages = append(m.messages, ChatMessage{Kind: MsgAgent, Agent: panel, Time: event.At})
+	}
+	panel.Apply(event)
+	m.invalidateTranscriptCache()
 }
 
 // hasRunningCommand devuelve true si algún CommandPanel sigue vivo.
@@ -686,6 +760,8 @@ func transcriptKindName(kind MessageKind) string {
 		return "command"
 	case MsgThinking:
 		return "thinking"
+	case MsgAgent:
+		return "agent"
 	default:
 		return "system"
 	}
@@ -707,6 +783,8 @@ func messageKindFromName(name string) MessageKind {
 		return MsgCommand
 	case "thinking":
 		return MsgThinking
+	case "agent":
+		return MsgAgent
 	default:
 		return MsgSystem
 	}
@@ -755,6 +833,19 @@ func (m *ChatModel) snapshotTranscriptRange(start, end int) []session.Transcript
 		}
 		if tp := msg.Thinking; tp != nil {
 			e.Thinking = &session.ThinkingProgress{Content: tp.Content, Done: tp.Done, Expanded: tp.Expanded}
+		}
+		if ap := msg.Agent; ap != nil {
+			progress := &session.AgentProgress{
+				TaskID: ap.TaskID, ParentTaskID: ap.ParentTaskID, Name: ap.Name, Description: ap.Description,
+				Model: ap.Model, Depth: ap.Depth, Resumed: ap.Resumed, Status: ap.Status,
+				StartedAt: ap.StartedAt, FinishedAt: ap.FinishedAt, Reasoning: ap.Reasoning, Output: ap.Output, Expanded: ap.Expanded,
+			}
+			for _, a := range ap.Activities {
+				progress.Activities = append(progress.Activities, session.AgentActivityProgress{
+					CallID: a.CallID, Name: a.Name, Args: a.Args, Result: a.Result, Running: a.Running, Failed: a.Failed, Started: a.Started, Finished: a.Finished,
+				})
+			}
+			e.Agent = progress
 		}
 		out = append(out, e)
 	}
@@ -927,6 +1018,32 @@ func (m *ChatModel) restoreTranscriptEntries(entries []session.TranscriptEntry, 
 			msg.Kind = MsgThinking
 			msg.Thinking = p
 		}
+		if e.Agent != nil {
+			ap := e.Agent
+			p := &AgentPanel{
+				TaskID: ap.TaskID, ParentTaskID: ap.ParentTaskID, Name: ap.Name, Description: ap.Description, Model: ap.Model,
+				Depth: ap.Depth, Resumed: ap.Resumed, Status: ap.Status, StartedAt: ap.StartedAt, FinishedAt: ap.FinishedAt,
+				Reasoning: ap.Reasoning, Output: ap.Output, Expanded: ap.Expanded,
+			}
+			for _, a := range ap.Activities {
+				p.Activities = append(p.Activities, AgentActivity{CallID: a.CallID, Name: a.Name, Args: a.Args, Result: a.Result, Running: a.Running, Failed: a.Failed, Started: a.Started, Finished: a.Finished})
+			}
+			if interrupted && p.Status == "running" {
+				p.Status = "killed"
+				p.FinishedAt = time.Now()
+				for i := range p.Activities {
+					p.Activities[i].Running = false
+				}
+			}
+			msg.Kind = MsgAgent
+			msg.Agent = p
+			if m.agentPanels == nil {
+				m.agentPanels = map[string]*AgentPanel{}
+			}
+			if p.TaskID != "" {
+				m.agentPanels[p.TaskID] = p
+			}
+		}
 		m.messages = append(m.messages, msg)
 	}
 }
@@ -1002,6 +1119,7 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 	m.panelByCall = map[string]*FilePanel{}
 	m.cmdPanels = map[int]*CommandPanel{}
 	m.cmdByCall = map[string]*CommandPanel{}
+	m.agentPanels = map[string]*AgentPanel{}
 	m.persistRevision = s.Revision
 
 	// Sesiones nuevas guardan un transcript independiente del historial API.
@@ -1105,14 +1223,14 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 					}
 					m.messages = append(m.messages, ChatMessage{Kind: MsgCommand, Command: cp, Time: s.UpdatedAt})
 				default:
-					if isTodoToolName(c.Function.Name) || isPlanQuestionToolName(c.Function.Name) || isPlanExitToolName(c.Function.Name) {
+					if isTodoToolName(c.Function.Name) || isPlanQuestionToolName(c.Function.Name) || isPlanExitToolName(c.Function.Name) || isAgentToolName(c.Function.Name) {
 						continue
 					}
 					m.messages = append(m.messages, ChatMessage{Kind: MsgTool, Content: describeCall(c), Time: s.UpdatedAt})
 				}
 			}
 		case "tool":
-			if (isTodoToolName(msg.Name) || isPlanQuestionToolName(msg.Name) || isPlanExitToolName(msg.Name)) &&
+			if (isTodoToolName(msg.Name) || isPlanQuestionToolName(msg.Name) || isPlanExitToolName(msg.Name) || isAgentToolName(msg.Name)) &&
 				!strings.HasPrefix(strings.TrimSpace(msg.Content), "error:") {
 				continue
 			}
@@ -1204,6 +1322,7 @@ func (m *ChatModel) Clear() {
 	m.panelByCall = nil
 	m.cmdPanels = nil
 	m.cmdByCall = nil
+	m.agentPanels = nil
 	m.panelSel = 0
 	m.panelPinned = false
 	m.thinkingActive = nil
@@ -1439,6 +1558,10 @@ func (m *ChatModel) renderMessage(msg ChatMessage, width int, selectedPanel *Fil
 	case MsgThinking:
 		if msg.Thinking != nil {
 			b.WriteString(msg.Thinking.View(s, width, false))
+		}
+	case MsgAgent:
+		if msg.Agent != nil {
+			b.WriteString(msg.Agent.View(s, width))
 		}
 	}
 	return b.String()
@@ -2063,6 +2186,20 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTranscript(true)
 		return m, cmdElapsedTick()
 
+	case agentEventBatchMsg:
+		for _, event := range v.events {
+			m.applyAgentEvent(event)
+		}
+		refreshCmd := m.refreshTranscriptStreaming(!m.userScrolled)
+		liveCmd := m.requestLivePersist()
+		if v.done {
+			return m, tea.Batch(refreshCmd, liveCmd)
+		}
+		return m, tea.Batch(refreshCmd, liveCmd, agentEventPump(v.ch))
+
+	case agentEventStreamDoneMsg:
+		return m, nil
+
 	case manualAgentResultMsg:
 		if v.turnID == 0 || v.turnID != m.activeTurnID {
 			return m, nil
@@ -2230,7 +2367,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.applyToolCalls(calls)
 				for _, c := range calls {
 					if IsFileTool(c.Function.Name) || IsCommandTool(c.Function.Name) || isTodoToolName(c.Function.Name) ||
-						isPlanQuestionToolName(c.Function.Name) || isPlanExitToolName(c.Function.Name) {
+						isPlanQuestionToolName(c.Function.Name) || isPlanExitToolName(c.Function.Name) || isAgentToolName(c.Function.Name) {
 						continue
 					}
 					m.messages = append(m.messages, ChatMessage{
@@ -2360,7 +2497,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		for _, r := range v.results {
-			if (isTodoToolName(r.Name) || isPlanQuestionToolName(r.Name) || isPlanExitToolName(r.Name)) &&
+			if (isTodoToolName(r.Name) || isPlanQuestionToolName(r.Name) || isPlanExitToolName(r.Name) || isAgentToolName(r.Name)) &&
 				!strings.HasPrefix(strings.TrimSpace(r.Content), "error:") {
 				continue
 			}
@@ -2598,6 +2735,18 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for i := len(m.messages) - 1; i >= 0; i-- {
 				if m.messages[i].Kind == MsgThinking && m.messages[i].Thinking != nil {
 					m.messages[i].Thinking.Expanded = !m.messages[i].Thinking.Expanded
+					m.invalidateTranscriptCache()
+					m.refreshTranscript(true)
+					break
+				}
+			}
+			return m, nil
+		case "ctrl+g":
+			// Toggle del subagente más reciente. Los paneles siguen formando
+			// parte del transcript y nunca quedan anclados al viewport.
+			for i := len(m.messages) - 1; i >= 0; i-- {
+				if m.messages[i].Kind == MsgAgent && m.messages[i].Agent != nil {
+					m.messages[i].Agent.Expanded = !m.messages[i].Agent.Expanded
 					m.invalidateTranscriptCache()
 					m.refreshTranscript(true)
 					break
@@ -3030,10 +3179,33 @@ func (m *ChatModel) runTools(calls []openai.ToolCall, assistantText string) tea.
 	if m.skillsEnabled() {
 		skillCatalog = m.loadSkills()
 	}
-	env := m.toolEnv(root, m.turnAgentMode)
+	var agentEvents chan subagents.Event
+	for _, call := range calls {
+		if isAgentToolName(call.Function.Name) {
+			agentEvents = make(chan subagents.Event, 256)
+			break
+		}
+	}
+	var eventSink subagents.EventSink
+	if agentEvents != nil {
+		eventSink = func(event subagents.Event) {
+			if event.Kind == subagents.EventCompleted || event.Kind == subagents.EventFailed || event.Kind == subagents.EventCanceled {
+				agentEvents <- event
+				return
+			}
+			select {
+			case agentEvents <- event:
+			case <-runCtx.Done():
+			}
+		}
+	}
+	env := m.toolEnvWithAgentEvents(root, m.turnAgentMode, eventSink)
 	env.Skills = skillCatalog
 	startTodoRevision := m.todoRevision()
-	return func() tea.Msg {
+	execCmd := func() tea.Msg {
+		if agentEvents != nil {
+			defer close(agentEvents)
+		}
 		results := make([]openai.Message, 0, len(calls))
 		materialized := make([]string, 0, 4)
 		env.Materialize = func(names []string) {
@@ -3126,6 +3298,10 @@ func (m *ChatModel) runTools(calls []openai.ToolCall, assistantText string) tea.
 			planCompleted: planCompleted,
 		}
 	}
+	if agentEvents != nil {
+		return tea.Batch(execCmd, agentEventPump(agentEvents))
+	}
+	return execCmd
 }
 
 func isAgentToolName(name string) bool {
@@ -3501,19 +3677,32 @@ func (m *ChatModel) invokeAgentDirect(name, prompt, visible string) (tea.Model, 
 	}
 	turnID := m.activeTurnID
 	runCtx := m.turnCtx
-	env := m.toolEnv("", m.turnAgentMode)
+	agentEvents := make(chan subagents.Event, 256)
+	eventSink := func(event subagents.Event) {
+		if event.Kind == subagents.EventCompleted || event.Kind == subagents.EventFailed || event.Kind == subagents.EventCanceled {
+			agentEvents <- event
+			return
+		}
+		select {
+		case agentEvents <- event:
+		case <-runCtx.Done():
+		}
+	}
+	env := m.toolEnvWithAgentEvents("", m.turnAgentMode, eventSink)
 	m.streaming = true
 	m.thinking = false
 	m.working = true
 	m.userScrolled = false
 	m.persistTurnStart()
 	m.refreshTranscript(true)
-	return m, func() tea.Msg {
+	execCmd := func() tea.Msg {
+		defer close(agentEvents)
 		result, err := env.RunAgent(runCtx, tools.AgentRequest{
 			Agent: *a, Prompt: prompt, Description: "direct @" + a.Name,
 		})
 		return manualAgentResultMsg{turnID: turnID, agent: a.Name, taskID: result.TaskID, text: result.Text, err: err}
 	}
+	return m, tea.Batch(execCmd, agentEventPump(agentEvents))
 }
 
 // loadAgents discovers Claude-compatible subagents from bundled, user and

@@ -441,6 +441,6 @@ func FormatForPrompt(list []Agent) string {
 		return ""
 	}
 	b.WriteString("</available_agents>\n")
-	b.WriteString("Use the Agent tool proactively for self-contained work that benefits from isolated context, especially exploration, research, review, or parallelizable specialist tasks. Delegate a complete task with enough context; the parent receives only the subagent's final result. Do not delegate trivial work or work that depends heavily on unstated conversation details.\n")
+	b.WriteString("Use the Agent tool proactively for self-contained work that benefits from isolated context, especially exploration, research, review, or parallelizable specialist tasks. Delegate a complete task with enough context; the parent receives the subagent's result. For independent work, issue multiple Agent calls in the same response so they can run concurrently, then orchestrate their results. Subagents may delegate further while below the nesting limit. Do not delegate trivial work or work that depends heavily on unstated conversation details.\n")
 	return b.String()
 }

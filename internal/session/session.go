@@ -40,6 +40,7 @@ type TranscriptEntry struct {
 	File     *FileProgress     `json:"file,omitempty"`
 	Command  *CommandProgress  `json:"command,omitempty"`
 	Thinking *ThinkingProgress `json:"thinking,omitempty"`
+	Agent    *AgentProgress    `json:"agent,omitempty"`
 }
 
 type TextEdit struct {
@@ -87,6 +88,37 @@ type ThinkingProgress struct {
 	Content  string `json:"content,omitempty"`
 	Done     bool   `json:"done,omitempty"`
 	Expanded bool   `json:"expanded,omitempty"`
+}
+
+// AgentProgress persists the parent-visible projection of one subagent run.
+// The full isolated protocol transcript lives in projects/.../subagents; this
+// snapshot only restores the live/finished orchestration panel in the parent.
+type AgentProgress struct {
+	TaskID       string                  `json:"taskId,omitempty"`
+	ParentTaskID string                  `json:"parentTaskId,omitempty"`
+	Name         string                  `json:"name,omitempty"`
+	Description  string                  `json:"description,omitempty"`
+	Model        string                  `json:"model,omitempty"`
+	Depth        int                     `json:"depth,omitempty"`
+	Resumed      bool                    `json:"resumed,omitempty"`
+	Status       string                  `json:"status,omitempty"`
+	StartedAt    time.Time               `json:"startedAt,omitempty"`
+	FinishedAt   time.Time               `json:"finishedAt,omitempty"`
+	Reasoning    string                  `json:"reasoning,omitempty"`
+	Output       string                  `json:"output,omitempty"`
+	Activities   []AgentActivityProgress `json:"activities,omitempty"`
+	Expanded     bool                    `json:"expanded,omitempty"`
+}
+
+type AgentActivityProgress struct {
+	CallID   string    `json:"callId,omitempty"`
+	Name     string    `json:"name,omitempty"`
+	Args     string    `json:"args,omitempty"`
+	Result   string    `json:"result,omitempty"`
+	Running  bool      `json:"running,omitempty"`
+	Failed   bool      `json:"failed,omitempty"`
+	Started  time.Time `json:"started,omitempty"`
+	Finished time.Time `json:"finished,omitempty"`
 }
 
 // LiveCheckpoint is written to a tiny sidecar while a turn is still mutable.

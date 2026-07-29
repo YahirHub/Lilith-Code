@@ -2,6 +2,9 @@ package subagents
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -131,5 +134,152 @@ func TestConfiguredMaxDepthDefaultsToClaudeValue(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH", "2")
 	if got := configuredMaxDepth(); got != 2 {
 		t.Fatalf("Claude-compatible max depth=%d, want 2", got)
+	}
+}
+
+type scriptedStreamer struct {
+	responses [][]openai.Chunk
+	requests  int
+}
+
+func (s *scriptedStreamer) Stream(_ context.Context, _ openai.Request) <-chan openai.Chunk {
+	idx := s.requests
+	s.requests++
+	ch := make(chan openai.Chunk, 8)
+	if idx < len(s.responses) {
+		for _, chunk := range s.responses[idx] {
+			ch <- chunk
+		}
+	}
+	close(ch)
+	return ch
+}
+
+func TestRunEmitsObservableLifecycle(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "hello.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var call openai.ToolCall
+	call.ID = "call-read"
+	call.Type = "function"
+	call.Function.Name = "read_files"
+	call.Function.Arguments = `{"paths":["hello.txt"]}`
+	fake := &scriptedStreamer{responses: [][]openai.Chunk{
+		{{Thinking: "inspect"}, {ToolCalls: []openai.ToolCall{call}}},
+		{{Delta: "done"}},
+	}}
+	var events []Event
+	cfg := Config{
+		Client: fake, ConfigDir: t.TempDir(), Root: root, ParentProviderID: "p", ParentModelID: "m",
+		Providers: providers.Config{Providers: []providers.Provider{{ID: "p", Name: "P", Models: []providers.Model{{ID: "m"}}}}},
+		Events:    func(event Event) { events = append(events, event) },
+	}
+	result, err := Run(context.Background(), cfg, tools.AgentRequest{
+		Agent:  agents.Agent{Name: "explore", Description: "explores", Tools: []string{"Read"}},
+		Prompt: "inspect", Description: "inspect file",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "done" {
+		t.Fatalf("result=%#v", result)
+	}
+	var kinds []EventKind
+	for _, event := range events {
+		kinds = append(kinds, event.Kind)
+	}
+	want := []EventKind{EventStarted, EventThinking, EventToolStarted, EventToolFinished, EventText, EventCompleted}
+	for _, kind := range want {
+		found := false
+		for _, got := range kinds {
+			if got == kind {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing event %q in %#v", kind, kinds)
+		}
+	}
+	if events[0].TaskID == "" || events[0].Depth != 1 {
+		t.Fatalf("started=%#v", events[0])
+	}
+}
+
+func TestChildPromptAdvertisesAgentsOnlyBelowNestingLimit(t *testing.T) {
+	catalog := []agents.Agent{
+		{Name: "worker", Description: "general worker", Prompt: "Work."},
+		{Name: "Explore", Description: "read-only exploration", Prompt: "Explore."},
+	}
+	providerCfg := providers.Config{Providers: []providers.Provider{{ID: "p", Name: "P", Models: []providers.Model{{ID: "m"}}}}}
+
+	below := &fakeStreamer{}
+	_, err := Run(context.Background(), Config{
+		Client: below, ConfigDir: t.TempDir(), Root: t.TempDir(), ParentProviderID: "p", ParentModelID: "m",
+		Providers: providerCfg, Agents: catalog, Depth: 1, MaxDepth: 3,
+	}, tools.AgentRequest{Agent: catalog[0], Prompt: "delegate if useful"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(below.requests) != 1 {
+		t.Fatalf("requests=%d", len(below.requests))
+	}
+	system := below.requests[0].Messages[0].Content
+	if !strings.Contains(system, "<available_agents>") || !strings.Contains(system, "Explore") {
+		t.Fatalf("nested-capable child did not receive agent catalog: %q", system)
+	}
+	toolJSON, err := json.Marshal(below.requests[0].Tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(toolJSON), `"name":"Agent"`) {
+		t.Fatalf("nested-capable child did not receive Agent tool schema: %s", toolJSON)
+	}
+
+	atLimit := &fakeStreamer{}
+	_, err = Run(context.Background(), Config{
+		Client: atLimit, ConfigDir: t.TempDir(), Root: t.TempDir(), ParentProviderID: "p", ParentModelID: "m",
+		Providers: providerCfg, Agents: catalog, Depth: 3, MaxDepth: 3,
+	}, tools.AgentRequest{Agent: catalog[0], Prompt: "do not delegate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(atLimit.requests) != 1 {
+		t.Fatalf("requests=%d", len(atLimit.requests))
+	}
+	if strings.Contains(atLimit.requests[0].Messages[0].Content, "<available_agents>") {
+		t.Fatal("agent catalog leaked into child at nesting ceiling")
+	}
+	toolJSON, err = json.Marshal(atLimit.requests[0].Tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(toolJSON), `"name":"Agent"`) {
+		t.Fatalf("Agent tool leaked into child at nesting ceiling: %s", toolJSON)
+	}
+}
+
+func TestLifecycleCarriesParentTaskID(t *testing.T) {
+	fake := &fakeStreamer{}
+	var started Event
+	cfg := Config{
+		Client: fake, ConfigDir: t.TempDir(), Root: t.TempDir(), ParentTaskID: "agent-parent", Depth: 2, MaxDepth: 3,
+		ParentProviderID: "p", ParentModelID: "m",
+		Providers: providers.Config{Providers: []providers.Provider{{ID: "p", Name: "P", Models: []providers.Model{{ID: "m"}}}}},
+		Events: func(event Event) {
+			if event.Kind == EventStarted {
+				started = event
+			}
+		},
+	}
+	_, err := Run(context.Background(), cfg, tools.AgentRequest{
+		Agent: agents.Agent{Name: "child", Description: "child"}, Prompt: "work", Description: "nested work",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.ParentTaskID != "agent-parent" || started.Depth != 2 || started.TaskID == "" {
+		t.Fatalf("started=%#v", started)
 	}
 }

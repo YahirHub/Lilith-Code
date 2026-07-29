@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/lilith/li/internal/agents"
 	planstate "github.com/lilith/li/internal/plan"
@@ -39,11 +41,17 @@ type Config struct {
 	ParentMode       planstate.Mode
 	Skills           []skills.Skill
 	Agents           []agents.Agent
-	// Depth is 1 for a top-level subagent. MaxDepth defaults to Claude Code's
-	// current three-layer subagent depth and can be overridden with
-	// LILITH_MAX_SUBAGENT_DEPTH or CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH.
+	// Depth is 1 for a top-level subagent. MaxDepth follows Claude Code's
+	// current default of three subagent layers below the main conversation.
+	// LILITH_MAX_SUBAGENT_DEPTH or the Claude-compatible
+	// CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH can override the default.
 	Depth    int
 	MaxDepth int
+
+	// ParentTaskID links nested workers for UI/orchestration. Events is an
+	// optional live progress stream; nested workers inherit it.
+	ParentTaskID string
+	Events       EventSink
 }
 
 func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentResult, error) {
@@ -61,6 +69,15 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 		return tools.AgentResult{}, err
 	}
 
+	depth := cfg.Depth
+	if depth <= 0 {
+		depth = 1
+	}
+	maxDepth := cfg.MaxDepth
+	if maxDepth <= 0 {
+		maxDepth = configuredMaxDepth()
+	}
+
 	store := newChildStore(cfg.ConfigDir, cfg.Root)
 	resumed := false
 	var child *childSession
@@ -76,6 +93,11 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 			return tools.AgentResult{}, fmt.Errorf("task %s belongs to a different project", child.ID)
 		}
 		resumed = true
+		child.ParentTaskID = cfg.ParentTaskID
+		child.Description = req.Description
+		child.Depth = depth
+		child.Status = "running"
+		child.FinishedAt = time.Time{}
 		providerFromStore := cfg.Providers.FindProvider(child.ProviderID)
 		if providerFromStore != nil {
 			provider = *providerFromStore
@@ -85,10 +107,10 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 	} else {
 		now := timeNow()
 		child = &childSession{
-			ID: newTaskID(), AgentName: req.Agent.Name, Project: filepathClean(cfg.Root),
+			ID: newTaskID(), AgentName: req.Agent.Name, ParentTaskID: cfg.ParentTaskID, Description: req.Description, Depth: depth, Status: "running", Project: filepathClean(cfg.Root),
 			ProviderID: provider.ID, ModelID: model, CreatedAt: now, UpdatedAt: now,
 			Messages: []openai.Message{
-				{Role: "system", Content: buildSystemPrompt(req.Agent, cfg.Root, cfg.Skills)},
+				{Role: "system", Content: buildSystemPrompt(req.Agent, cfg.Root, cfg.Skills, cfg.Agents, depth < maxDepth)},
 				{Role: "user", Content: req.Prompt},
 			},
 		}
@@ -102,15 +124,6 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 		mode = planstate.Plan
 	}
 
-	depth := cfg.Depth
-	if depth <= 0 {
-		depth = 1
-	}
-	maxDepth := cfg.MaxDepth
-	if maxDepth <= 0 {
-		maxDepth = configuredMaxDepth()
-	}
-
 	policy := newToolPolicy(req.Agent, mode)
 	env := tools.Env{Root: cfg.Root, ConfigDir: cfg.ConfigDir, Skills: cfg.Skills, Todos: localTodos, AgentMode: mode}
 	if depth < maxDepth && len(cfg.Agents) > 0 {
@@ -122,6 +135,7 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 			nested.ParentMode = mode
 			nested.Depth = depth + 1
 			nested.MaxDepth = maxDepth
+			nested.ParentTaskID = child.ID
 			return Run(childCtx, nested, childReq)
 		}
 	}
@@ -139,15 +153,29 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 	if err := store.save(child); err != nil {
 		return tools.AgentResult{}, err
 	}
+	emit(cfg, Event{
+		Kind: EventStarted, TaskID: child.ID, ParentTaskID: cfg.ParentTaskID,
+		AgentName: req.Agent.Name, Description: req.Description, Model: model,
+		Depth: depth, Resumed: resumed, At: timeNow(),
+	})
 
 	turns := 0
 	for {
 		if err := ctx.Err(); err != nil {
+			child.Status = "killed"
+			child.FinishedAt = timeNow()
+			_ = store.save(child)
+			emit(cfg, Event{Kind: EventCanceled, TaskID: child.ID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Content: err.Error(), At: timeNow()})
 			return tools.AgentResult{}, err
 		}
 		turns++
 		if req.Agent.MaxTurns > 0 && turns > req.Agent.MaxTurns {
-			return tools.AgentResult{}, fmt.Errorf("subagent %s reached its configured maxTurns=%d", req.Agent.Name, req.Agent.MaxTurns)
+			err := fmt.Errorf("subagent %s reached its configured maxTurns=%d", req.Agent.Name, req.Agent.MaxTurns)
+			child.Status = "failed"
+			child.FinishedAt = timeNow()
+			_ = store.save(child)
+			emit(cfg, Event{Kind: EventFailed, TaskID: child.ID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Content: err.Error(), At: timeNow()})
+			return tools.AgentResult{}, err
 		}
 
 		var schemas []any
@@ -155,16 +183,30 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 			schemas = append(schemas, schema)
 		}
 		ch := cfg.Client.Stream(ctx, openai.Request{Provider: provider, Model: model, Messages: child.Messages, Stream: true, Tools: schemas})
-		text, reasoning, calls, err := collect(ch)
+		text, reasoning, calls, err := collect(ch, cfg, child.ID, req, model, depth)
 		if err != nil {
-			return tools.AgentResult{}, fmt.Errorf("subagent %s: %w", req.Agent.Name, err)
+			wrapped := fmt.Errorf("subagent %s: %w", req.Agent.Name, err)
+			kind := EventFailed
+			if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+				kind = EventCanceled
+				child.Status = "killed"
+			} else {
+				child.Status = "failed"
+			}
+			child.FinishedAt = timeNow()
+			_ = store.save(child)
+			emit(cfg, Event{Kind: kind, TaskID: child.ID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Content: wrapped.Error(), At: timeNow()})
+			return tools.AgentResult{}, wrapped
 		}
 		assistant := openai.Message{Role: "assistant", Content: text, ReasoningContent: reasoning, ToolCalls: calls}
 		child.Messages = append(child.Messages, assistant)
 		if len(calls) == 0 {
+			child.Status = "completed"
+			child.FinishedAt = timeNow()
 			if err := store.save(child); err != nil {
 				return tools.AgentResult{}, err
 			}
+			emit(cfg, Event{Kind: EventCompleted, TaskID: child.ID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Content: strings.TrimSpace(text), At: timeNow()})
 			return tools.AgentResult{TaskID: child.ID, AgentName: req.Agent.Name, Text: strings.TrimSpace(text), Resumed: resumed}, nil
 		}
 
@@ -176,20 +218,8 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 				}
 			}
 		}
-		for _, call := range calls {
-			args := map[string]any{}
-			if strings.TrimSpace(call.Function.Arguments) != "" {
-				if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-					child.Messages = append(child.Messages, toolMessage(call, "error: invalid JSON arguments: "+err.Error()))
-					continue
-				}
-			}
-			out, execErr := tools.Execute(ctx, call.Function.Name, args, env)
-			if execErr != nil {
-				out = "error: " + execErr.Error()
-			}
-			child.Messages = append(child.Messages, toolMessage(call, out))
-		}
+		toolMessages := executeToolCalls(ctx, cfg, child.ID, req, model, depth, calls, env)
+		child.Messages = append(child.Messages, toolMessages...)
 		active = tools.FilterAvailable(uniqueSorted(materialized), env)
 		child.Tools = append([]string(nil), active...)
 		if err := store.save(child); err != nil {
@@ -198,7 +228,7 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 	}
 }
 
-func collect(ch <-chan openai.Chunk) (text, reasoning string, calls []openai.ToolCall, err error) {
+func collect(ch <-chan openai.Chunk, cfg Config, taskID string, req tools.AgentRequest, model string, depth int) (text, reasoning string, calls []openai.ToolCall, err error) {
 	var tb, rb strings.Builder
 	for chunk := range ch {
 		if chunk.Err != nil {
@@ -206,9 +236,11 @@ func collect(ch <-chan openai.Chunk) (text, reasoning string, calls []openai.Too
 		}
 		if chunk.Delta != "" {
 			tb.WriteString(chunk.Delta)
+			emit(cfg, Event{Kind: EventText, TaskID: taskID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Content: chunk.Delta, At: timeNow()})
 		}
 		if chunk.Thinking != "" {
 			rb.WriteString(chunk.Thinking)
+			emit(cfg, Event{Kind: EventThinking, TaskID: taskID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Content: chunk.Thinking, At: timeNow()})
 		}
 		if len(chunk.ToolCalls) > 0 && !chunk.Partial {
 			calls = append([]openai.ToolCall(nil), chunk.ToolCalls...)
@@ -217,11 +249,78 @@ func collect(ch <-chan openai.Chunk) (text, reasoning string, calls []openai.Too
 	return tb.String(), rb.String(), calls, nil
 }
 
+func executeToolCalls(ctx context.Context, cfg Config, taskID string, req tools.AgentRequest, model string, depth int, calls []openai.ToolCall, env tools.Env) []openai.Message {
+	results := make([]openai.Message, len(calls))
+	execute := func(i int, call openai.ToolCall) {
+		args := map[string]any{}
+		if strings.TrimSpace(call.Function.Arguments) != "" {
+			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+				out := "error: invalid JSON arguments: " + err.Error()
+				emitTool(cfg, EventToolStarted, taskID, req, model, depth, call, "")
+				emitTool(cfg, EventToolFinished, taskID, req, model, depth, call, out)
+				results[i] = toolMessage(call, out)
+				return
+			}
+		}
+		emitTool(cfg, EventToolStarted, taskID, req, model, depth, call, "")
+		out, execErr := tools.Execute(ctx, call.Function.Name, args, env)
+		if execErr != nil {
+			out = "error: " + execErr.Error()
+		}
+		emitTool(cfg, EventToolFinished, taskID, req, model, depth, call, out)
+		results[i] = toolMessage(call, out)
+	}
+
+	// Claude/OpenCode can orchestrate independent child workers in parallel. If
+	// a subagent emits a pure Agent batch, run those children concurrently while
+	// preserving result order for the provider protocol.
+	if len(calls) > 1 && allAgentToolCalls(calls) {
+		var wg sync.WaitGroup
+		for i, call := range calls {
+			i, call := i, call
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				execute(i, call)
+			}()
+		}
+		wg.Wait()
+		return results
+	}
+	for i, call := range calls {
+		execute(i, call)
+	}
+	return results
+}
+
+func emit(cfg Config, event Event) {
+	if cfg.Events != nil {
+		cfg.Events(event)
+	}
+}
+
+func emitTool(cfg Config, kind EventKind, taskID string, req tools.AgentRequest, model string, depth int, call openai.ToolCall, content string) {
+	emit(cfg, Event{Kind: kind, TaskID: taskID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, ToolCallID: call.ID, ToolName: call.Function.Name, ToolArgs: call.Function.Arguments, Content: content, At: timeNow()})
+}
+
+func allAgentToolCalls(calls []openai.ToolCall) bool {
+	if len(calls) == 0 {
+		return false
+	}
+	for _, call := range calls {
+		name := strings.ToLower(strings.TrimSpace(call.Function.Name))
+		if name != "agent" && name != "task" {
+			return false
+		}
+	}
+	return true
+}
+
 func toolMessage(call openai.ToolCall, content string) openai.Message {
 	return openai.Message{Role: "tool", ToolCallID: call.ID, Name: call.Function.Name, Content: content}
 }
 
-func buildSystemPrompt(a agents.Agent, root string, catalog []skills.Skill) string {
+func buildSystemPrompt(a agents.Agent, root string, catalog []skills.Skill, agentCatalog []agents.Agent, canDelegate bool) string {
 	var b strings.Builder
 	prompt := strings.TrimSpace(a.Prompt)
 	if prompt == "" {
@@ -232,6 +331,11 @@ func buildSystemPrompt(a agents.Agent, root string, catalog []skills.Skill) stri
 	b.WriteString(filepathSlash(root))
 	b.WriteString("\n- You are an isolated subagent. You do not have the parent conversation history. The user-facing parent receives only your final result.\n")
 	b.WriteString("- Do not ask the parent to repeat information already present in the delegated task. Investigate with available tools when possible.\n")
+	if canDelegate {
+		if available := agents.FormatForPrompt(agentCatalog); available != "" {
+			b.WriteString(available)
+		}
+	}
 	if preloaded := preloadSkills(a.Skills, catalog); preloaded != "" {
 		b.WriteString(preloaded)
 	}
@@ -330,8 +434,17 @@ func (p toolPolicy) initialTools(prompt string, env tools.Env) []string {
 	if len(env.Skills) > 0 {
 		names = tools.WithSkillTools(names, true)
 	}
-	// An inherited Claude agent has access to all tools, but Lilith keeps its
-	// lazy registry: tool_search can materialize any policy-allowed capability.
+	// A Claude-style inherited agent can orchestrate children whenever the
+	// runtime exposes Agent at this depth. Do not leave orchestration to lexical
+	// lazy-tool selection: the worker's own system prompt explicitly advertises
+	// the roster, so Agent must be in the schema from its first turn. Agents that
+	// declare an explicit tools allowlist still control this via p.allow above.
+	if env.RunAgent != nil && p.allowsName("Agent") {
+		names = append(names, "Agent")
+	}
+	// An inherited Claude agent has access to all tools, but Lilith keeps the
+	// rest of its registry lazy: tool_search can materialize any policy-allowed
+	// capability without bloating every child request.
 	return uniqueSorted(names)
 }
 

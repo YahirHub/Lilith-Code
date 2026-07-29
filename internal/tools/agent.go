@@ -33,6 +33,11 @@ func init() {
 			"Choose subagent_type from <available_agents>. The subagent receives the task and its own system prompt/tool policy, not the parent's full conversation. " +
 			"Use task_id only to continue a previous subagent session. The final result is returned to this conversation.",
 		PromptSnippet: "Delegate isolated work to a specialized subagent",
+		PromptGuidelines: []string{
+			"Act as an orchestrator when useful: delegate independent, self-contained investigations or implementation units instead of doing all work in the parent context.",
+			"When two or more delegated tasks are independent, emit multiple Agent calls in the same assistant response so Lilith can execute them concurrently; wait for their results, then synthesize or continue.",
+			"A subagent may delegate further while below the configured nesting depth. Give every child enough context to work without the parent conversation.",
+		},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

@@ -20,15 +20,20 @@ const (
 )
 
 type childSession struct {
-	ID         string           `json:"id"`
-	AgentName  string           `json:"agentName"`
-	Project    string           `json:"project"`
-	ProviderID string           `json:"providerId"`
-	ModelID    string           `json:"modelId"`
-	CreatedAt  time.Time        `json:"createdAt"`
-	UpdatedAt  time.Time        `json:"updatedAt"`
-	Messages   []openai.Message `json:"messages"`
-	Tools      []string         `json:"tools,omitempty"`
+	ID           string           `json:"id"`
+	AgentName    string           `json:"agentName"`
+	ParentTaskID string           `json:"parentTaskId,omitempty"`
+	Description  string           `json:"description,omitempty"`
+	Depth        int              `json:"depth,omitempty"`
+	Status       string           `json:"status,omitempty"`
+	Project      string           `json:"project"`
+	ProviderID   string           `json:"providerId"`
+	ModelID      string           `json:"modelId"`
+	CreatedAt    time.Time        `json:"createdAt"`
+	UpdatedAt    time.Time        `json:"updatedAt"`
+	FinishedAt   time.Time        `json:"finishedAt,omitempty"`
+	Messages     []openai.Message `json:"messages"`
+	Tools        []string         `json:"tools,omitempty"`
 }
 
 type childStore struct{ root string }

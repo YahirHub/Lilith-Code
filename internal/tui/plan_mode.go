@@ -80,11 +80,20 @@ func (m *ChatModel) planStatePointer() *planstate.State {
 }
 
 func (m *ChatModel) toolEnv(root string, mode planstate.Mode) tools.Env {
+	return m.toolEnvWithAgentEvents(root, mode, nil)
+}
+
+func (m *ChatModel) toolEnvWithAgentEvents(root string, mode planstate.Mode, events subagents.EventSink) tools.Env {
 	if root == "" {
 		root, _ = os.Getwd()
 	}
 	agentCatalog := m.loadAgents()
 	skillCatalog := m.loadSkillsForAgents()
+	providerID, modelID := m.turnProvider, m.turnModel
+	if providerID == "" || modelID == "" {
+		active := m.ctx.Providers.Active()
+		providerID, modelID = active.ProviderID, active.ModelID
+	}
 	env := tools.Env{
 		Root:      root,
 		ConfigDir: m.ctx.ConfigDir,
@@ -94,15 +103,10 @@ func (m *ChatModel) toolEnv(root string, mode planstate.Mode) tools.Env {
 		Agents:    agentCatalog,
 	}
 	env.RunAgent = func(ctx context.Context, req tools.AgentRequest) (tools.AgentResult, error) {
-		providerID, modelID := m.turnProvider, m.turnModel
-		if providerID == "" || modelID == "" {
-			active := m.ctx.Providers.Active()
-			providerID, modelID = active.ProviderID, active.ModelID
-		}
 		return subagents.Run(ctx, subagents.Config{
 			Client: m.ctx.Client, Providers: m.ctx.Providers, ConfigDir: m.ctx.ConfigDir, Root: root,
 			ParentProviderID: providerID, ParentModelID: modelID, ParentMode: mode, Skills: skillCatalog,
-			Agents: agentCatalog, Depth: 1,
+			Agents: agentCatalog, Depth: 1, Events: events,
 		}, req)
 	}
 	env.ToolVisible = func(name string, def tools.Definition) bool {

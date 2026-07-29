@@ -111,6 +111,7 @@ func (m *HelpScreen) content(width int) string {
 		{"Ctrl+O", "Expandir o plegar el panel de archivo/herramienta seleccionado."},
 		{"Ctrl+J / Ctrl+K", "Mover la selección entre paneles de archivo/herramienta."},
 		{"Ctrl+R", "Expandir o plegar el último bloque de razonamiento."},
+		{"Ctrl+G", "Expandir o plegar el bloque del subagente más reciente; muestra razonamiento, herramientas y avance."},
 		{"Ctrl+T", "Expandir o plegar TodoWrite cuando contiene más de tres tareas. También puede alternarse con clic."},
 		{"PgUp / PgDn", "Desplazar el transcript una página. Al salir del fondo se ocultan editor, TodoWrite, actividad y status para usar toda la terminal."},
 		{"Home / End", "Ir al inicio / final del transcript."},
