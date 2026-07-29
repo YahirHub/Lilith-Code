@@ -1,73 +1,189 @@
-// Command build prepares the local toolchain: it downloads and verifies the
-// external binaries Lilith needs (busybox shell on Windows, ripgrep) into
-// ~/.li/tools/bin.
+// Command build creates stripped, static Lilith binaries for the supported
+// Linux/Windows targets. It also preserves the existing toolchain helper used
+// by the Makefile:
 //
-//	go run ./cmd/build check      muestra el estado
-//	go run ./cmd/build install    instala lo que falte
-//	go run ./cmd/build install -f reinstala todo
+//	go run ./cmd/build             build all li binaries
+//	go run ./cmd/build build       build all li binaries
+//	go run ./cmd/build check       show external toolchain status
+//	go run ./cmd/build install     install missing external tools
+//	go run ./cmd/build install -f  reinstall external tools
 package main
 
 import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 
 	"github.com/lilith/li/internal/toolchain"
 )
 
-func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
+type target struct {
+	GOOS   string
+	GOARCH string
+	GOARM  string
+	Output string
+}
 
-	action := "check"
+var targets = []target{
+	{GOOS: "linux", GOARCH: "amd64", Output: "li-linux-amd64"},
+	{GOOS: "linux", GOARCH: "arm64", Output: "li-linux-arm64"},
+	{GOOS: "linux", GOARCH: "arm", GOARM: "7", Output: "li-linux-armv7"},
+	{GOOS: "windows", GOARCH: "amd64", Output: "li-windows-amd64.exe"},
+	{GOOS: "windows", GOARCH: "arm64", Output: "li-windows-arm64.exe"},
+}
+
+func main() {
+	action, args, err := parseAction(os.Args[1:])
+	if err != nil {
+		fatal(err)
+	}
+
+	switch action {
+	case "build":
+		if len(args) != 0 {
+			fatal(fmt.Errorf("build no acepta argumentos: %s", strings.Join(args, " ")))
+		}
+		if err := buildAll(); err != nil {
+			fatal(err)
+		}
+	case "check", "install":
+		if err := runToolchainAction(action, args); err != nil {
+			fatal(err)
+		}
+	default:
+		fatal(fmt.Errorf("acción desconocida: %s", action))
+	}
+}
+
+func parseAction(args []string) (string, []string, error) {
+	if len(args) == 0 {
+		return "build", nil, nil
+	}
+	switch args[0] {
+	case "build", "check", "install":
+		return args[0], args[1:], nil
+	default:
+		return "", nil, fmt.Errorf("argumento desconocido: %s (usa build, check o install)", args[0])
+	}
+}
+
+func buildAll() error {
+	goExe, err := exec.LookPath("go")
+	if err != nil {
+		return fmt.Errorf("no se encontró el ejecutable go en PATH: %w", err)
+	}
+	root, err := findProjectRoot()
+	if err != nil {
+		return err
+	}
+	dist := filepath.Join(root, "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		return fmt.Errorf("crear dist: %w", err)
+	}
+
+	version := gitValue(root, "describe", "--tags", "--always")
+	if version == "" {
+		version = "dev"
+	}
+	commit := gitValue(root, "rev-parse", "--short", "HEAD")
+	if commit == "" {
+		commit = "none"
+	}
+
+	fmt.Printf("Lilith - build multiplataforma\nProyecto: %s\nVersión: %s (%s)\n\n", root, version, commit)
+	for _, t := range targets {
+		if err := buildTarget(goExe, root, dist, version, commit, t); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("\nListo. Binarios li generados en %s\n", dist)
+	fmt.Println("Las skills de assets/skills están embebidas dentro de cada binario.")
+	return nil
+}
+
+func buildTarget(goExe, root, dist, version, commit string, t target) error {
+	out := filepath.Join(dist, t.Output)
+	label := t.GOOS + "/" + t.GOARCH
+	if t.GOARM != "" {
+		label += " v" + t.GOARM
+	}
+	fmt.Printf("[%s] -> %s\n", label, filepath.Base(out))
+
+	ldflags := fmt.Sprintf("-s -w -X main.version=%s -X main.commit=%s", version, commit)
+	args := []string{
+		"build",
+		"-trimpath",
+		"-buildvcs=false",
+		"-ldflags=" + ldflags,
+		"-o", out,
+		"./cmd/li",
+	}
+	cmd := exec.Command(goExe, args...)
+	cmd.Dir = root
+	env := sanitizedBuildEnv(os.Environ())
+	env = setEnv(env, "CGO_ENABLED", "0")
+	env = setEnv(env, "GOOS", t.GOOS)
+	env = setEnv(env, "GOARCH", t.GOARCH)
+	if t.GOARM != "" {
+		env = setEnv(env, "GOARM", t.GOARM)
+	} else {
+		env = removeEnv(env, "GOARM")
+	}
+	cmd.Env = env
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("compilar %s: %w", label, err)
+	}
+	return nil
+}
+
+func runToolchainAction(action string, args []string) error {
 	force := false
 	targetDir := ""
-	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch arg {
-		case "check", "install":
-			action = arg
 		case "-f", "--force":
+			if action != "install" {
+				return fmt.Errorf("%s sólo es válido con install", arg)
+			}
 			force = true
 		case "-dir", "--dir":
 			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "falta valor para -dir")
-				os.Exit(2)
+				return fmt.Errorf("falta valor para %s", arg)
 			}
 			targetDir = args[i+1]
 			i++
 		default:
 			if strings.HasPrefix(arg, "--dir=") {
 				targetDir = strings.TrimPrefix(arg, "--dir=")
-				break
+				continue
 			}
-			fmt.Fprintf(os.Stderr, "argumento desconocido: %s\n", arg)
-			os.Exit(2)
+			return fmt.Errorf("argumento desconocido para %s: %s", action, arg)
 		}
 	}
 	if targetDir != "" {
 		if err := os.Setenv("LI_TOOLS_DIR", targetDir); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return err
 		}
 	}
 
-	if err := run(ctx, action, force); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
-	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	return runToolchain(ctx, action, force)
 }
 
-func run(ctx context.Context, action string, force bool) error {
+func runToolchain(ctx context.Context, action string, force bool) error {
 	bin, err := toolchain.BinDir()
 	if err != nil {
 		return err
 	}
 	fmt.Printf("Plataforma: %s\nDirectorio: %s\n\n", toolchain.Platform(), bin)
-
 	if action == "check" {
 		for _, t := range toolchain.Catalog() {
 			if p := toolchain.Lookup(t.Name); p != "" {
@@ -91,4 +207,76 @@ func run(ctx context.Context, action string, force bool) error {
 	}
 	fmt.Println("\nToolchain lista.")
 	return nil
+}
+
+func findProjectRoot() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	cur := cwd
+	for {
+		if _, err := os.Stat(filepath.Join(cur, "go.mod")); err == nil {
+			return cur, nil
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", fmt.Errorf("no se encontró go.mod desde %s", cwd)
+		}
+		cur = parent
+	}
+}
+
+func gitValue(root string, args ...string) string {
+	gitExe, err := exec.LookPath("git")
+	if err != nil {
+		return ""
+	}
+	cmd := exec.Command(gitExe, args...)
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func setEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	for i, entry := range env {
+		if strings.HasPrefix(strings.ToUpper(entry), strings.ToUpper(prefix)) {
+			env[i] = prefix + value
+			return env
+		}
+	}
+	return append(env, prefix+value)
+}
+
+func sanitizedBuildEnv(env []string) []string {
+	keys := []string{
+		"GOOS", "GOARCH", "GOARM", "GO386", "GOAMD64",
+		"GOMIPS", "GOMIPS64", "GOWASM", "CGO_ENABLED",
+	}
+	out := append([]string{}, env...)
+	for _, key := range keys {
+		out = removeEnv(out, key)
+	}
+	return out
+}
+
+func removeEnv(env []string, key string) []string {
+	prefix := strings.ToUpper(key + "=")
+	out := env[:0]
+	for _, entry := range env {
+		if strings.HasPrefix(strings.ToUpper(entry), prefix) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func fatal(err error) {
+	fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+	os.Exit(1)
 }

@@ -19,7 +19,7 @@ type Skill struct {
 	Description string // one-liner (frontmatter: description)
 	FilePath    string // ruta absoluta a SKILL.md
 	BaseDir     string // dirname(FilePath)
-	Source      string // "user" | "project" | "path"
+	Source      string // "builtin" | "user" | "project" | "path"
 }
 
 const (
@@ -35,6 +35,7 @@ var (
 
 // LoadOptions controla de dónde se leen las skills.
 type LoadOptions struct {
+	BuiltinDir  string   // assets/skills embebidas, materializadas en caché
 	UserDir     string   // compatibilidad: ~/.li/skills
 	ProjectDir  string   // compatibilidad: <cwd>/.li/skills
 	UserDirs    []string // rutas adicionales de usuario, en orden de precedencia
@@ -48,7 +49,11 @@ type LoadOptions struct {
 func Load(opts LoadOptions) []Skill {
 	seen := map[string]Skill{}
 	// Rutas más específicas se procesan después y por tanto sobrescriben
-	// colisiones. Las skills de proyecto siguen ganando a las de usuario.
+	// colisiones. Las embebidas son siempre el fallback de menor precedencia;
+	// ~/.li/skills y las skills del proyecto pueden reemplazarlas por nombre.
+	if strings.TrimSpace(opts.BuiltinDir) != "" {
+		scan(opts.BuiltinDir, "builtin", seen)
+	}
 	userDirs := append([]string(nil), opts.UserDirs...)
 	if strings.TrimSpace(opts.UserDir) != "" {
 		userDirs = append(userDirs, opts.UserDir)
@@ -72,9 +77,10 @@ func Load(opts LoadOptions) []Skill {
 	return out
 }
 
-// DefaultLoadOptions añade las ubicaciones nativas de Lilith y las rutas de
-// Claude/Agent Skills que el usuario ya utiliza. No necesita configuración
-// adicional y conserva la precedencia proyecto > usuario y .li > compatibilidad.
+// DefaultLoadOptions añade primero las skills embebidas de assets/skills y
+// después las ubicaciones nativas de Lilith y rutas Claude/Agent del usuario.
+// No necesita configuración adicional y conserva la precedencia:
+// proyecto > usuario > builtin, con .li > rutas compatibles dentro de cada ámbito.
 func DefaultLoadOptions(configDir, projectRoot string) LoadOptions {
 	home := ""
 	if strings.TrimSpace(configDir) != "" {
@@ -95,6 +101,7 @@ func DefaultLoadOptions(configDir, projectRoot string) LoadOptions {
 		)
 	}
 	return LoadOptions{
+		BuiltinDir:  BundledDir(configDir),
 		UserDir:     UserDir(configDir),
 		ProjectDir:  ProjectDir(projectRoot),
 		UserDirs:    userDirs,

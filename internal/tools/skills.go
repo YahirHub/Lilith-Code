@@ -37,7 +37,7 @@ func init() {
 				},
 				"source": map[string]any{
 					"type":        "string",
-					"enum":        []string{"user", "project"},
+					"enum":        []string{"builtin", "user", "project"},
 					"description": "Optional source filter.",
 				},
 				"limit": map[string]any{
