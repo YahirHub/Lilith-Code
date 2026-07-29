@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -16,6 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/lilith/li/internal/agents"
 	"github.com/lilith/li/internal/config"
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/providers/openai"
@@ -124,6 +126,11 @@ type ChatModel struct {
 	store   *session.Store
 	sess    *session.Session
 	project string
+
+	// Agent definitions are session-scoped like Claude Code: discover once at
+	// startup so repeated turns do not rescan multiple compatibility trees.
+	// Restarting Lilith reloads files added/changed directly on disk.
+	agentCatalog []agents.Agent
 
 	// todos is the model-owned authoritative task plan for this session. It is
 	// concurrency-safe because tools run outside Bubble Tea's Update goroutine.
@@ -271,6 +278,17 @@ type toolResultsMsg struct {
 	planQuestion   bool
 	planCompleted  bool
 	err            error
+}
+
+// manualAgentResultMsg is the result of an explicit @agent invocation. It uses
+// the same turn cancellation root as normal chat work, but bypasses the parent
+// LLM because the user addressed the child directly.
+type manualAgentResultMsg struct {
+	turnID uint64
+	agent  string
+	taskID string
+	text   string
+	err    error
 }
 
 // cmdElapsedTickMsg refresca el transcript a intervalo fijo mientras haya
@@ -441,6 +459,7 @@ func NewChat(ctx *AppContext) ChatModel {
 		assistantActive:   -1,
 		contextCacheDirty: true,
 	}
+	m.agentCatalog = agents.Load(agents.DefaultLoadOptions(ctx.ConfigDir, project))
 	m.syncAgentModePresentation()
 	return m
 }
@@ -2044,6 +2063,33 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTranscript(true)
 		return m, cmdElapsedTick()
 
+	case manualAgentResultMsg:
+		if v.turnID == 0 || v.turnID != m.activeTurnID {
+			return m, nil
+		}
+		m.streaming = false
+		m.thinking = false
+		m.working = false
+		if v.err != nil {
+			if !errors.Is(v.err, context.Canceled) {
+				m.AddError("Subagente " + v.agent + ": " + v.err.Error())
+			}
+			m.endTurn()
+			m.persist()
+			m.refreshTranscript(true)
+			return m, tea.Batch(m.chatMouseModeCmd(), m.drainFollowUp())
+		}
+		content := strings.TrimSpace(v.text)
+		if content == "" {
+			content = "Subagente completado sin respuesta textual."
+		}
+		m.messages = append(m.messages, ChatMessage{Kind: MsgAssistant, Content: content, Time: time.Now()})
+		m.appendHistory(openai.Message{Role: "assistant", Content: content})
+		m.endTurn()
+		m.persist()
+		m.refreshTranscript(true)
+		return m, tea.Batch(m.chatMouseModeCmd(), m.drainFollowUp())
+
 	case chatStreamMsg:
 		// Todo chunk de proveedor debe pertenecer tanto al turno como al request
 		// HTTP/SSE actualmente activo. Esto evita que el cierre tardío de un
@@ -2816,6 +2862,19 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 		return m, m.runBash(cmd)
 	}
 
+	// OpenCode-style direct subagent invocation. Unknown @mentions remain normal
+	// chat text so users can still discuss handles/names without special syntax.
+	if strings.HasPrefix(val, "@") {
+		parts := strings.Fields(val)
+		if len(parts) > 0 {
+			name := strings.TrimPrefix(parts[0], "@")
+			if agents.Find(m.loadAgents(), name) != nil {
+				prompt := strings.TrimSpace(strings.TrimPrefix(val, parts[0]))
+				return m.invokeAgentDirect(name, prompt, val)
+			}
+		}
+	}
+
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: val, Time: time.Now()})
 	m.appendHistory(openai.Message{Role: "user", Content: val})
 	// OpenCode treats Build/Plan as primary agents. Capture the currently
@@ -2982,6 +3041,39 @@ func (m *ChatModel) runTools(calls []openai.ToolCall, assistantText string) tea.
 				materialized = appendUniqueTool(materialized, name)
 			}
 		}
+		if len(calls) > 1 && allAgentCalls(calls) {
+			results := make([]openai.Message, len(calls))
+			var wg sync.WaitGroup
+			for i, call := range calls {
+				i, call := i, call
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					if runCtx == nil || runCtx.Err() != nil {
+						results[i] = toolMessage(call, "error: canceled")
+						return
+					}
+					args := map[string]any{}
+					if strings.TrimSpace(call.Function.Arguments) != "" {
+						if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+							results[i] = toolMessage(call, "error: argumentos JSON inválidos: "+err.Error())
+							return
+						}
+					}
+					out, err := tools.Execute(runCtx, call.Function.Name, args, env)
+					if err != nil {
+						out = "error: " + err.Error()
+					}
+					results[i] = toolMessage(call, out)
+				}()
+			}
+			wg.Wait()
+			if runCtx == nil || runCtx.Err() != nil {
+				return toolResultsMsg{turnID: turnID, err: context.Canceled}
+			}
+			return toolResultsMsg{turnID: turnID, results: results}
+		}
+
 		compactCallIDs := make([]string, 0, 1)
 		recoverEditors := false
 		recoverCreate := false
@@ -3034,6 +3126,27 @@ func (m *ChatModel) runTools(calls []openai.ToolCall, assistantText string) tea.
 			planCompleted: planCompleted,
 		}
 	}
+}
+
+func isAgentToolName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "agent", "task":
+		return true
+	default:
+		return false
+	}
+}
+
+func allAgentCalls(calls []openai.ToolCall) bool {
+	if len(calls) == 0 {
+		return false
+	}
+	for _, call := range calls {
+		if !isAgentToolName(call.Function.Name) {
+			return false
+		}
+	}
+	return true
 }
 
 func preflightStreamingCreateCall(root string, call openai.ToolCall) (openai.ToolCall, string, bool) {
@@ -3291,6 +3404,20 @@ func describeCall(c openai.ToolCall) string {
 		}
 		return "$ todo_write"
 	}
+	if c.Function.Name == "Agent" || c.Function.Name == "Task" || c.Function.Name == "task" || c.Function.Name == "agent" {
+		var args map[string]any
+		if json.Unmarshal([]byte(c.Function.Arguments), &args) == nil {
+			name, _ := args["subagent_type"].(string)
+			desc, _ := args["description"].(string)
+			if strings.TrimSpace(name) != "" {
+				line := "$ @" + strings.TrimSpace(name)
+				if strings.TrimSpace(desc) != "" {
+					line += " " + strings.TrimSpace(desc)
+				}
+				return line
+			}
+		}
+	}
 	args := prettyToolArgs(c.Function.Arguments)
 	if args == "" {
 		return "$ " + c.Function.Name
@@ -3353,6 +3480,61 @@ func prettyToolArgs(raw string) string {
 		line = line[:120] + "…"
 	}
 	return line
+}
+
+func (m *ChatModel) invokeAgentDirect(name, prompt, visible string) (tea.Model, tea.Cmd) {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		m.AddError("Uso: @" + name + " <tarea>")
+		return m, nil
+	}
+	a := agents.Find(m.loadAgents(), name)
+	if a == nil {
+		m.AddError("Subagente no encontrado: " + name)
+		return m, nil
+	}
+	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: visible, Time: time.Now()})
+	m.appendHistory(openai.Message{Role: "user", Content: visible})
+	if err := m.beginTurn(); err != nil {
+		m.AddError(err.Error())
+		return m, nil
+	}
+	turnID := m.activeTurnID
+	runCtx := m.turnCtx
+	env := m.toolEnv("", m.turnAgentMode)
+	m.streaming = true
+	m.thinking = false
+	m.working = true
+	m.userScrolled = false
+	m.persistTurnStart()
+	m.refreshTranscript(true)
+	return m, func() tea.Msg {
+		result, err := env.RunAgent(runCtx, tools.AgentRequest{
+			Agent: *a, Prompt: prompt, Description: "direct @" + a.Name,
+		})
+		return manualAgentResultMsg{turnID: turnID, agent: a.Name, taskID: result.TaskID, text: result.Text, err: err}
+	}
+}
+
+// loadAgents discovers Claude-compatible subagents from bundled, user and
+// project scopes. Only routing metadata enters the parent prompt; each agent's
+// full Markdown body is loaded inside its isolated child context.
+func (m *ChatModel) loadAgents() []agents.Agent {
+	if m.agentCatalog == nil {
+		m.agentCatalog = agents.Load(agents.DefaultLoadOptions(m.ctx.ConfigDir, m.project))
+	}
+	return append([]agents.Agent(nil), m.agentCatalog...)
+}
+
+func (m *ChatModel) agentsBlock() string {
+	return agents.FormatForPrompt(m.loadAgents())
+}
+
+func (m *ChatModel) loadSkillsForAgents() []skills.Skill {
+	if !m.skillsEnabled() {
+		return nil
+	}
+	return m.loadSkills()
 }
 
 // skillsEnabled devuelve el toggle persistido en settings.json (recargado
@@ -3445,13 +3627,13 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 // consistently across providers in English. Full tool contracts stay in JSON
 // schemas; the system prefix intentionally stays stable as lazy tools are
 // materialized so provider prompt caching can reuse the long conversation.
-func systemPrompt(activeTools []string, skillsBlock, todoBlock, modeBlock string) string {
+func systemPrompt(activeTools []string, skillsBlock, agentsBlock, todoBlock, modeBlock string) string {
 	base := "You are Lilith, an expert coding assistant operating inside the user's terminal. " +
 		"Use the tools available for this turn to inspect and work on the real project. " +
 		"Reply in the user's language (Spanish by default), while preserving code, paths, identifiers and shell syntax. " +
 		"Be concise, direct, and keep working until the requested task is actually complete."
 	if len(activeTools) == 0 {
-		return base + skillsBlock + todoBlock + modeBlock
+		return base + skillsBlock + agentsBlock + todoBlock + modeBlock
 	}
 
 	// Keep this prefix independent from the exact lazy-tool set. Tool contracts
@@ -3480,6 +3662,7 @@ func systemPrompt(activeTools []string, skillsBlock, todoBlock, modeBlock string
 	cwd, _ := os.Getwd()
 	b.WriteString("\nCurrent working directory: " + filepath.ToSlash(cwd))
 	b.WriteString(skillsBlock)
+	b.WriteString(agentsBlock)
 	b.WriteString(todoBlock)
 	b.WriteString(modeBlock)
 	return b.String()

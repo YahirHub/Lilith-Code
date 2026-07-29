@@ -42,7 +42,7 @@ func TestTodoWidgetRendersPlanAboveInputWithoutEmoji(t *testing.T) {
 func TestTodoBlockCarriesExactRevisionIntoSystemPrompt(t *testing.T) {
 	ctx := &AppContext{Styles: NewStyles(DefaultTheme())}
 	m := ChatModel{ctx: ctx, todos: todoTestManager(t)}
-	prompt := systemPrompt([]string{"todo_write"}, "", m.todoBlock(), "")
+	prompt := systemPrompt([]string{"todo_write"}, "", "", m.todoBlock(), "")
 	if !strings.Contains(prompt, `<todo_state revision="1">`) {
 		t.Fatalf("missing todo checkpoint:\n%s", prompt)
 	}

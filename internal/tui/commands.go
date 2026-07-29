@@ -65,6 +65,33 @@ func Commands() []SlashCommand {
 			},
 		},
 		{
+			Name: "agents", Aliases: []string{"subagents"},
+			Description: "Lista subagentes Claude-compatible detectados; también puedes invocarlos con @nombre tarea.",
+			Run: func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd {
+				list := chat.loadAgents()
+				if len(list) == 0 {
+					chat.AddSystem("No hay subagentes disponibles.")
+					return nil
+				}
+				var b strings.Builder
+				b.WriteString("Subagentes disponibles:\n")
+				visible := 0
+				for _, a := range list {
+					if a.Hidden {
+						continue
+					}
+					visible++
+					b.WriteString("\n@" + a.Name + " — " + a.Description + " [" + a.Source + "]")
+				}
+				if visible == 0 {
+					b.WriteString("\n(no hay subagentes visibles; puede haber agentes hidden disponibles para delegación automática)")
+				}
+				b.WriteString("\n\nUso directo: @nombre <tarea>. El agente principal también puede delegar automáticamente con Agent.")
+				chat.AddSystem(b.String())
+				return nil
+			},
+		},
+		{
 			Name: "login", Aliases: []string{"signin"},
 			Description: "Conecta un nuevo proveedor.",
 			Run:         func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd { return switchTo(NewOnboarding(ctx, false)) },

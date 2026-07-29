@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"sort"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	planstate "github.com/lilith/li/internal/plan"
+	"github.com/lilith/li/internal/subagents"
 	"github.com/lilith/li/internal/tools"
 )
 
@@ -81,12 +83,27 @@ func (m *ChatModel) toolEnv(root string, mode planstate.Mode) tools.Env {
 	if root == "" {
 		root, _ = os.Getwd()
 	}
+	agentCatalog := m.loadAgents()
+	skillCatalog := m.loadSkillsForAgents()
 	env := tools.Env{
 		Root:      root,
 		ConfigDir: m.ctx.ConfigDir,
 		Todos:     m.todos,
 		Plan:      m.plans,
 		AgentMode: mode,
+		Agents:    agentCatalog,
+	}
+	env.RunAgent = func(ctx context.Context, req tools.AgentRequest) (tools.AgentResult, error) {
+		providerID, modelID := m.turnProvider, m.turnModel
+		if providerID == "" || modelID == "" {
+			active := m.ctx.Providers.Active()
+			providerID, modelID = active.ProviderID, active.ModelID
+		}
+		return subagents.Run(ctx, subagents.Config{
+			Client: m.ctx.Client, Providers: m.ctx.Providers, ConfigDir: m.ctx.ConfigDir, Root: root,
+			ParentProviderID: providerID, ParentModelID: modelID, ParentMode: mode, Skills: skillCatalog,
+			Agents: agentCatalog, Depth: 1,
+		}, req)
 	}
 	env.ToolVisible = func(name string, def tools.Definition) bool {
 		return planstate.ToolVisible(mode, name, def.Mutating)

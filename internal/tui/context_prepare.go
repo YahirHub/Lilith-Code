@@ -32,7 +32,7 @@ func (m *ChatModel) prepareRequestMessages(mode planstate.Mode) []openai.Message
 	// invalidates provider prompt caches for the entire conversation.
 	msgs = append(msgs, openai.Message{
 		Role:    "system",
-		Content: systemPrompt(m.activeTools, m.skillsBlock(), "", ""),
+		Content: systemPrompt(m.activeTools, m.skillsBlock(), m.agentsBlock(), "", ""),
 	})
 	msgs = append(msgs, history...)
 	return msgs

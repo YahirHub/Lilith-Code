@@ -85,6 +85,7 @@ func chatRuntimeMsg(msg tea.Msg) bool {
 		cmdElapsedTickMsg,
 		chatStreamMsg,
 		toolResultsMsg,
+		manualAgentResultMsg,
 		bashResultMsg:
 		return true
 	default:

@@ -161,8 +161,8 @@ func TestSwitchCreateToolToEditorsAfterFileExists(t *testing.T) {
 }
 
 func TestSystemPromptKeepsStableToolGuidanceAcrossLazyToolSets(t *testing.T) {
-	one := systemPrompt([]string{"str_replace"}, "", "", "")
-	two := systemPrompt([]string{"str_replace", "run_terminal_command", "create_file"}, "", "", "")
+	one := systemPrompt([]string{"str_replace"}, "", "", "", "")
+	two := systemPrompt([]string{"str_replace", "run_terminal_command", "create_file"}, "", "", "", "")
 	if one != two {
 		t.Fatalf("lazy tool materialization must not rewrite the reusable system prefix:\n--- one ---\n%s\n--- two ---\n%s", one, two)
 	}

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/lilith/li/internal/agents"
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/skills"
 	litodo "github.com/lilith/li/internal/todo"
@@ -29,6 +30,12 @@ type Env struct {
 	// Skills is the already-discovered skill catalog for this session. Skill
 	// tools never scan arbitrary user locations on their own.
 	Skills []skills.Skill
+	// Agents is the discovered Claude-compatible subagent catalog.
+	Agents []agents.Agent
+	// RunAgent starts/resumes one isolated subagent. The tools package owns only
+	// the wire contract; the runtime callback is supplied by the chat/subagent
+	// host to avoid coupling the registry to provider/session implementations.
+	RunAgent func(ctx context.Context, req AgentRequest) (AgentResult, error)
 	// Todos is the session-local authoritative task plan used by todo_write.
 	Todos *litodo.Manager
 	// Plan is the session-local Build/Plan state used by plan-specific tools.
@@ -168,6 +175,8 @@ func Execute(ctx context.Context, name string, args map[string]any, env Env) (st
 	switch name {
 	case "TodoWrite", "todowrite", "write_todos", "todo":
 		name = "todo_write"
+	case "Task", "task", "agent":
+		name = "Agent"
 	}
 	d, ok := registry[name]
 	if !ok {
@@ -190,7 +199,7 @@ func Execute(ctx context.Context, name string, args map[string]any, env Env) (st
 
 // alwaysOn is the microscopic unconditional surface: the model can always
 // discover the rest with tool_search, so we never pay for unused schemas.
-var alwaysOn = []string{"tool_search", "todo_write", "plan_question", "plan_exit"}
+var alwaysOn = []string{"tool_search", "todo_write", "plan_question", "plan_exit", "Agent"}
 
 var directChatPattern = regexp.MustCompile(`(?i)^\s*(hola|hello|hi|hey|buenas( (dias|días|tardes|noches))?|gracias|thanks|thank you|ok(ay)?|vale|entendido|perfecto|listo|adios|adiós|bye)[!.?…\s]*$`)
 

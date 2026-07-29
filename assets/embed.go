@@ -13,10 +13,24 @@ import (
 //go:embed skills
 var embeddedSkills embed.FS
 
+// embeddedAgents contains built-in Claude-compatible subagent definitions.
+//
+//go:embed agents
+var embeddedAgents embed.FS
+
 // SkillsFS returns the embedded assets/skills tree with "skills" removed from
 // the visible path. The returned filesystem is read-only.
 func SkillsFS() fs.FS {
 	sub, err := fs.Sub(embeddedSkills, "skills")
+	if err != nil {
+		panic(err)
+	}
+	return sub
+}
+
+// AgentsFS returns the embedded assets/agents tree with "agents" removed.
+func AgentsFS() fs.FS {
+	sub, err := fs.Sub(embeddedAgents, "agents")
 	if err != nil {
 		panic(err)
 	}
