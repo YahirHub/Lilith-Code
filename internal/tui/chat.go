@@ -118,7 +118,6 @@ type ChatModel struct {
 	buildToolCache []string
 	planToolCache  []string
 	pendingCall    []openai.ToolCall
-	toolSteps      int
 	toolFallback   string
 
 	// Persistencia de la conversación (historial por proyecto).
@@ -1181,7 +1180,6 @@ func (m *ChatModel) Clear() {
 	m.buildToolCache = nil
 	m.planToolCache = nil
 	m.pendingCall = nil
-	m.toolSteps = 0
 	m.toolFallback = ""
 	m.livePanels = nil
 	m.panelByCall = nil
@@ -2825,7 +2823,6 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 	// so a Tab press during execution only affects the NEXT user turn.
 	selectedMode := m.selectedAgentMode()
 	m.activeTools = m.selectToolsForPrompt(val, selectedMode)
-	m.toolSteps = 0
 	m.toolFallback = ""
 	if err := m.beginTurn(); err != nil {
 		m.AddError(err.Error())
@@ -2946,11 +2943,6 @@ func (m *ChatModel) contextUsage() (int, int) {
 	return used, maxCtx
 }
 
-// maxToolSteps evita bucles infinitos de herramientas en un mismo turno.
-// Ediciones grandes (str_replace + read_file encadenados) pasan de 25
-// fácilmente; 60 es un techo cómodo sin ser un bucle infinito real.
-const maxToolSteps = 60
-
 // runTools ejecuta el lote de llamadas y devuelve los mensajes `tool`.
 func (m *ChatModel) runTools(calls []openai.ToolCall, assistantText string) tea.Cmd {
 	turnID := m.activeTurnID
@@ -2971,21 +2963,6 @@ func (m *ChatModel) runTools(calls []openai.ToolCall, assistantText string) tea.
 				}
 				return toolResultsMsg{turnID: turnID, results: results}
 			}
-		}
-	}
-	m.toolSteps++
-	if m.toolSteps > maxToolSteps {
-		// Sanear el historial: el assistant previo dejó tool_calls sin
-		// ejecutar; inyectamos outputs sintéticos para que la próxima
-		// petición no reviente con "No tool output found for function
-		// call ..." en la Responses API.
-		stubs := make([]openai.Message, 0, len(calls))
-		for _, c := range calls {
-			stubs = append(stubs, toolMessage(c, "error: turno interrumpido (límite de pasos de herramientas alcanzado)."))
-		}
-		m.appendHistory(stubs...)
-		return func() tea.Msg {
-			return toolResultsMsg{turnID: turnID, err: errors.New("límite de pasos de herramientas alcanzado en este turno (aumentado a " + fmt.Sprint(maxToolSteps) + "). Pídeme continuar si aún falta.")}
 		}
 	}
 
@@ -3156,7 +3133,6 @@ func (m *ChatModel) interceptExistingCreateCall(call openai.ToolCall) (tea.Cmd, 
 		m.switchCreateToolToEditors()
 	}
 	m.toolFallback = result
-	m.toolSteps++
 	m.thinking = false
 	m.working = true
 	m.refreshTranscript(true)
@@ -3453,7 +3429,6 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 	m.activeTools = m.rememberToolsForMode(selectedMode, m.activeTools)
 	m.activeTools = tools.FilterAvailable(m.activeTools, m.toolEnv("", selectedMode))
 	sort.Strings(m.activeTools)
-	m.toolSteps = 0
 	m.toolFallback = ""
 	if err := m.beginTurn(); err != nil {
 		m.AddError(err.Error())

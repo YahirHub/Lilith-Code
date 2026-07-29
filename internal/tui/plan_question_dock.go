@@ -457,7 +457,6 @@ func (m *ChatModel) startPlanQuestionContinuation(text string) tea.Cmd {
 	}
 	m.appendHistory(openai.Message{Role: "user", Content: text})
 	m.activeTools = m.selectToolsForPrompt(text, planstate.Plan)
-	m.toolSteps = 0
 	m.toolFallback = ""
 	if err := m.beginTurnMode(planstate.Plan); err != nil {
 		m.AddError(err.Error())

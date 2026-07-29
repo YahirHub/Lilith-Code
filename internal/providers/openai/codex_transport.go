@@ -182,9 +182,9 @@ func buildCodexPayload(req Request) ([]byte, error) {
 	// Defensa en profundidad: Codex Responses rechaza el request con
 	// HTTP 400 "No tool output found for function call ..." si un
 	// function_call en `input` no tiene su function_call_output pareja.
-	// Esto ocurre cuando un turno se cortó a la mitad (límite de pasos,
-	// cancelación con Ctrl+C, tool call abandonada por reintento del
-	// backend). Inyectamos un output stub para cada function_call huérfano
+	// Esto ocurre cuando un turno se cortó a la mitad (cancelación del
+	// usuario, cierre/reemplazo de sesión o tool call abandonada por un
+	// reintento del backend). Inyectamos un output stub para cada function_call huérfano
 	// para que la conversación pueda continuar.
 	haveOutput := map[string]bool{}
 	for _, it := range input {
@@ -541,7 +541,6 @@ func snapshotCodex(pending map[int]*ToolCall, order []int) []ToolCall {
 	}
 	return calls
 }
-
 
 func decodeCodexError(raw json.RawMessage) error {
 	if len(raw) == 0 {
