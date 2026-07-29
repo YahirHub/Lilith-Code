@@ -186,8 +186,8 @@ func TestPasteMultilineaMientrasStreamingSeEncolaComoUnSoloMensaje(t *testing.T)
 	_, _ = m.Update(pasteFallbackIdleMsg{seq: m.pasteFallbackSeq})
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_, _ = m.Update(pasteEnterDecisionMsg{seq: m.pendingEnterSeq})
-	if len(m.queue) != 1 || m.queue[0] != want {
-		t.Fatalf("el mensaje completo debe encolarse una sola vez: %#v", m.queue)
+	if len(m.queue) != 1 || m.queue[0].Text != want || m.queue[0].Mode != queueSteer {
+		t.Fatalf("el mensaje completo debe encolarse una sola vez como steering: %#v", m.queue)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -60,6 +61,18 @@ const (
 	ModeBash    InputMode = "bash"
 )
 
+type queueMode string
+
+const (
+	queueSteer    queueMode = "steer"
+	queueFollowUp queueMode = "follow-up"
+)
+
+type queuedMessage struct {
+	Text string
+	Mode queueMode
+}
+
 // ChatModel is the main chat screen. Used via pointer.
 type ChatModel struct {
 	ctx           *AppContext
@@ -81,7 +94,7 @@ type ChatModel struct {
 	activeRequestID uint64
 
 	// turnCtx abarca TODO el turno del usuario: streaming del proveedor y
-	// herramientas. Ctrl+C cancela este contexto una sola vez y los resultados
+	// herramientas. Escape cancela este contexto una sola vez y los resultados
 	// tardíos quedan invalidados por activeTurnID.
 	turnCtx      context.Context
 	turnSeq      uint64
@@ -126,10 +139,6 @@ type ChatModel struct {
 	// el modelo emite reasoning summary). Se resetea al iniciar el turno.
 	thinkingActive *ThinkingPanel
 
-	// quitPrimedAt marca el momento en que el usuario pulsó Ctrl+C sin
-	// tarea activa. Un segundo Ctrl+C dentro de 2s confirma la salida.
-	quitPrimedAt time.Time
-
 	paletteOpen bool
 	paletteIdx  int
 	paletteRows []SlashCommand
@@ -141,11 +150,12 @@ type ChatModel struct {
 	// cmdTickActive evita programar varios timers de "Elapsed" en paralelo.
 	cmdTickActive bool
 
-	// queue guarda los mensajes que el usuario envió mientras Lilith ya
-	// estaba trabajando. Se drenan uno a uno cuando termina el turno actual.
-	// Sólo se ejecuta una tarea a la vez; Ctrl+C cancela la activa y limpia
-	// la cola pendiente.
-	queue []string
+	// queue guarda los mensajes enviados mientras Lilith ya trabaja. Igual que
+	// pi.dev, Enter crea una instrucción de steering (se entrega en la siguiente
+	// frontera segura del agente) y Alt+Enter crea un follow-up (se ejecuta al
+	// terminar el trabajo actual). Esc aborta y devuelve la cola al editor;
+	// Alt+Up permite recuperarla sin cancelar la tarea.
+	queue []queuedMessage
 
 	// Compatibilidad para terminales/hosts que degradan un pegado multilínea
 	// a teclas normales en vez de conservar bracketed paste. Un Enter normal
@@ -369,7 +379,7 @@ func isScrollKey(k string) bool {
 
 func NewChat(ctx *AppContext) ChatModel {
 	ta := textarea.New()
-	ta.Placeholder = "Escribe un mensaje…   ( / comandos · ! bash · Enter enviar · Shift+Enter salto · Enter en tarea = encolar · Ctrl+C cancela/limpia cola · Ctrl+C x2 salir )"
+	ta.Placeholder = "Escribe un mensaje…   ( / comandos · ! bash · Enter enviar/dirigir · Alt+Enter seguimiento · Shift+Enter salto · Esc abortar · Alt+↑ recuperar cola )"
 	ta.Prompt = "❯ "
 	ta.CharLimit = 20_000
 	ta.ShowLineNumbers = false
@@ -513,15 +523,10 @@ func (m *ChatModel) cancelTurn() string {
 	}
 	m.finishThinkingPanel()
 
-	dropped := len(m.queue)
-	m.queue = nil
 	notice := "Tarea cancelada."
-	if dropped > 0 {
-		notice = fmt.Sprintf("Tarea cancelada. %d mensaje(s) en cola descartados.", dropped)
-	}
-	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: notice + " Pulsa Ctrl+C otra vez para salir, o /exit.", Time: time.Now()})
+	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: notice, Time: time.Now()})
 
-	// Ctrl+C writes only the mutable checkpoint synchronously. The completed
+	// Cancellation writes only the mutable checkpoint synchronously. The completed
 	// history was already saved at semantic boundaries, so cancellation stays
 	// instant even in very long conversations while still surviving an
 	// immediate process exit.
@@ -532,7 +537,6 @@ func (m *ChatModel) cancelTurn() string {
 	m.streaming = false
 	m.turnProvider = ""
 	m.turnModel = ""
-	m.quitPrimedAt = time.Now()
 	return notice
 }
 
@@ -731,7 +735,7 @@ func (m *ChatModel) startLivePersist() tea.Cmd {
 }
 
 // forceLivePersist writes the small mutable checkpoint synchronously. It is
-// used by Ctrl+C because the user may exit immediately afterwards. Unlike a
+// used by cancellation because the user may exit immediately afterwards. Unlike a
 // full session save it never rewrites the completed chat history.
 func (m *ChatModel) forceLivePersist() {
 	if m.store == nil || m.sess == nil {
@@ -1551,27 +1555,39 @@ func (m *ChatModel) queuePanelView(w int) string {
 	if boxWidth < 10 {
 		boxWidth = w
 	}
-	header := "📥 En cola · " + fmt.Sprintf("%d pendiente(s)", len(m.queue))
-	if m.streaming {
-		header += " · se ejecutarán al terminar el turno actual"
+	steer, follow := 0, 0
+	for _, item := range m.queue {
+		if item.Mode == queueFollowUp {
+			follow++
+		} else {
+			steer++
+		}
 	}
-	header += "  (Ctrl+C vacía la cola)"
+	header := fmt.Sprintf("En cola · %d pendiente(s)", len(m.queue))
+	if steer > 0 || follow > 0 {
+		header += fmt.Sprintf(" · dirigir %d · después %d", steer, follow)
+	}
+	header += "  (Alt+↑ editar · Esc aborta y restaura)"
 
 	lines := []string{s.Accent.Render(header)}
 	maxShow := 5
-	for i, msg := range m.queue {
+	for i, item := range m.queue {
 		if i >= maxShow {
 			lines = append(lines, s.Muted.Render(fmt.Sprintf("  … y %d más", len(m.queue)-maxShow)))
 			break
 		}
-		prefix := fmt.Sprintf("  %d. ", i+1)
+		kind := "dirigir"
+		if item.Mode == queueFollowUp {
+			kind = "después"
+		}
+		prefix := fmt.Sprintf("  %d. [%s] ", i+1, kind)
 		// Ancho útil para el contenido tras el prefijo, dejando margen para
 		// el borde y padding del panel.
 		avail := boxWidth - len(prefix) - 4
 		if avail < 10 {
 			avail = 10
 		}
-		lines = append(lines, s.Muted.Render(prefix)+truncateOneLine(firstLine(msg), avail))
+		lines = append(lines, s.Muted.Render(prefix)+truncateOneLine(firstLine(item.Text), avail))
 	}
 	body := strings.Join(lines, "\n")
 	panel := lipgloss.NewStyle().
@@ -1778,7 +1794,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chatStreamMsg:
 		// Todo chunk de proveedor debe pertenecer tanto al turno como al request
 		// HTTP/SSE actualmente activo. Esto evita que el cierre tardío de un
-		// request cancelado (preflight, Ctrl+C, retry) altere el siguiente request.
+		// request cancelado (preflight, Escape, retry) altere el siguiente request.
 		if v.turnID == 0 || v.turnID != m.activeTurnID ||
 			v.requestID == 0 || v.requestID != m.activeRequestID ||
 			m.turnCtx == nil || m.turnCtx.Err() != nil {
@@ -1962,6 +1978,17 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.messages[idx].Content = "(el modelo no devolvió contenido)"
 				}
 			}
+			// Enter-queued steering belongs to this same agent turn. Once the
+			// current assistant response has reached a safe boundary, inject one
+			// queued instruction and continue before considering the turn finished.
+			if m.deliverSteering() {
+				m.forceLivePersist()
+				m.thinking = true
+				m.working = false
+				m.assistantActive = -1
+				return m, m.runTurn()
+			}
+
 			m.thinking = false
 			m.working = false
 			m.assistantActive = -1
@@ -1971,7 +1998,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streaming = false
 			m.endTurn()
 			m.persist()
-			return m, m.drainQueue()
+			return m, m.drainFollowUp()
 		}
 		if v.delta != "" {
 			m.finishThinkingPanel()
@@ -2045,9 +2072,10 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		m.refreshTranscript(true)
-		// Tool outputs are a stable API boundary. Checkpoint the current-turn
-		// tail before asking the model to continue so a crash cannot roll back
-		// progress, without reserializing the entire conversation.
+		// Tool outputs are a stable API boundary. This is also the preferred
+		// steering boundary: current calls have completed, so one Enter-queued
+		// instruction can safely influence the very next model request.
+		m.deliverSteering()
 		m.forceLivePersist()
 		return m, m.runTurn()
 
@@ -2197,42 +2225,71 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
-		case "ctrl+z":
-			// Nunca suspender ni cerrar de golpe: es demasiado fácil pulsarlo
-			// por error mientras Lilith trabaja.
-			return m, nil
-		case "ctrl+c":
-			// Ctrl+C invalida primero cualquier Enter aún pendiente. De lo
-			// contrario su timer podría enviar el textarea unos milisegundos
-			// después de que el usuario canceló el turno.
-			if m.pendingEnter {
-				m.pendingEnter = false
-				m.pendingEnterSeq++
-			}
+		case "esc":
+			// Pi usa Escape como interrupción. La cola no se pierde: después de
+			// abortar vuelve al editor para poder corregirla o reenviarla.
+			m.pendingEnter = false
+			m.pendingEnterSeq++
 			if m.streaming && m.activeTurnID != 0 {
 				m.cancelTurn()
+			}
+			restored := m.restoreQueuedToEditor()
+			if restored > 0 {
+				m.AddSystem(fmt.Sprintf("%d mensaje(s) de la cola devueltos al editor.", restored))
+			}
+			return m, nil
+		case "alt+up":
+			// Recuperar la cola no toca el turno activo; sirve para editar un
+			// steering/follow-up antes de que llegue a su frontera de entrega.
+			m.pendingEnter = false
+			m.pendingEnterSeq++
+			m.restoreQueuedToEditor()
+			return m, nil
+		case "ctrl+z":
+			// Mismo criterio de Pi: suspender el proceso en Unix y no asignar el
+			// atajo en Windows, donde no existe SIGTSTP/job control equivalente.
+			if runtime.GOOS == "windows" {
 				return m, nil
 			}
-			// Sin tarea activa: si hay cola pendiente, Ctrl+C la limpia
-			// primero (no cierra la app hasta un segundo Ctrl+C).
-			if len(m.queue) > 0 {
-				dropped := len(m.queue)
-				m.queue = nil
-				m.AddSystem(fmt.Sprintf("Cola vaciada (%d mensaje(s) descartados).", dropped))
-				m.quitPrimedAt = time.Now()
-				if m.ctx.Width > 0 && m.ctx.Height > 0 {
-					m.Resize(m.ctx.Width, m.ctx.Height)
-				}
-				return m, nil
+			return m, tea.Suspend
+		case "ctrl+c":
+			// Pi reserva Ctrl+C para limpiar el editor (o copiar cuando la propia
+			// terminal tiene una selección). Nunca cancela la tarea ni descarta la
+			// cola; Escape es el atajo de interrupción.
+			m.pendingEnter = false
+			m.pendingEnterSeq++
+			m.resetPasteFallback()
+			if m.textarea.Value() != "" {
+				m.textarea.Reset()
+				m.paletteOpen = false
+				m.syncInputHeight()
 			}
-
-			if !m.quitPrimedAt.IsZero() && time.Since(m.quitPrimedAt) < 2*time.Second {
+			return m, nil
+		case "ctrl+d":
+			// Pi sale con Ctrl+D sólo cuando el editor está vacío. Con contenido
+			// dejamos que Bubbles procese Ctrl+D como edición normal.
+			if m.textarea.Value() == "" {
 				return m, tea.Quit
 			}
-			m.quitPrimedAt = time.Now()
-			m.AddSystem("Pulsa Ctrl+C otra vez para salir, o usa /exit.")
-			return m, nil
-		case "shift+enter", "alt+enter", "ctrl+enter":
+		case "alt+enter":
+			// Follow-up explícito: durante una tarea espera a que el agente haya
+			// terminado todo el trabajo; en reposo equivale a enviar normalmente.
+			m.pendingEnter = false
+			m.pendingEnterSeq++
+			val := strings.TrimSpace(m.textarea.Value())
+			if val == "" {
+				return m, nil
+			}
+			if m.streaming {
+				m.resetPasteFallback()
+				m.textarea.Reset()
+				m.paletteOpen = false
+				m.syncInputHeight()
+				m.enqueue(val, queueFollowUp)
+				return m, nil
+			}
+			return m.submit(val)
+		case "shift+enter", "ctrl+enter":
 			// Nueva línea explícita dentro del textarea. No entra en el detector
 			// de paste porque el usuario indicó de forma inequívoca que quiere
 			// una línea nueva.
@@ -2280,23 +2337,103 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// drainQueue arranca el siguiente mensaje encolado (si lo hay) una vez que
-// termina el turno actual. Devuelve nil si la cola está vacía. Sólo se
-// procesa un mensaje por vez: la propia lógica de submit vuelve a llamar a
-// drainQueue al terminar cada turno.
-func (m *ChatModel) drainQueue() tea.Cmd {
-	if m.streaming || len(m.queue) == 0 {
-		return nil
-	}
-	next := m.queue[0]
-	m.queue = m.queue[1:]
-	// Al drenar, el panel fijo se re-renderiza automáticamente y la caja
-	// vuelve a recalcular altura porque el chrome inferior cambió.
+// Queue helpers implementan dos clases de mensajes como Pi: steering para la
+// siguiente frontera segura del agente y follow-up para después del turno.
+func (m *ChatModel) enqueue(text string, mode queueMode) {
+	m.queue = append(m.queue, queuedMessage{Text: text, Mode: mode})
 	if m.ctx.Width > 0 && m.ctx.Height > 0 {
 		m.Resize(m.ctx.Width, m.ctx.Height)
 	}
-	_, cmd := m.submit(next)
+}
+
+func (m *ChatModel) takeQueued(mode queueMode) (queuedMessage, bool) {
+	for i, item := range m.queue {
+		if item.Mode != mode {
+			continue
+		}
+		m.queue = append(m.queue[:i], m.queue[i+1:]...)
+		if m.ctx.Width > 0 && m.ctx.Height > 0 {
+			m.Resize(m.ctx.Width, m.ctx.Height)
+		}
+		return item, true
+	}
+	return queuedMessage{}, false
+}
+
+func (m *ChatModel) extendActiveToolsForPrompt(text string) {
+	for _, name := range tools.Select(text) {
+		m.activeTools = appendUniqueTool(m.activeTools, name)
+	}
+	if !tools.IsDirectChat(text) && m.skillsEnabled() {
+		for _, name := range tools.WithSkillTools(nil, len(m.loadSkills()) > 0) {
+			m.activeTools = appendUniqueTool(m.activeTools, name)
+		}
+	}
+	sort.Strings(m.activeTools)
+	m.invalidateContextUsage()
+}
+
+// deliverSteering consumes exactly one Enter-queued message and injects it at
+// the next safe agent boundary. This mirrors pi's default one-at-a-time
+// steering mode: current tool calls finish, then the instruction is visible to
+// the next model request without starting a parallel turn.
+func (m *ChatModel) deliverSteering() bool {
+	item, ok := m.takeQueued(queueSteer)
+	if !ok {
+		return false
+	}
+	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: item.Text, Time: time.Now()})
+	m.appendHistory(openai.Message{Role: "user", Content: item.Text})
+	m.extendActiveToolsForPrompt(item.Text)
+	m.toolFallback = ""
+	m.refreshTranscript(true)
+	return true
+}
+
+// drainFollowUp starts one Alt+Enter follow-up only after the active agent work
+// has fully stopped. A stray steering item is preferred defensively so ordering
+// remains useful even if it was queued on the final completion frame.
+func (m *ChatModel) drainFollowUp() tea.Cmd {
+	if m.streaming || len(m.queue) == 0 {
+		return nil
+	}
+	item, ok := m.takeQueued(queueSteer)
+	if !ok {
+		item, ok = m.takeQueued(queueFollowUp)
+	}
+	if !ok {
+		return nil
+	}
+	_, cmd := m.submit(item.Text)
 	return cmd
+}
+
+// restoreQueuedToEditor is the non-destructive queue escape hatch used by Pi:
+// queued messages return to the editor so the user can edit/copy/re-submit
+// them. The active task is not touched unless the caller explicitly aborts it.
+func (m *ChatModel) restoreQueuedToEditor() int {
+	if len(m.queue) == 0 {
+		return 0
+	}
+	parts := make([]string, 0, len(m.queue)+1)
+	for _, item := range m.queue {
+		if strings.TrimSpace(item.Text) != "" {
+			parts = append(parts, item.Text)
+		}
+	}
+	if current := strings.TrimSpace(m.textarea.Value()); current != "" {
+		parts = append(parts, m.textarea.Value())
+	}
+	count := len(m.queue)
+	m.queue = nil
+	m.textarea.SetValue(strings.Join(parts, "\n"))
+	m.textarea.CursorEnd()
+	m.updatePalette()
+	m.syncInputHeight()
+	if m.ctx.Width > 0 && m.ctx.Height > 0 {
+		m.Resize(m.ctx.Width, m.ctx.Height)
+	}
+	return count
 }
 
 func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
@@ -2305,15 +2442,11 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 	m.paletteOpen = false
 	m.syncInputHeight()
 
-	// Sólo una tarea a la vez: si Lilith ya está trabajando, encolamos el
-	// mensaje del usuario y lo drenamos al terminar. El aviso NO va al
-	// transcript (subiría con el scroll y se perdería): en su lugar
-	// aparece en un panel fijo justo encima de la caja de entrada.
+	// Enter durante una tarea es steering: no abre un turno paralelo. Se
+	// entrega en la siguiente frontera segura (después de las tools actuales)
+	// para que pueda reorientar el trabajo en curso, igual que en Pi.
 	if m.streaming {
-		m.queue = append(m.queue, val)
-		if m.ctx.Width > 0 && m.ctx.Height > 0 {
-			m.Resize(m.ctx.Width, m.ctx.Height)
-		}
+		m.enqueue(val, queueSteer)
 		return m, nil
 	}
 

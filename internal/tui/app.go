@@ -71,6 +71,43 @@ type RootModel struct {
 	cancel  context.CancelFunc
 }
 
+// chatRuntimeMsg reports whether msg belongs to the persistent chat runtime
+// rather than to whichever screen happens to be visible. Provider chunks,
+// tool results and animation/persistence ticks must keep reaching ChatModel
+// while /config, /models, /providers, etc. are open; otherwise the command
+// chain that pumps the stream is lost and the turn appears frozen on return.
+func chatRuntimeMsg(msg tea.Msg) bool {
+	switch msg.(type) {
+	case thinkingTickMsg,
+		transcriptRefreshTickMsg,
+		livePersistDoneMsg,
+		livePersistTickMsg,
+		cmdElapsedTickMsg,
+		chatStreamMsg,
+		toolResultsMsg,
+		bashResultMsg:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m RootModel) chatVisible() bool {
+	chat, ok := m.current.(*ChatModel)
+	return ok && chat == m.chat
+}
+
+// mouseModeCmd keeps click support on settings/select screens but releases
+// mouse capture in chat. With mouse reporting disabled the terminal can use
+// normal drag-selection/copying over the transcript, matching pi's terminal
+// behavior without replacing any existing settings components.
+func (m RootModel) mouseModeCmd() tea.Cmd {
+	if m.chatVisible() {
+		return tea.DisableMouse
+	}
+	return tea.EnableMouseCellMotion
+}
+
 // NewRootModel builds the root Bubble Tea model. If firstRun is true, the
 // onboarding screen is shown; otherwise the chat opens directly.
 func NewRootModel(ctx *AppContext) RootModel {
@@ -88,10 +125,15 @@ func NewRootModel(ctx *AppContext) RootModel {
 }
 
 func (m RootModel) Init() tea.Cmd {
-	if m.current != nil {
-		return m.current.Init()
+	if m.current == nil {
+		return nil
 	}
-	return nil
+	// Program starts with WithMouseCellMotion so first-run/settings screens are
+	// interactive from frame zero. Only chat needs an Init-time override.
+	if m.chatVisible() {
+		return tea.Batch(m.current.Init(), tea.DisableMouse)
+	}
+	return m.current.Init()
 }
 
 func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -107,10 +149,10 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Return to chat
 			m.chat.invalidateContextUsage()
 			m.current = m.chat
-			return m, nil
+			return m, m.mouseModeCmd()
 		}
 		m.current = v.next
-		return m, m.current.Init()
+		return m, tea.Batch(m.current.Init(), m.mouseModeCmd())
 	case systemMsg:
 		m.chat.AddSystem(v.text)
 		return m, nil
@@ -120,7 +162,17 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case resumeSessionMsg:
 		m.chat.LoadSession(v.sess)
 		m.current = m.chat
-		return m, nil
+		return m, m.mouseModeCmd()
+	}
+
+	// Chat work is long-lived and independent of the visible screen. Bubble Tea
+	// commands form a chain (each stream chunk schedules the next pump), so
+	// dropping even one runtime message while a settings screen is active stops
+	// the turn permanently. Route those messages directly to the persistent chat
+	// model while leaving the current screen untouched.
+	if !m.chatVisible() && chatRuntimeMsg(msg) {
+		_, cmd := m.chat.Update(msg)
+		return m, cmd
 	}
 	next, cmd := m.current.Update(msg)
 	m.current = next

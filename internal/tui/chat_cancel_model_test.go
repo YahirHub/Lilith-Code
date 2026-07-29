@@ -35,7 +35,7 @@ func TestCancelTurnIsImmediateAndInvalidatesLateToolResult(t *testing.T) {
 	select {
 	case <-done:
 	default:
-		t.Fatal("Ctrl+C debe cancelar el contexto del turno de inmediato")
+		t.Fatal("Escape debe cancelar el contexto del turno de inmediato")
 	}
 	if m.streaming || m.thinking || m.working || m.activeTurnID != 0 || m.activeRequestID != 0 {
 		t.Fatalf("turno no quedó detenido: streaming=%v thinking=%v working=%v turn=%d request=%d", m.streaming, m.thinking, m.working, m.activeTurnID, m.activeRequestID)
@@ -167,10 +167,10 @@ func TestCancelTurnPersistsPartialProgressAndResumeRestoresIt(t *testing.T) {
 	m.cancelTurn()
 	loaded, err := m.store.Load(m.project, m.sess.ID)
 	if err != nil {
-		t.Fatalf("load después de Ctrl+C: %v", err)
+		t.Fatalf("load después de cancelar: %v", err)
 	}
 	if loaded.Live == nil {
-		t.Fatal("Ctrl+C debe dejar un checkpoint live más nuevo que el snapshot estable")
+		t.Fatal("La cancelación debe dejar un checkpoint live más nuevo que el snapshot estable")
 	}
 	var sawThinking, sawAssistant, sawCancel bool
 	for _, entry := range loaded.Live.Entries {

@@ -137,6 +137,6 @@ func helpText() string {
 		b.WriteString(c.Description)
 		b.WriteString("\n")
 	}
-	b.WriteString("\nAtajos: Enter enviar · ! prefix bash · Ctrl+R plegar razonamiento · Ctrl+C cancela tarea (2x sale)")
+	b.WriteString("\nAtajos: Enter enviar/dirigir · Alt+Enter seguimiento · Alt+↑ recuperar cola · Esc cancelar · Ctrl+C limpiar · Ctrl+D salir · Ctrl+Z suspender en Unix · Ctrl+R plegar razonamiento")
 	return b.String()
 }

@@ -102,6 +102,9 @@ func runTUI(_ *cobra.Command, _ []string) error {
 	}
 
 	root := tui.NewRootModel(ctx)
+	// Start with mouse support for onboarding/settings. RootModel disables it
+	// whenever chat is active so terminal text can be selected/copied normally,
+	// then re-enables it when a clickable settings screen opens.
 	p := tea.NewProgram(root, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	finalModel, err := p.Run()
 	if err != nil {
