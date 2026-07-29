@@ -54,6 +54,40 @@ func TestTodoBlockCarriesExactRevisionIntoSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestTodoWidgetCanExpandAndCollapse(t *testing.T) {
+	ctx := &AppContext{Styles: NewStyles(DefaultTheme()), Width: 100, Height: 40}
+	manager := litodo.NewManager(nil)
+	_, err := manager.Write(litodo.SnapshotInput{Tasks: []litodo.TaskPatch{
+		{Key: "one", Subject: stringPtr("Task one"), Status: todoStatusPtr(litodo.Completed)},
+		{Key: "two", Subject: stringPtr("Task two"), Status: todoStatusPtr(litodo.Completed)},
+		{Key: "three", Subject: stringPtr("Task three"), Status: todoStatusPtr(litodo.InProgress)},
+		{Key: "four", Subject: stringPtr("Task four"), Status: todoStatusPtr(litodo.Pending)},
+		{Key: "five", Subject: stringPtr("Task five"), Status: todoStatusPtr(litodo.Pending)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewChat(ctx)
+	m.todos = manager
+	m.Resize(100, 40)
+	compact := stripANSI(m.todoWidgetView(100))
+	if strings.Contains(compact, "Task five") || !strings.Contains(compact, "tarea(s) más") {
+		t.Fatalf("compact TodoWrite must keep a short active window:\n%s", compact)
+	}
+	if !m.toggleTodoExpanded() {
+		t.Fatal("large TodoWrite should be expandable")
+	}
+	expanded := stripANSI(m.todoWidgetView(100))
+	for _, want := range []string{"Task one", "Task two", "Task three", "Task four", "Task five", "Ctrl+T"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("expanded TodoWrite missing %q:\n%s", want, expanded)
+		}
+	}
+	if !m.toggleTodoExpanded() || m.todoExpanded {
+		t.Fatal("second toggle should collapse TodoWrite")
+	}
+}
+
 func TestDescribeTodoCallIsCompact(t *testing.T) {
 	call := makeToolCall("todo_write", `{"tasks":[{"key":"a"},{"key":"b"}]}`)
 	got := describeCall(call)

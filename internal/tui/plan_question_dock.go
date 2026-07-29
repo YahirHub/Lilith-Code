@@ -283,6 +283,7 @@ func (m *ChatModel) openPlanQuestions() tea.Cmd {
 	if !m.hasPendingPlanQuestions() {
 		return nil
 	}
+	m.returnToInteractionBottom()
 	m.planQuestion.openPending()
 	if m.ctx.Width > 0 && m.ctx.Height > 0 {
 		m.Resize(m.ctx.Width, m.ctx.Height)
@@ -356,6 +357,15 @@ func (m *ChatModel) handlePlanQuestionKey(v tea.KeyMsg) (bool, tea.Cmd) {
 		return false, nil
 	}
 	key := v.String()
+	// Page/half-page navigation always belongs to the transcript, even while a
+	// question is open. Once the viewport leaves the bottom the whole question
+	// dock scrolls out with the editor and comes back unchanged at End/bottom.
+	if m.planQuestion.open && isScrollKey(key) {
+		return false, nil
+	}
+	if m.planQuestion.open && m.userScrolled {
+		m.returnToInteractionBottom()
+	}
 	if !m.planQuestion.open {
 		if key == "?" {
 			return true, m.openPlanQuestions()

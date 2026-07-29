@@ -123,6 +123,11 @@ type ChatModel struct {
 	// concurrency-safe because tools run outside Bubble Tea's Update goroutine.
 	todos *litodo.Manager
 
+	// todoExpanded only controls presentation. The authoritative plan stays in
+	// todo.Manager. Compact is the default so TodoWrite remains cheap on short
+	// terminals; Ctrl+T or clicking the visible Todo block toggles the full list.
+	todoExpanded bool
+
 	// plans owns the selected primary agent mode (Build/Plan) and any approved
 	// plan/questions for this session. The selected mode applies to the NEXT
 	// turn; turnAgentMode snapshots it when a request starts, like OpenCode.
@@ -939,6 +944,7 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 	m.Clear()
 	m.sess = s
 	m.history = s.Messages
+	m.todoExpanded = false
 	if m.todos == nil {
 		m.todos = litodo.NewManager(s.Todo)
 	} else if err := m.todos.Restore(s.Todo); err != nil {
@@ -1161,6 +1167,8 @@ func (m *ChatModel) Clear() {
 	m.thinkingActive = nil
 	m.assistantActive = -1
 	m.reasoningBuf.Reset()
+	m.todoExpanded = false
+	m.userScrolled = false
 	m.sess = session.New(m.project)
 	if m.todos == nil {
 		m.todos = litodo.NewManager(nil)
@@ -1646,11 +1654,9 @@ func (m *ChatModel) inputBoxView(w int) string {
 	return box
 }
 
-// queuePanelView renderiza un panel FIJO justo encima de la caja de entrada
-// con los mensajes que el usuario envió mientras Lilith ya estaba trabajando.
-// A diferencia de un mensaje de sistema, este panel no se desplaza con el
-// scroll del transcript: siempre está visible mientras haya cola pendiente,
-// y desaparece a medida que se drena.
+// queuePanelView renderiza los mensajes pendientes dentro de la zona inferior
+// de interacción. Al desplazarse hacia historial antiguo, esta zona completa
+// sale de pantalla junto con el editor y vuelve al regresar al fondo.
 func (m *ChatModel) queuePanelView(w int) string {
 	if len(m.queue) == 0 {
 		return ""
@@ -1719,9 +1725,9 @@ func truncateOneLine(text string, maxRunes int) string {
 	return string(runes[:maxRunes-1]) + "…"
 }
 
-// pinnedActivityView renderiza el shimmer de actividad FIJO justo encima de
-// la caja de entrada. No se mueve con el scroll y no lo tapan las burbujas de
-// tool, así el usuario siempre sabe si Lilith sigue trabajando o pensando.
+// pinnedActivityView renderiza el shimmer dentro de la zona inferior de interacción.
+// Esa zona sólo permanece visible cuando el transcript está al fondo; al leer
+// historial se desplaza fuera junto con el input y el resto del chrome.
 func (m *ChatModel) pinnedActivityView(w int) string {
 	if !(m.thinking || m.working) {
 		return ""
@@ -1743,6 +1749,14 @@ func (m *ChatModel) pinnedActivityView(w int) string {
 // del transcript. Mantener una única fuente de verdad evita que Resize y View
 // diverjan cuando aparecen/desaparecen TodoWrite, actividad, cola o paleta.
 func (m *ChatModel) bottomChromeParts(w, usedTokens, maxTokens int) []string {
+	// Nothing is pinned while the user is reading older transcript content.
+	// The viewport immediately reclaims every footer row, so TodoWrite, activity,
+	// queue, questions, editor and status behave like the tail of the document
+	// instead of floating over it. Returning to the bottom restores them.
+	if m.userScrolled {
+		return nil
+	}
+
 	// OpenCode keeps questions in the footer instead of replacing the whole TUI.
 	// While the dock is open it temporarily owns the input area, keeping the
 	// transcript as large as possible on short terminals.
@@ -1852,6 +1866,18 @@ func (m *ChatModel) syncViewportGeometry() {
 	} else {
 		m.viewport.SetYOffset(m.viewport.YOffset)
 	}
+}
+
+// returnToInteractionBottom restores the editor/footer before a key that edits
+// or submits text. This avoids accepting invisible input while the user is in
+// full-height transcript reading mode.
+func (m *ChatModel) returnToInteractionBottom() {
+	if !m.userScrolled {
+		return
+	}
+	m.userScrolled = false
+	m.viewport.GotoBottom()
+	m.syncViewportGeometry()
 }
 
 func (m *ChatModel) updatePalette() {
@@ -2282,6 +2308,10 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.refreshTranscript(true)
 		}
+		var todoMouseCmd tea.Cmd
+		if v.todoChanged {
+			todoMouseCmd = m.chatMouseModeCmd()
+		}
 
 		// Plan questions and plan_exit deliberately END the current agent turn.
 		// The user answers normally or presses Tab to select Build; we must not
@@ -2308,7 +2338,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.refreshTranscript(true)
 			}
-			return m, tea.DisableMouse
+			return m, tea.Batch(todoMouseCmd, m.chatMouseModeCmd())
 		}
 
 		// Tool outputs are a stable API boundary. This is also the preferred
@@ -2316,7 +2346,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// instruction can safely influence the very next model request.
 		m.deliverSteering()
 		m.forceLivePersist()
-		return m, m.runTurn()
+		return m, tea.Batch(m.runTurn(), todoMouseCmd)
 
 	case bashResultMsg:
 		m.messages = append(m.messages, ChatMessage{Kind: MsgTool, Content: v.output, Time: time.Now()})
@@ -2327,10 +2357,13 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if handled, cmd := m.handlePlanQuestionMouse(v); handled {
 			return m, cmd
 		}
+		if handled, cmd := m.handleTodoMouse(v); handled {
+			return m, cmd
+		}
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(v)
 		m.userScrolled = !m.viewport.AtBottom()
-		return m, cmd
+		return m, tea.Batch(cmd, m.chatMouseModeCmd())
 
 	case tea.KeyMsg:
 		if handled, cmd := m.handlePlanQuestionKey(v); handled {
@@ -2343,6 +2376,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// son texto, nunca eventos Enter, y un pegado grande no se "teclea" rune
 		// por rune a través del loop principal.
 		if v.Paste {
+			m.returnToInteractionBottom()
 			// El camino nativo es autoritativo. Un paste bracketed nunca debe
 			// heredar el estado heurístico de una entrada anterior.
 			m.resetPasteFallback()
@@ -2386,6 +2420,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// un texto pegado que empieza por "/" podría ejecutar una sugerencia en
 		// cuanto llegara su primer salto de línea.
 		if key == "enter" {
+			m.returnToInteractionBottom()
 			if m.pasteFallbackActive {
 				m.textarea.InsertString("\n")
 				m.pasteAwaitingLF = true
@@ -2416,7 +2451,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
 			m.userScrolled = !m.viewport.AtBottom()
-			return m, cmd
+			return m, tea.Batch(cmd, m.chatMouseModeCmd())
 		}
 		if m.paletteOpen {
 			switch key {
@@ -2448,7 +2483,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// this only changes the agent selected for the next user message.
 		if key == "tab" || key == "shift+tab" {
 			m.toggleAgentMode()
-			return m, nil
+			return m, m.chatMouseModeCmd()
 		}
 		switch key {
 		case "ctrl+o", "ctrl+j", "ctrl+k":
@@ -2471,6 +2506,12 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.invalidateTranscriptCache()
 			m.refreshTranscript(true)
+			return m, nil
+		case "ctrl+t":
+			m.returnToInteractionBottom()
+			if m.toggleTodoExpanded() {
+				return m, m.chatMouseModeCmd()
+			}
 			return m, nil
 		case "ctrl+r":
 			// Toggle del último panel de "pensamiento".
@@ -2508,6 +2549,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// salidas accidentales y deja /exit como única salida explícita.
 			return m, nil
 		case "alt+enter":
+			m.returnToInteractionBottom()
 			// Follow-up explícito: durante una tarea espera a que el agente haya
 			// terminado todo el trabajo; en reposo equivale a enviar normalmente.
 			m.pendingEnter = false
@@ -2526,6 +2568,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.submit(val)
 		case "shift+enter", "ctrl+enter":
+			m.returnToInteractionBottom()
 			// Nueva línea explícita dentro del textarea. No entra en el detector
 			// de paste porque el usuario indicó de forma inequívoca que quiere
 			// una línea nueva.
@@ -2535,6 +2578,10 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncInputHeight()
 			return m, nil
 		}
+
+		// Cualquier entrada de texto vuelve primero al final del documento; el
+		// editor nunca recibe pulsaciones invisibles mientras se lee historial.
+		m.returnToInteractionBottom()
 
 		// Para teclas normales dejamos que Bubbles actualice el textarea y
 		// conservamos, si aplica, el timer del fallback de paste. Retornar aquí
@@ -2573,6 +2620,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// el flag para que el auto-scroll respete la posición del usuario.
 		if _, isMouse := msg.(tea.MouseMsg); isMouse {
 			m.userScrolled = !m.viewport.AtBottom()
+			cmds = append(cmds, m.chatMouseModeCmd())
 		}
 	}
 	return m, tea.Batch(cmds...)
@@ -2755,7 +2803,7 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 	}
 	m.persist()
 	m.refreshTranscript(true)
-	return m, tea.Batch(m.runTurn(), tea.DisableMouse)
+	return m, tea.Batch(m.runTurn(), m.chatMouseModeCmd())
 }
 
 // runTurn envía el historial actual al modelo con los esquemas de herramientas
@@ -3386,7 +3434,7 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 	}
 	m.persist()
 	m.refreshTranscript(true)
-	return m.runTurn()
+	return tea.Batch(m.runTurn(), m.chatMouseModeCmd())
 }
 
 // Kept in English on purpose: tool-use guidance is generally followed more

@@ -97,17 +97,23 @@ func (m RootModel) chatVisible() bool {
 	return ok && chat == m.chat
 }
 
+// chatMouseModeCmd enables mouse reporting only when chat currently exposes a
+// clickable inline control. Most of the time reporting remains disabled so the
+// terminal keeps native text selection/copy behavior. A large TodoWrite also
+// opts in because its visible block can be clicked to expand/collapse.
+func (m *ChatModel) chatMouseModeCmd() tea.Cmd {
+	if m != nil && (m.hasPendingPlanQuestions() || m.todoExpandable()) {
+		return tea.EnableMouseCellMotion
+	}
+	return tea.DisableMouse
+}
+
 // mouseModeCmd keeps click support on settings/select screens but releases
-// mouse capture in chat. With mouse reporting disabled the terminal can use
-// normal drag-selection/copying over the transcript, matching pi's terminal
-// behavior without replacing any existing settings components.
+// mouse capture in ordinary chat.
 func (m RootModel) mouseModeCmd() tea.Cmd {
 	if m.chatVisible() {
-		// Normal chat releases mouse capture so terminal-native text selection
-		// works. Pending Plan decisions temporarily enable clicks for the compact
-		// inline question dock / ? launcher.
-		if m.chat != nil && m.chat.hasPendingPlanQuestions() {
-			return tea.EnableMouseCellMotion
+		if m.chat != nil {
+			return m.chat.chatMouseModeCmd()
 		}
 		return tea.DisableMouse
 	}

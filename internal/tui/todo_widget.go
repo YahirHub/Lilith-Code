@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	litodo "github.com/lilith/li/internal/todo"
 )
@@ -161,9 +162,10 @@ func renderTodoTask(task todoDisplayTask, width int, s Styles) string {
 	return prefix + subjectStyle.Render(subject) + s.Muted.Render(relation)
 }
 
-// todoWidgetView is a read-only, fixed plan summary placed above the editor.
-// It deliberately uses ASCII status markers instead of emoji so rendering is
-// stable across Windows/Linux terminals and follows Lilith's current UI rules.
+// todoWidgetView renders the current model-owned task plan. Compact mode keeps
+// only the active neighborhood visible; expanded mode renders the whole plan.
+// The widget itself lives in the bottom interaction flow and therefore scrolls
+// away with the editor whenever the user reads older transcript content.
 func (m *ChatModel) todoWidgetView(w int) string {
 	if m == nil || m.todos == nil {
 		return ""
@@ -186,19 +188,87 @@ func (m *ChatModel) todoWidgetView(w int) string {
 			completed++
 		}
 	}
+	display := todoDisplayTasks(state.Tasks)
+	expandable := len(display) > todoWidgetTaskLimit
+	modeHint := ""
+	if expandable {
+		modeHint = " · Ctrl+T"
+	}
 	lines := []string{
 		m.ctx.Styles.Accent.Render(fmt.Sprintf("Tareas %d/%d", completed, len(state.Tasks))) +
-			m.ctx.Styles.Muted.Render(fmt.Sprintf(" · rev %d", state.Revision)),
+			m.ctx.Styles.Muted.Render(fmt.Sprintf(" · rev %d%s", state.Revision, modeHint)),
 	}
-	display := todoDisplayTasks(state.Tasks)
-	visible := collapsedTodoWindow(display)
+	visible := display
+	if !m.todoExpanded {
+		visible = collapsedTodoWindow(display)
+	}
 	for _, task := range visible {
 		lines = append(lines, renderTodoTask(task, contentWidth, m.ctx.Styles))
 	}
-	if len(display) > len(visible) {
+	if !m.todoExpanded && len(display) > len(visible) {
 		lines = append(lines, m.ctx.Styles.Muted.Render(fmt.Sprintf("... %d tarea(s) más", len(display)-len(visible))))
 	}
 	return lipgloss.NewStyle().Width(boxWidth).Padding(0, 1).Render(strings.Join(lines, "\n"))
+}
+
+func (m *ChatModel) todoExpandable() bool {
+	if m == nil || m.todos == nil || m.effectiveAgentMode() == "plan" {
+		return false
+	}
+	return len(m.todos.Snapshot().Tasks) > todoWidgetTaskLimit
+}
+
+func (m *ChatModel) toggleTodoExpanded() bool {
+	if !m.todoExpandable() {
+		return false
+	}
+	m.todoExpanded = !m.todoExpanded
+	if m.ctx != nil && m.ctx.Width > 0 && m.ctx.Height > 0 {
+		m.Resize(m.ctx.Width, m.ctx.Height)
+	}
+	return true
+}
+
+// todoChromeBounds returns the Todo rows in terminal coordinates while the
+// interaction tail is visible. It deliberately mirrors bottomChromeParts so a
+// click can toggle the Todo without introducing a separate layout system.
+func (m *ChatModel) todoChromeBounds(w, h int) (int, int, bool) {
+	if m == nil || m.ctx == nil || m.userScrolled || !m.todoExpandable() || m.planQuestion.open {
+		return 0, 0, false
+	}
+	if w <= 0 {
+		w = 80
+	}
+	used, maxCtx := m.contextUsage()
+	y := m.viewportHeightForFrame(w, h, used, maxCtx)
+	if launcher := m.planQuestionLauncherView(w); launcher != "" {
+		y += lipgloss.Height(launcher)
+	}
+	if plan := m.planWidgetView(w); plan != "" {
+		y += lipgloss.Height(plan)
+	}
+	todo := m.todoWidgetView(w)
+	if todo == "" {
+		return 0, 0, false
+	}
+	return y, y + lipgloss.Height(todo) - 1, true
+}
+
+func (m *ChatModel) handleTodoMouse(v tea.MouseMsg) (bool, tea.Cmd) {
+	if !m.todoExpandable() || m.userScrolled {
+		return false, nil
+	}
+	e, ok := mouseLeftPress(v)
+	if !ok {
+		return false, nil
+	}
+	w, h := m.ctx.Width, m.ctx.Height
+	start, end, ok := m.todoChromeBounds(w, h)
+	if !ok || e.Y < start || e.Y > end {
+		return false, nil
+	}
+	m.toggleTodoExpanded()
+	return true, m.chatMouseModeCmd()
 }
 
 func isTodoToolName(name string) bool {

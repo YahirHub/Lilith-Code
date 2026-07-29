@@ -91,6 +91,41 @@ func TestChatViewOcupaTodoElAltoConChromeDinamico(t *testing.T) {
 	assertHeight("TodoWrite retirado sin resize")
 }
 
+func TestScrollManualOcultaTodoInputYStatusYUsaTodaLaTerminal(t *testing.T) {
+	ctx := &AppContext{Styles: NewStyles(DefaultTheme())}
+	m := NewChat(ctx)
+	m.Resize(90, 28)
+	for i := 0; i < 40; i++ {
+		m.messages = append(m.messages, ChatMessage{Kind: MsgAssistant, Content: "línea histórica para permitir desplazamiento", Time: time.Now()})
+	}
+	if err := m.todos.Restore(&litodo.State{
+		SchemaVersion: litodo.SchemaVersion,
+		Revision:      1,
+		Tasks: []litodo.Task{
+			{Key: "a", Subject: "Primera tarea", Status: litodo.Completed},
+			{Key: "b", Subject: "Segunda tarea", Status: litodo.InProgress},
+			{Key: "c", Subject: "Tercera tarea", Status: litodo.Pending},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m.refreshTranscript(true)
+	bottom := stripANSI(m.View())
+	if !strings.Contains(bottom, "Tareas 1/3") || !strings.Contains(bottom, "Escribe un mensaje") {
+		t.Fatalf("at bottom interaction tail must be visible:\n%s", bottom)
+	}
+
+	m.viewport.LineUp(8)
+	m.userScrolled = true
+	reading := stripANSI(m.View())
+	if strings.Contains(reading, "Tareas 1/3") || strings.Contains(reading, "Escribe un mensaje") || strings.Contains(reading, "sin proveedor") {
+		t.Fatalf("reading older transcript must not keep bottom chrome pinned:\n%s", reading)
+	}
+	if got := lipgloss.Height(m.View()); got != 28 {
+		t.Fatalf("full-height reading mode should consume 28 rows, got %d", got)
+	}
+}
+
 func TestTextareaAutoresizeNoOcultaPrimeraLineaEnvuelta(t *testing.T) {
 	ctx := &AppContext{Styles: NewStyles(DefaultTheme())}
 	m := NewChat(ctx)

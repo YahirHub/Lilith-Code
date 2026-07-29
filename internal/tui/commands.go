@@ -45,10 +45,10 @@ func Commands() []SlashCommand {
 					return nil
 				case "exit", "off", "build":
 					chat.setAgentMode(planstate.Build)
-					return nil
+					return chat.chatMouseModeCmd()
 				case "":
 					chat.setAgentMode(planstate.Plan)
-					return nil
+					return chat.chatMouseModeCmd()
 				default:
 					chat.setAgentMode(planstate.Plan)
 					_, cmd := chat.submit(arg)
@@ -61,7 +61,7 @@ func Commands() []SlashCommand {
 			Description: "Selecciona Build para el siguiente turno y restaura herramientas de implementación.",
 			Run: func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd {
 				chat.setAgentMode(planstate.Build)
-				return nil
+				return chat.chatMouseModeCmd()
 			},
 		},
 		{
