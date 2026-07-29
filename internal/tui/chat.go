@@ -2472,7 +2472,7 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: val, Time: time.Now()})
 	m.appendHistory(openai.Message{Role: "user", Content: val})
 	// Selección perezosa: sólo los esquemas que este turno puede necesitar.
-	m.activeTools = tools.Select(val)
+	m.activeTools = tools.SelectAvailable(val, tools.Env{ConfigDir: m.ctx.ConfigDir})
 	if !tools.IsDirectChat(val) && m.skillsEnabled() {
 		m.activeTools = tools.WithSkillTools(m.activeTools, len(m.loadSkills()) > 0)
 	}
@@ -2521,6 +2521,11 @@ func (m *ChatModel) runTurn() tea.Cmd {
 	// otra vez y los refrescos respetarán esa posición.
 	m.userScrolled = false
 	m.refreshTranscript(true)
+
+	// Dynamic tools (notably web_search) may become unavailable while the chat
+	// is open if their configuration changes in /config. Filter them before
+	// both the prompt and wire schemas so hidden tools never leak to the model.
+	m.activeTools = tools.FilterAvailable(m.activeTools, tools.Env{ConfigDir: m.ctx.ConfigDir})
 
 	msgs := make([]openai.Message, 0, len(m.history)+1)
 	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(m.activeTools, m.skillsBlock())})
@@ -2633,7 +2638,7 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 	if m.skillsEnabled() {
 		skillCatalog = m.loadSkills()
 	}
-	env := tools.Env{Root: root, Materialize: materialize, Skills: skillCatalog}
+	env := tools.Env{Root: root, ConfigDir: m.ctx.ConfigDir, Materialize: materialize, Skills: skillCatalog}
 	return func() tea.Msg {
 		results := make([]openai.Message, 0, len(calls))
 		compactCallIDs := make([]string, 0, 1)
@@ -3045,7 +3050,7 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: visible, Time: time.Now()})
 	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: "Skill cargada: " + sk.Name + " (" + sk.Source + ")", Time: time.Now()})
 	m.appendHistory(openai.Message{Role: "user", Content: payload})
-	m.activeTools = tools.Select(body + "\n" + args)
+	m.activeTools = tools.SelectAvailable(body+"\n"+args, tools.Env{ConfigDir: m.ctx.ConfigDir})
 	// Una skill explícita puede ser pequeña, pero sus references/assets/scripts
 	// pueden ser enormes. Mantén siempre disponible la navegación acotada nativa
 	// para que el modelo no tenga que leer recursos completos ni usar shell.

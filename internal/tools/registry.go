@@ -18,6 +18,10 @@ import (
 type Env struct {
 	// Root is the project directory; every path is resolved inside it.
 	Root string
+	// ConfigDir is Lilith's global configuration directory (~/.li). Tools
+	// that depend on user configuration (for example web_search) use it
+	// without exposing secrets to the model.
+	ConfigDir string
 	// Materialize adds tool names to the active set (used by tool_search).
 	Materialize func(names []string)
 	// Skills is the already-discovered skill catalog for this session. Skill
@@ -41,7 +45,11 @@ type Definition struct {
 	Parameters any
 	// Mutating marks tools that write files or run commands.
 	Mutating bool
-	Run      func(ctx context.Context, args map[string]any, env Env) (string, error)
+	// Available dynamically hides a tool when its prerequisites are not met.
+	// A hidden tool is omitted from lazy discovery and rejected if a model
+	// nevertheless tries to call it. Nil means always available.
+	Available func(env Env) bool
+	Run       func(ctx context.Context, args map[string]any, env Env) (string, error)
 }
 
 var registry = map[string]Definition{}
@@ -131,6 +139,9 @@ func Execute(ctx context.Context, name string, args map[string]any, env Env) (st
 	if !ok {
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
+	if d.Available != nil && !d.Available(env) {
+		return "", fmt.Errorf("tool unavailable: %s", name)
+	}
 	return d.Run(ctx, args, env)
 }
 
@@ -154,6 +165,7 @@ var (
 	searchPattern       = regexp.MustCompile(`(?i)\b(busca|search|encuentra|find|grep|d(o|ó)nde|where|localiza|usages|referencias)\b`)
 	shellPattern        = regexp.MustCompile(`(?i)\b(ejecuta|execute|run|comando|command|terminal|bash|shell|compila|compile|build|test|prueba|git|npm|go run|instala|install)\b`)
 	urlPattern          = regexp.MustCompile(`(?i)(https?://|\b(url|web|p(a|á)gina|docs? online|documentaci(o|ó)n online)\b)`)
+	webSearchPattern    = regexp.MustCompile(`(?i)\b(internet|web|online|actualizado|actualizada|reciente|latest|current|news|noticias|hoy|today)\b|última\s+versión|ultima\s+version|latest\s+version`)
 )
 
 var promptHints = []struct {
@@ -166,6 +178,7 @@ var promptHints = []struct {
 	{searchPattern, []string{"code_search", "glob", "read_files"}},
 	{shellPattern, []string{"run_terminal_command"}},
 	{urlPattern, []string{"read_url"}},
+	{webSearchPattern, []string{"web_search"}},
 }
 
 // IsDirectChat reports a pure greeting/acknowledgement: no schemas at all.
@@ -208,6 +221,35 @@ func Select(prompt string) []string {
 		out = append(out, n)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// SelectAvailable applies the regular lazy selection and removes tools whose
+// runtime prerequisites are not satisfied. This is the path used by the chat.
+func SelectAvailable(prompt string, env Env) []string {
+	names := Select(prompt)
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		d, ok := registry[name]
+		if !ok || (d.Available != nil && !d.Available(env)) {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// FilterAvailable defensively removes tools that became unavailable after the
+// turn started (for example because a search credential was disabled).
+func FilterAvailable(names []string, env Env) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		d, ok := registry[name]
+		if !ok || (d.Available != nil && !d.Available(env)) {
+			continue
+		}
+		out = append(out, name)
+	}
 	return out
 }
 
@@ -276,6 +318,9 @@ func init() {
 					continue
 				}
 				d := registry[n]
+				if d.Available != nil && !d.Available(env) {
+					continue
+				}
 				hay := strings.ToLower(d.Name + " " + d.Description)
 				if skillQuery && !strings.Contains(hay, "skill") {
 					continue
@@ -291,6 +336,10 @@ func init() {
 				// materializa cuando la propia búsqueda expresa intención de crear.
 				for _, n := range order {
 					if n == "tool_search" || (n == "create_file" && !allowCreate) {
+						continue
+					}
+					d := registry[n]
+					if d.Available != nil && !d.Available(env) {
 						continue
 					}
 					matches = append(matches, n)

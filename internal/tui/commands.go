@@ -54,6 +54,13 @@ func Commands() []SlashCommand {
 			},
 		},
 		{
+			Name: "setup-search", Aliases: []string{"search-setup", "search"},
+			Description: "Configura y valida los motores de búsqueda web",
+			Run: func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd {
+				return switchTo(NewSearchConfigScreen(ctx))
+			},
+		},
+		{
 			Name: "clear", Aliases: []string{"new", "c", "n", "reset"},
 			Description: "Empieza una conversación nueva",
 			Run: func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd {

@@ -36,6 +36,7 @@ type ConfigScreen struct {
 	message  string
 	danger   string
 	loaded   []skills.Skill
+	search   *searchConfigState
 }
 
 func NewConfigScreen(ctx *AppContext) *ConfigScreen {
@@ -47,13 +48,28 @@ func NewConfigScreen(ctx *AppContext) *ConfigScreen {
 		loaded:   loaded,
 		section:  configSectionGeneral,
 		focus:    "skills",
+		search:   newSearchConfigState(ctx),
 	}
+}
+
+// NewSearchConfigScreen opens /config directly on the Búsqueda section. It is
+// also used by the /setup-search compatibility command.
+func NewSearchConfigScreen(ctx *AppContext) *ConfigScreen {
+	c := NewConfigScreen(ctx)
+	c.setSection(configSectionSearch)
+	return c
 }
 
 func (c *ConfigScreen) Init() tea.Cmd { return nil }
 
 func (c *ConfigScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
+	case searchTestMsg:
+		c.search.applyTest(v)
+		return c, nil
+	case searchTestAllMsg:
+		c.search.applyTestAll(v)
+		return c, nil
 	case tea.MouseMsg:
 		e, ok := mouseLeftPress(v)
 		if !ok {
@@ -68,6 +84,11 @@ func (c *ConfigScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			c.setSection(configSection(strings.TrimPrefix(hit.id, "section:")))
 			return c, nil
 		}
+		if c.section == configSectionSearch {
+			if handled, cmd := c.search.handleHit(hit.id); handled {
+				return c, cmd
+			}
+		}
 		c.focus = hit.id
 		switch hit.id {
 		case "skills":
@@ -77,6 +98,11 @@ func (c *ConfigScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		if c.section == configSectionSearch {
+			if handled, cmd := c.search.handleKey(v); handled {
+				return c, cmd
+			}
+		}
 		switch v.String() {
 		case "esc", "q":
 			return c, switchToChat()
@@ -112,9 +138,15 @@ func (c *ConfigScreen) setSection(section configSection) {
 			continue
 		}
 		c.section = section
-		if section == configSectionGeneral {
+		switch section {
+		case configSectionGeneral:
 			c.focus = "skills"
-		} else {
+		case configSectionSearch:
+			if c.search != nil {
+				c.search.reload()
+			}
+			c.focus = ""
+		default:
 			c.focus = "back"
 		}
 		return
@@ -180,7 +212,8 @@ func (c *ConfigScreen) layout() (string, []settingsHit) {
 	canvas.block(c.sectionPicker(w))
 	canvas.blank()
 
-	if c.section == configSectionGeneral {
+	switch c.section {
+	case configSectionGeneral:
 		canvas.block(c.skillsFocusCard(w))
 		canvas.blank()
 		canvas.block(settingsCard(s, settingsCardSpec{
@@ -189,17 +222,21 @@ func (c *ConfigScreen) layout() (string, []settingsHit) {
 			Badge:       "INFO",
 			Width:       w,
 		}))
-	} else {
+		canvas.blank()
+		canvas.block(c.backFocusCard(w))
+	case configSectionSearch:
+		c.search.appendLayout(canvas, w)
+	case configSectionSecurity:
 		canvas.block(settingsCard(s, settingsCardSpec{
 			Title:       "Características en desarrollo",
 			Description: c.developmentDescription(),
 			Badge:       "PRÓXIMO",
 			Width:       w,
 		}))
+		canvas.blank()
+		canvas.block(c.backFocusCard(w))
 	}
 
-	canvas.blank()
-	canvas.block(c.backFocusCard(w))
 	if c.message != "" && c.section == configSectionGeneral {
 		canvas.blank()
 		canvas.line(s.Success.Render("· " + settingsWrapPlain(c.message, w)))
@@ -208,8 +245,10 @@ func (c *ConfigScreen) layout() (string, []settingsHit) {
 		canvas.blank()
 		canvas.line(s.Danger.Render("Error: " + settingsWrapPlain(c.danger, w)))
 	}
-	canvas.blank()
-	canvas.block(settingsFooter(s, "Tab/Shift+Tab o ←→ cambiar sección · ↑↓ mover foco · Enter/Espacio usar · clic · Esc volver"))
+	if c.section != configSectionSearch {
+		canvas.blank()
+		canvas.block(settingsFooter(s, "Tab/Shift+Tab o ←→ cambiar sección · ↑↓ mover foco · Enter/Espacio usar · clic · Esc volver"))
+	}
 	return canvas.render(c.ctx.Width)
 }
 
