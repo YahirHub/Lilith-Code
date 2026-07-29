@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/lilith/li/internal/providers/openai"
+	litodo "github.com/lilith/li/internal/todo"
 )
 
 const (
@@ -98,6 +99,7 @@ type LiveCheckpoint struct {
 	UpdatedAt           time.Time         `json:"updatedAt"`
 	Entries             []TranscriptEntry `json:"entries,omitempty"`
 	History             []openai.Message  `json:"history,omitempty"`
+	Todo                *litodo.State     `json:"todo,omitempty"`
 }
 
 // Session is one persisted conversation.
@@ -110,6 +112,7 @@ type Session struct {
 	Messages    []openai.Message  `json:"messages"`
 	Transcript  []TranscriptEntry `json:"transcript,omitempty"`
 	Revision    uint64            `json:"revision,omitempty"`
+	Todo        *litodo.State     `json:"todo,omitempty"`
 	Live        *LiveCheckpoint   `json:"-"`
 }
 

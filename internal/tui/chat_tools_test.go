@@ -161,7 +161,7 @@ func TestSwitchCreateToolToEditorsAfterFileExists(t *testing.T) {
 }
 
 func TestSystemPromptUsesPiStyleActiveToolMetadata(t *testing.T) {
-	prompt := systemPrompt([]string{"str_replace"}, "")
+	prompt := systemPrompt([]string{"str_replace"}, "", "")
 	if !strings.Contains(prompt, "str_replace: Make precise replacements") {
 		t.Fatalf("active tool snippet missing:\n%s", prompt)
 	}
@@ -178,7 +178,7 @@ func TestSystemPromptUsesPiStyleActiveToolMetadata(t *testing.T) {
 		t.Fatal("legacy-write guidance should not consume prompt tokens when no file-creation/edit family is active")
 	}
 
-	filePrompt := systemPrompt([]string{"create_file", "str_replace"}, "")
+	filePrompt := systemPrompt([]string{"create_file", "str_replace"}, "", "")
 	if !strings.Contains(filePrompt, "`write` and `write_file` are unsupported legacy tool names") {
 		t.Fatalf("file prompt must explicitly prohibit legacy overwrite-style tool names:\n%s", filePrompt)
 	}

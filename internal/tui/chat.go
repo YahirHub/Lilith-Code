@@ -20,6 +20,7 @@ import (
 	"github.com/lilith/li/internal/providers/openai"
 	"github.com/lilith/li/internal/session"
 	"github.com/lilith/li/internal/skills"
+	litodo "github.com/lilith/li/internal/todo"
 	"github.com/lilith/li/internal/tools"
 )
 
@@ -114,6 +115,10 @@ type ChatModel struct {
 	store   *session.Store
 	sess    *session.Session
 	project string
+
+	// todos is the model-owned authoritative task plan for this session. It is
+	// concurrency-safe because tools run outside Bubble Tea's Update goroutine.
+	todos *litodo.Manager
 
 	// Paneles de archivo en vivo (creación/edición con diff plegable).
 	livePanels  map[int]*FilePanel
@@ -237,6 +242,7 @@ type toolResultsMsg struct {
 	compactCallIDs []string
 	recoverEditors bool
 	recoverCreate  bool
+	todoChanged    bool
 	err            error
 }
 
@@ -402,6 +408,7 @@ func NewChat(ctx *AppContext) ChatModel {
 		store:             session.NewStore(ctx.ConfigDir),
 		project:           project,
 		sess:              session.New(project),
+		todos:             litodo.NewManager(nil),
 		assistantActive:   -1,
 		contextCacheDirty: true,
 	}
@@ -564,6 +571,7 @@ func (m *ChatModel) persist() {
 	m.persistRevision++
 	m.sess.Messages = cloneHistoryMessages(m.history)
 	m.sess.Transcript = m.snapshotTranscriptRange(0, len(m.messages))
+	m.sess.Todo = m.todoStatePointer()
 	m.sess.Revision = m.persistRevision
 	if err := m.store.Save(m.sess); err != nil {
 		return
@@ -719,6 +727,7 @@ func (m *ChatModel) startLivePersist() tea.Cmd {
 		Revision: revision, BaseTranscriptCount: m.liveBaseMessageCount,
 		BaseHistoryCount: historyStart, UpdatedAt: time.Now(), Entries: entries,
 		History: cloneHistoryMessages(m.history[historyStart:]),
+		Todo:    m.todoStatePointer(),
 	}
 	store := m.store
 	project := m.project
@@ -756,6 +765,7 @@ func (m *ChatModel) forceLivePersist() {
 		Revision: m.persistRevision, BaseTranscriptCount: m.liveBaseMessageCount,
 		BaseHistoryCount: historyStart, UpdatedAt: time.Now(), Entries: entries,
 		History: cloneHistoryMessages(m.history[historyStart:]),
+		Todo:    m.todoStatePointer(),
 	}
 	_ = m.store.SaveLive(m.project, m.sess.ID, checkpoint)
 	m.lastLivePersist = time.Now()
@@ -884,6 +894,11 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 	m.Clear()
 	m.sess = s
 	m.history = s.Messages
+	if m.todos == nil {
+		m.todos = litodo.NewManager(s.Todo)
+	} else if err := m.todos.Restore(s.Todo); err != nil {
+		m.todos.Reset()
+	}
 	m.invalidateContextUsage()
 	m.livePanels = map[int]*FilePanel{}
 	m.panelByCall = map[string]*FilePanel{}
@@ -898,6 +913,9 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 		m.restoreTranscriptEntries(s.Transcript, true)
 		recoveredLive := false
 		if s.Live != nil && s.Live.Revision > s.Revision {
+			if s.Live.Todo != nil {
+				_ = m.todos.Restore(s.Live.Todo)
+			}
 			m.restoreTranscriptEntries(s.Live.Entries, true)
 			appendedLiveHistory := false
 			base := s.Live.BaseHistoryCount
@@ -931,7 +949,11 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 			m.panelSel = len(panels) - 1
 		}
 		m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: "Sesión reanudada: " + s.Title, Time: time.Now()})
-		m.refreshTranscript(true)
+		if m.ctx.Width > 0 && m.ctx.Height > 0 {
+			m.Resize(m.ctx.Width, m.ctx.Height)
+		} else {
+			m.refreshTranscript(true)
+		}
 		return
 	}
 	// Índices temporales por CallID para poder emparejar el resultado (rol
@@ -985,6 +1007,9 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 				}
 			}
 		case "tool":
+			if isTodoToolName(msg.Name) && !strings.HasPrefix(strings.TrimSpace(msg.Content), "error:") {
+				continue
+			}
 			if p := panelByID[msg.ToolCallID]; p != nil {
 				p.Finish(msg.Content)
 				continue
@@ -1020,7 +1045,11 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 	// Añadimos el aviso antes de un único refresh: AddSystem refrescaría por sí
 	// solo y en una sesión larga eso duplicaría el render completo al reanudar.
 	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: "Sesión reanudada: " + s.Title, Time: time.Now()})
-	m.refreshTranscript(true)
+	if m.ctx.Width > 0 && m.ctx.Height > 0 {
+		m.Resize(m.ctx.Width, m.ctx.Height)
+	} else {
+		m.refreshTranscript(true)
+	}
 }
 
 func (m *ChatModel) Resize(w, h int) {
@@ -1076,6 +1105,11 @@ func (m *ChatModel) Clear() {
 	m.assistantActive = -1
 	m.reasoningBuf.Reset()
 	m.sess = session.New(m.project)
+	if m.todos == nil {
+		m.todos = litodo.NewManager(nil)
+	} else {
+		m.todos.Reset()
+	}
 	m.liveBaseMessageCount = 0
 	m.liveBaseHistoryCount = 0
 	m.persistRevision = 0
@@ -1083,7 +1117,11 @@ func (m *ChatModel) Clear() {
 	m.livePersistDirty = false
 	m.livePersistTimer = false
 	m.lastLivePersist = time.Time{}
-	m.refreshTranscript(false)
+	if m.ctx.Width > 0 && m.ctx.Height > 0 {
+		m.Resize(m.ctx.Width, m.ctx.Height)
+	} else {
+		m.refreshTranscript(false)
+	}
 }
 
 // panels devuelve los paneles de archivo en orden de aparición.
@@ -1635,6 +1673,9 @@ func (m *ChatModel) pinnedActivityView(w int) string {
 
 func (m *ChatModel) bottomChromeHeight(w int) int {
 	parts := []string{}
+	if plan := m.todoWidgetView(w); plan != "" {
+		parts = append(parts, plan)
+	}
 	if act := m.pinnedActivityView(w); act != "" {
 		parts = append(parts, act)
 	}
@@ -2049,8 +2090,14 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.appendHistory(v.results...)
 		m.toolFallback = summarizeToolResults(v.results)
+		if v.todoChanged {
+			m.invalidateContextUsage()
+		}
 
 		for _, r := range v.results {
+			if isTodoToolName(r.Name) && !strings.HasPrefix(strings.TrimSpace(r.Content), "error:") {
+				continue
+			}
 			if p := m.panelByCall[r.ToolCallID]; p != nil {
 				if isCreateFileTool(p.Tool) && (strings.HasPrefix(strings.TrimSpace(r.Content), "FILE_EXISTS:") ||
 					strings.HasPrefix(strings.TrimSpace(r.Content), "USE_CREATE_FILE:") ||
@@ -2070,7 +2117,11 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Kind: MsgTool, Content: "  ↳ " + firstLine(r.Content), Time: time.Now(),
 			})
 		}
-		m.refreshTranscript(true)
+		if v.todoChanged && m.ctx.Width > 0 && m.ctx.Height > 0 {
+			m.Resize(m.ctx.Width, m.ctx.Height)
+		} else {
+			m.refreshTranscript(true)
+		}
 		// Tool outputs are a stable API boundary. This is also the preferred
 		// steering boundary: current calls have completed, so one Enter-queued
 		// instruction can safely influence the very next model request.
@@ -2482,6 +2533,7 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 		m.AddError(err.Error())
 		return m, nil
 	}
+	m.cleanupCompletedTodos()
 	m.persist()
 	m.refreshTranscript(true)
 	return m, m.runTurn()
@@ -2528,7 +2580,7 @@ func (m *ChatModel) runTurn() tea.Cmd {
 	m.activeTools = tools.FilterAvailable(m.activeTools, tools.Env{ConfigDir: m.ctx.ConfigDir})
 
 	msgs := make([]openai.Message, 0, len(m.history)+1)
-	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(m.activeTools, m.skillsBlock())})
+	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(m.activeTools, m.skillsBlock(), m.todoBlock())})
 	msgs = append(msgs, m.history...)
 
 	var schemas []any
@@ -2580,7 +2632,7 @@ func (m *ChatModel) contextUsage() (int, int) {
 		return m.contextUsedCache, m.contextMaxCache
 	}
 	msgs := make([]openai.Message, 0, len(m.history)+1)
-	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(m.activeTools, m.skillsBlock())})
+	msgs = append(msgs, openai.Message{Role: "system", Content: systemPrompt(m.activeTools, m.skillsBlock(), m.todoBlock())})
 	msgs = append(msgs, m.history...)
 	used := EstimateTokens(msgs)
 	maxCtx := 0
@@ -2638,7 +2690,8 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 	if m.skillsEnabled() {
 		skillCatalog = m.loadSkills()
 	}
-	env := tools.Env{Root: root, ConfigDir: m.ctx.ConfigDir, Materialize: materialize, Skills: skillCatalog}
+	env := tools.Env{Root: root, ConfigDir: m.ctx.ConfigDir, Materialize: materialize, Skills: skillCatalog, Todos: m.todos}
+	startTodoRevision := m.todoRevision()
 	return func() tea.Msg {
 		results := make([]openai.Message, 0, len(calls))
 		compactCallIDs := make([]string, 0, 1)
@@ -2682,6 +2735,7 @@ func (m *ChatModel) runTools(calls []openai.ToolCall) tea.Cmd {
 		return toolResultsMsg{
 			turnID: turnID, results: results, compactCallIDs: compactCallIDs,
 			recoverEditors: recoverEditors, recoverCreate: recoverCreate,
+			todoChanged: m.todoRevision() != startTodoRevision,
 		}
 	}
 }
@@ -2930,6 +2984,13 @@ func summarizeToolResults(results []openai.Message) string {
 // keep it terse and drop the JSON blob so the transcript reads like a real
 // terminal ($ tool arg1=… arg2=…) instead of a raw wire dump.
 func describeCall(c openai.ToolCall) string {
+	if isTodoToolName(c.Function.Name) {
+		count := todoCallTaskCount(c.Function.Arguments)
+		if count >= 0 {
+			return fmt.Sprintf("$ todo_write %d tarea(s)", count)
+		}
+		return "$ todo_write"
+	}
 	args := prettyToolArgs(c.Function.Arguments)
 	if args == "" {
 		return "$ " + c.Function.Name
@@ -3071,6 +3132,7 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 		m.AddError(err.Error())
 		return nil
 	}
+	m.cleanupCompletedTodos()
 	m.persist()
 	m.refreshTranscript(true)
 	return m.runTurn()
@@ -3080,16 +3142,13 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 // consistently across providers in English. The structure mirrors pi.dev:
 // full tool contracts stay in JSON schemas, while the system prompt receives
 // only short snippets and guidelines for the tools active in this turn.
-func systemPrompt(activeTools []string, skillsBlock string) string {
+func systemPrompt(activeTools []string, skillsBlock, todoBlock string) string {
 	base := "You are Lilith, an expert coding assistant operating inside the user's terminal. " +
 		"Use tools to inspect the real project, execute commands, and make code changes. " +
 		"Reply in the user's language (Spanish by default), while preserving code, paths, identifiers and shell syntax. " +
 		"Be concise, direct, and keep working until the requested task is actually complete."
 	if len(activeTools) == 0 {
-		if skillsBlock != "" {
-			return base + skillsBlock
-		}
-		return base
+		return base + skillsBlock + todoBlock
 	}
 
 	toolLines, toolGuidelines := tools.PromptInfo(activeTools)
@@ -3144,6 +3203,7 @@ func systemPrompt(activeTools []string, skillsBlock string) string {
 	cwd, _ := os.Getwd()
 	b.WriteString("\nCurrent working directory: " + filepath.ToSlash(cwd))
 	b.WriteString(skillsBlock)
+	b.WriteString(todoBlock)
 	return b.String()
 }
 
@@ -3190,6 +3250,9 @@ func (m *ChatModel) View() string {
 
 	used, maxCtx := m.contextUsage()
 	parts := []string{transcript}
+	if plan := m.todoWidgetView(w); plan != "" {
+		parts = append(parts, plan)
+	}
 	if act := m.pinnedActivityView(w); act != "" {
 		parts = append(parts, act)
 	}

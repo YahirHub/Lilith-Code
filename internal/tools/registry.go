@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/lilith/li/internal/skills"
+	litodo "github.com/lilith/li/internal/todo"
 )
 
 // Env is the execution environment handed to every tool.
@@ -27,6 +28,8 @@ type Env struct {
 	// Skills is the already-discovered skill catalog for this session. Skill
 	// tools never scan arbitrary user locations on their own.
 	Skills []skills.Skill
+	// Todos is the session-local authoritative task plan used by todo_write.
+	Todos *litodo.Manager
 }
 
 // Definition describes one callable tool.
@@ -135,6 +138,11 @@ func Execute(ctx context.Context, name string, args map[string]any, env Env) (st
 	if name == "write" || name == "write_file" {
 		return InterceptLegacyWrite(env.Root, name, str(args, "path"))
 	}
+	// Compatibility aliases for models trained on Claude/Codebuff/Pi naming.
+	switch name {
+	case "TodoWrite", "todowrite", "write_todos", "todo":
+		name = "todo_write"
+	}
 	d, ok := registry[name]
 	if !ok {
 		return "", fmt.Errorf("unknown tool: %s", name)
@@ -151,7 +159,7 @@ func Execute(ctx context.Context, name string, args map[string]any, env Env) (st
 
 // alwaysOn is the microscopic unconditional surface: the model can always
 // discover the rest with tool_search, so we never pay for unused schemas.
-var alwaysOn = []string{"tool_search"}
+var alwaysOn = []string{"tool_search", "todo_write"}
 
 var directChatPattern = regexp.MustCompile(`(?i)^\s*(hola|hello|hi|hey|buenas( (dias|días|tardes|noches))?|gracias|thanks|thank you|ok(ay)?|vale|entendido|perfecto|listo|adios|adiós|bye)[!.?…\s]*$`)
 

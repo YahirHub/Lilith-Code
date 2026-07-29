@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/lilith/li/internal/providers/openai"
+	litodo "github.com/lilith/li/internal/todo"
 )
 
 func TestSaveListLoadAndDelete(t *testing.T) {
@@ -16,6 +17,7 @@ func TestSaveListLoadAndDelete(t *testing.T) {
 		{Role: "user", Content: "Crea un html de ejemplo"},
 		{Role: "assistant", Content: "Listo."},
 	}
+	s.Todo = &litodo.State{SchemaVersion: litodo.SchemaVersion, Revision: 1, Tasks: []litodo.Task{{Key: "verify", Subject: "Verify result", Status: litodo.Pending}}}
 	if err := st.Save(s); err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -31,6 +33,9 @@ func TestSaveListLoadAndDelete(t *testing.T) {
 	loaded, err := st.Load(project, s.ID)
 	if err != nil || len(loaded.Messages) != 2 {
 		t.Fatalf("load inesperado: %+v err=%v", loaded, err)
+	}
+	if loaded.Todo == nil || loaded.Todo.Revision != 1 || len(loaded.Todo.Tasks) != 1 || loaded.Todo.Tasks[0].Key != "verify" {
+		t.Fatalf("todo no persistido: %+v", loaded.Todo)
 	}
 
 	latest, err := st.Latest(project)
@@ -88,6 +93,7 @@ func TestLiveCheckpointRoundTripAndRevisionGuard(t *testing.T) {
 			Thinking: &ThinkingProgress{Content: "analizando..."},
 		}},
 		History: []openai.Message{{Role: "assistant", Content: "avance parcial"}},
+		Todo:    &litodo.State{SchemaVersion: litodo.SchemaVersion, Revision: 2, Tasks: []litodo.Task{{Key: "step", Subject: "Continue", Status: litodo.InProgress}}},
 	}
 	if err := st.SaveLive(project, s.ID, live); err != nil {
 		t.Fatalf("save live: %v", err)
@@ -99,6 +105,9 @@ func TestLiveCheckpointRoundTripAndRevisionGuard(t *testing.T) {
 	}
 	if loaded.Live == nil || loaded.Live.Revision != 2 || len(loaded.Live.Entries) != 1 {
 		t.Fatalf("checkpoint live no recuperado: %+v", loaded.Live)
+	}
+	if loaded.Live.Todo == nil || loaded.Live.Todo.Revision != 2 || loaded.Live.Todo.Tasks[0].Key != "step" {
+		t.Fatalf("todo live no recuperado: %+v", loaded.Live.Todo)
 	}
 
 	// Un snapshot estable más nuevo invalida cualquier sidecar atrasado, incluso
