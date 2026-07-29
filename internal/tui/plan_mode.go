@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"os"
 	"strings"
 
@@ -110,42 +109,19 @@ func (m *ChatModel) promptModeBlock(mode planstate.Mode) string {
 	return block
 }
 
-func (m *ChatModel) planWidgetView(w int) string {
+func (m *ChatModel) planWidgetView(_ int) string {
 	if m.plans == nil {
 		return ""
 	}
 	state := m.plans.Snapshot()
-	if !state.Ready && len(state.Questions) == 0 {
+	// Pending questions have their own compact OpenCode-style dock/launcher.
+	// Rendering them here as a second widget would waste precious vertical space.
+	if !state.Ready || len(state.Questions) > 0 {
 		return ""
-	}
-	boxWidth := w - 2
-	if boxWidth < 10 {
-		boxWidth = w
 	}
 	accent := lipgloss.NewStyle().Foreground(m.ctx.Styles.Theme.Secondary).Bold(true)
 	muted := m.ctx.Styles.Muted
-	var lines []string
-	if state.Ready {
-		lines = append(lines, accent.Render("PLAN LISTO")+muted.Render(" · Tab para Build · /plan show"))
-	} else {
-		lines = append(lines, accent.Render("PLAN · NECESITA DECISIÓN"))
-		for i, q := range state.Questions {
-			lines = append(lines, fmt.Sprintf("%d. %s", i+1, truncateOneLine(q.Question, boxWidth-5)))
-			if len(q.Options) > 0 {
-				options := make([]string, 0, len(q.Options))
-				for j, option := range q.Options {
-					label := option.Label
-					if option.Description != "" {
-						label += " — " + option.Description
-					}
-					options = append(options, fmt.Sprintf("%d) %s", j+1, label))
-				}
-				lines = append(lines, muted.Render("   "+truncateOneLine(strings.Join(options, " · "), boxWidth-4)))
-			}
-		}
-		lines = append(lines, muted.Render("Responde normalmente en el editor."))
-	}
-	return lipgloss.NewStyle().Width(boxWidth).Padding(0, 1).Render(strings.Join(lines, "\n"))
+	return accent.Render("PLAN LISTO") + muted.Render(" · Tab: Build · /plan show")
 }
 
 func isPlanQuestionToolName(name string) bool { return name == "plan_question" }

@@ -31,12 +31,13 @@ type Question struct {
 // the agent selected for the NEXT user turn; an already-running turn snapshots
 // its own mode when it starts, matching OpenCode's agent-cycle semantics.
 type State struct {
-	SchemaVersion int        `json:"schemaVersion"`
-	Revision      int        `json:"revision"`
-	Mode          Mode       `json:"mode"`
-	LatestPlan    string     `json:"latestPlan,omitempty"`
-	Ready         bool       `json:"ready,omitempty"`
-	Questions     []Question `json:"questions,omitempty"`
+	SchemaVersion   int               `json:"schemaVersion"`
+	Revision        int               `json:"revision"`
+	Mode            Mode              `json:"mode"`
+	LatestPlan      string            `json:"latestPlan,omitempty"`
+	Ready           bool              `json:"ready,omitempty"`
+	Questions       []Question        `json:"questions,omitempty"`
+	QuestionAnswers map[string]string `json:"questionAnswers,omitempty"`
 	// HandoffPending is set only when the user moves from Plan to Build after a
 	// completed plan. The next Build user turn consumes it exactly once.
 	HandoffPending bool `json:"handoffPending,omitempty"`
@@ -87,6 +88,9 @@ func normalize(in State) (State, error) {
 	if len(in.Questions) > 3 {
 		return State{}, errors.New("plan mode supports at most 3 pending questions")
 	}
+	if len(in.Questions) == 0 {
+		in.QuestionAnswers = nil
+	}
 	seen := map[string]bool{}
 	for i := range in.Questions {
 		q := &in.Questions[i]
@@ -110,6 +114,22 @@ func normalize(in State) (State, error) {
 			}
 		}
 	}
+	if len(in.QuestionAnswers) > 0 {
+		clean := make(map[string]string, len(in.QuestionAnswers))
+		for id, answer := range in.QuestionAnswers {
+			id = strings.TrimSpace(id)
+			answer = strings.TrimSpace(answer)
+			if id == "" || answer == "" || !seen[id] {
+				continue
+			}
+			clean[id] = answer
+		}
+		if len(clean) == 0 {
+			in.QuestionAnswers = nil
+		} else {
+			in.QuestionAnswers = clean
+		}
+	}
 	return in, nil
 }
 
@@ -120,6 +140,12 @@ func cloneState(in State) State {
 		for i := range in.Questions {
 			out.Questions[i] = in.Questions[i]
 			out.Questions[i].Options = append([]Option(nil), in.Questions[i].Options...)
+		}
+	}
+	if len(in.QuestionAnswers) > 0 {
+		out.QuestionAnswers = make(map[string]string, len(in.QuestionAnswers))
+		for key, value := range in.QuestionAnswers {
+			out.QuestionAnswers[key] = value
 		}
 	}
 	return out
@@ -180,7 +206,6 @@ func (m *Manager) SetMode(mode Mode) (State, bool, error) {
 	}
 	previous := m.state.Mode
 	m.state.Mode = mode
-	m.state.Questions = nil
 	if previous == Plan && mode == Build && m.state.Ready && m.state.LatestPlan != "" {
 		m.state.HandoffPending = true
 	}
@@ -204,22 +229,22 @@ func (m *Manager) Toggle() (State, bool) {
 	return state, changed
 }
 
-// BeginUserTurn prepares mode-specific ephemeral state for a fresh user turn.
-// Questions are considered answered by the user's next Plan message. A ready
-// plan that remains in Plan mode becomes revisable rather than disappearing.
+// BeginUserTurn prepares state for a fresh user turn. Pending Plan questions
+// only remain reopenable while they are the latest human-decision boundary.
+// Any actual user turn supersedes them, regardless of whether Build or Plan is
+// currently selected. Merely pressing Tab or closing the question UI does not.
 func (m *Manager) BeginUserTurn(mode Mode) State {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	changed := false
-	if mode == Plan {
-		if len(m.state.Questions) > 0 {
-			m.state.Questions = nil
-			changed = true
-		}
-		if m.state.Ready {
-			m.state.Ready = false
-			changed = true
-		}
+	if len(m.state.Questions) > 0 {
+		m.state.Questions = nil
+		m.state.QuestionAnswers = nil
+		changed = true
+	}
+	if mode == Plan && m.state.Ready {
+		m.state.Ready = false
+		changed = true
 	}
 	if changed {
 		m.state.Revision++
@@ -242,6 +267,7 @@ func (m *Manager) SetQuestionsFor(turnMode Mode, questions []Question) (State, e
 	defer m.mu.Unlock()
 	candidate := cloneState(m.state)
 	candidate.Questions = append([]Question(nil), questions...)
+	candidate.QuestionAnswers = nil
 	candidate.Ready = false
 	candidate.HandoffPending = false
 	candidate.Revision++
@@ -251,6 +277,75 @@ func (m *Manager) SetQuestionsFor(turnMode Mode, questions []Question) (State, e
 	}
 	m.state = normalized
 	return cloneState(m.state), nil
+}
+
+// AnswerQuestion stores one answer without clearing the remaining questions.
+// This lets the TUI ask them one-by-one and survive Esc/session resume halfway.
+func (m *Manager) AnswerQuestion(id, answer string) (State, bool, error) {
+	id = strings.TrimSpace(id)
+	answer = strings.TrimSpace(answer)
+	if id == "" || answer == "" {
+		return State{}, false, errors.New("plan question answer requires id and non-empty answer")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	found := false
+	for _, q := range m.state.Questions {
+		if q.ID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return State{}, false, fmt.Errorf("unknown plan question %q", id)
+	}
+	if m.state.QuestionAnswers == nil {
+		m.state.QuestionAnswers = map[string]string{}
+	}
+	m.state.QuestionAnswers[id] = answer
+	m.state.Revision++
+	complete := len(m.state.Questions) > 0
+	for _, q := range m.state.Questions {
+		if strings.TrimSpace(m.state.QuestionAnswers[q.ID]) == "" {
+			complete = false
+			break
+		}
+	}
+	return cloneState(m.state), complete, nil
+}
+
+// PendingQuestionIndex returns the first unanswered question. A value of -1
+// means there is no pending question that still needs an answer.
+func PendingQuestionIndex(state State) int {
+	for i, q := range state.Questions {
+		if strings.TrimSpace(state.QuestionAnswers[q.ID]) == "" {
+			return i
+		}
+	}
+	return -1
+}
+
+// FormatQuestionAnswers produces a compact user message that preserves both
+// the decision prompt and answer so the planning model can continue without
+// relying on hidden UI state.
+func FormatQuestionAnswers(state State) string {
+	if len(state.Questions) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Respuestas a las preguntas del plan:\n")
+	for _, q := range state.Questions {
+		answer := strings.TrimSpace(state.QuestionAnswers[q.ID])
+		if answer == "" {
+			continue
+		}
+		b.WriteString("- ")
+		b.WriteString(q.Question)
+		b.WriteString("\n  Respuesta: ")
+		b.WriteString(answer)
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func (m *Manager) Complete(text string) (State, error) {
@@ -273,6 +368,7 @@ func (m *Manager) CompleteFor(turnMode Mode, text string) (State, error) {
 	m.state.LatestPlan = text
 	m.state.Ready = true
 	m.state.Questions = nil
+	m.state.QuestionAnswers = nil
 	m.state.HandoffPending = m.state.Mode == Build
 	m.state.Revision++
 	m.state.SchemaVersion = SchemaVersion

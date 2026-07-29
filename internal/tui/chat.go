@@ -128,6 +128,11 @@ type ChatModel struct {
 	// turn; turnAgentMode snapshots it when a request starts, like OpenCode.
 	plans *planstate.Manager
 
+	// planQuestion is only presentation state. The authoritative questions and
+	// partial answers live in plan.Manager so closing the dock or resuming a
+	// session never loses decisions.
+	planQuestion planQuestionDock
+
 	// Paneles de archivo en vivo (creación/edición con diff plegable).
 	livePanels  map[int]*FilePanel
 	panelByCall map[string]*FilePanel
@@ -420,6 +425,7 @@ func NewChat(ctx *AppContext) ChatModel {
 		sess:              session.New(project),
 		todos:             litodo.NewManager(nil),
 		plans:             planstate.NewManager(nil),
+		planQuestion:      newPlanQuestionDock(ctx),
 		assistantActive:   -1,
 		contextCacheDirty: true,
 	}
@@ -432,6 +438,10 @@ func NewChat(ctx *AppContext) ChatModel {
 // every tool spawned by that request. A model change made later therefore takes
 // effect on the next user request, never halfway through a tool continuation.
 func (m *ChatModel) beginTurn() error {
+	return m.beginTurnMode(m.selectedAgentMode())
+}
+
+func (m *ChatModel) beginTurnMode(mode planstate.Mode) error {
 	active := m.ctx.Providers.Active()
 	if active.ProviderID == "" || active.ModelID == "" || m.ctx.Providers.FindProvider(active.ProviderID) == nil {
 		return errors.New("no hay un proveedor/modelo activo; usa /login o /models")
@@ -447,7 +457,7 @@ func (m *ChatModel) beginTurn() error {
 	m.activeTurnID = m.turnSeq
 	m.turnProvider = active.ProviderID
 	m.turnModel = active.ModelID
-	m.turnAgentMode = m.selectedAgentMode()
+	m.turnAgentMode = mode
 	if m.plans != nil {
 		m.plans.BeginUserTurn(m.turnAgentMode)
 		m.turnPlanHandoff = ""
@@ -815,6 +825,12 @@ func (m *ChatModel) appendHistory(msgs ...openai.Message) {
 func (m *ChatModel) restoreTranscriptEntries(entries []session.TranscriptEntry, interrupted bool) {
 	for _, e := range entries {
 		msg := ChatMessage{Kind: messageKindFromName(e.Kind), Content: e.Content, Time: e.Time}
+		if msg.Kind == MsgTool {
+			plain := strings.TrimSpace(e.Content)
+			if strings.HasPrefix(plain, "$ plan_question") || strings.HasPrefix(plain, "$ plan_exit") || strings.HasPrefix(plain, "$ todo_write") {
+				continue
+			}
+		}
 		if e.File != nil {
 			fp := e.File
 			p := &FilePanel{
@@ -1042,11 +1058,15 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 					}
 					m.messages = append(m.messages, ChatMessage{Kind: MsgCommand, Command: cp, Time: s.UpdatedAt})
 				default:
+					if isTodoToolName(c.Function.Name) || isPlanQuestionToolName(c.Function.Name) || isPlanExitToolName(c.Function.Name) {
+						continue
+					}
 					m.messages = append(m.messages, ChatMessage{Kind: MsgTool, Content: describeCall(c), Time: s.UpdatedAt})
 				}
 			}
 		case "tool":
-			if isTodoToolName(msg.Name) && !strings.HasPrefix(strings.TrimSpace(msg.Content), "error:") {
+			if (isTodoToolName(msg.Name) || isPlanQuestionToolName(msg.Name) || isPlanExitToolName(msg.Name)) &&
+				!strings.HasPrefix(strings.TrimSpace(msg.Content), "error:") {
 				continue
 			}
 			if p := panelByID[msg.ToolCallID]; p != nil {
@@ -1152,6 +1172,7 @@ func (m *ChatModel) Clear() {
 	} else {
 		m.plans.Reset()
 	}
+	m.planQuestion.resetPresentation()
 	m.syncAgentModePresentation()
 	m.liveBaseMessageCount = 0
 	m.liveBaseHistoryCount = 0
@@ -1722,7 +1743,19 @@ func (m *ChatModel) pinnedActivityView(w int) string {
 // del transcript. Mantener una única fuente de verdad evita que Resize y View
 // diverjan cuando aparecen/desaparecen TodoWrite, actividad, cola o paleta.
 func (m *ChatModel) bottomChromeParts(w, usedTokens, maxTokens int) []string {
-	parts := make([]string, 0, 7)
+	// OpenCode keeps questions in the footer instead of replacing the whole TUI.
+	// While the dock is open it temporarily owns the input area, keeping the
+	// transcript as large as possible on short terminals.
+	if dock := m.planQuestionDockView(w); dock != "" {
+		return []string{dock, RenderStatusBar(m.ctx, string(m.mode), usedTokens, maxTokens)}
+	}
+
+	parts := make([]string, 0, 8)
+	// Keep the pending-question launcher first so its mouse row is deterministic
+	// regardless of TodoWrite/activity/queue widgets below it.
+	if launcher := m.planQuestionLauncherView(w); launcher != "" {
+		parts = append(parts, launcher)
+	}
 	if plan := m.planWidgetView(w); plan != "" {
 		parts = append(parts, plan)
 	}
@@ -1754,8 +1787,9 @@ func (m *ChatModel) bottomChromeHeight(w int) int {
 	if chrome == "" {
 		return 0
 	}
-	// Una fila separa físicamente el transcript del primer bloque inferior.
-	return lipgloss.Height(chrome) + 1
+	// View concatena transcript + "\n" + chrome. Ese salto sólo separa
+	// ambas regiones; no crea una fila vacía adicional.
+	return lipgloss.Height(chrome)
 }
 
 func (m *ChatModel) viewportHeightForFrame(w, h, usedTokens, maxTokens int) int {
@@ -1768,7 +1802,7 @@ func (m *ChatModel) viewportHeightForFrame(w, h, usedTokens, maxTokens int) int 
 	chrome := m.bottomChromeView(w, usedTokens, maxTokens)
 	chromeHeight := 0
 	if chrome != "" {
-		chromeHeight = lipgloss.Height(chrome) + 1
+		chromeHeight = lipgloss.Height(chrome)
 	}
 	height := h - chromeHeight
 	if height < 1 {
@@ -2094,7 +2128,8 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				})
 				m.applyToolCalls(calls)
 				for _, c := range calls {
-					if IsFileTool(c.Function.Name) || IsCommandTool(c.Function.Name) {
+					if IsFileTool(c.Function.Name) || IsCommandTool(c.Function.Name) || isTodoToolName(c.Function.Name) ||
+						isPlanQuestionToolName(c.Function.Name) || isPlanExitToolName(c.Function.Name) {
 						continue
 					}
 					m.messages = append(m.messages, ChatMessage{
@@ -2265,12 +2300,15 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.endTurn()
 			m.persist()
+			if v.planQuestion {
+				return m, m.openPlanQuestions()
+			}
 			if m.ctx.Width > 0 && m.ctx.Height > 0 {
 				m.Resize(m.ctx.Width, m.ctx.Height)
 			} else {
 				m.refreshTranscript(true)
 			}
-			return m, nil
+			return m, tea.DisableMouse
 		}
 
 		// Tool outputs are a stable API boundary. This is also the preferred
@@ -2285,7 +2323,19 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTranscript(true)
 		return m, nil
 
+	case tea.MouseMsg:
+		if handled, cmd := m.handlePlanQuestionMouse(v); handled {
+			return m, cmd
+		}
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(v)
+		m.userScrolled = !m.viewport.AtBottom()
+		return m, cmd
+
 	case tea.KeyMsg:
+		if handled, cmd := m.handlePlanQuestionKey(v); handled {
+			return m, cmd
+		}
 		key := v.String()
 		var pasteCmd tea.Cmd
 		// Bubble Tea v1 entrega bracketed paste como un único KeyMsg con Paste
@@ -2503,6 +2553,11 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmds []tea.Cmd
+	if m.planQuestion.editing {
+		var qcmd tea.Cmd
+		m.planQuestion.input, qcmd = m.planQuestion.input.Update(msg)
+		cmds = append(cmds, qcmd)
+	}
 	prev := m.textarea.Value()
 	var cmd tea.Cmd
 	m.textarea, cmd = m.textarea.Update(msg)
@@ -2692,12 +2747,15 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 		m.AddError(err.Error())
 		return m, nil
 	}
+	// A real user turn supersedes any unanswered Plan request. The persisted
+	// manager cleared it in beginTurn; reset only the local dock presentation.
+	m.planQuestion.resetPresentation()
 	if m.turnAgentMode != planstate.Plan {
 		m.cleanupCompletedTodos()
 	}
 	m.persist()
 	m.refreshTranscript(true)
-	return m, m.runTurn()
+	return m, tea.Batch(m.runTurn(), tea.DisableMouse)
 }
 
 // runTurn envía el historial actual al modelo con los esquemas de herramientas

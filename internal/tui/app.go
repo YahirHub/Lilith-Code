@@ -103,6 +103,12 @@ func (m RootModel) chatVisible() bool {
 // behavior without replacing any existing settings components.
 func (m RootModel) mouseModeCmd() tea.Cmd {
 	if m.chatVisible() {
+		// Normal chat releases mouse capture so terminal-native text selection
+		// works. Pending Plan decisions temporarily enable clicks for the compact
+		// inline question dock / ? launcher.
+		if m.chat != nil && m.chat.hasPendingPlanQuestions() {
+			return tea.EnableMouseCellMotion
+		}
 		return tea.DisableMouse
 	}
 	return tea.EnableMouseCellMotion
@@ -131,7 +137,7 @@ func (m RootModel) Init() tea.Cmd {
 	// Program starts with WithMouseCellMotion so first-run/settings screens are
 	// interactive from frame zero. Only chat needs an Init-time override.
 	if m.chatVisible() {
-		return tea.Batch(m.current.Init(), tea.DisableMouse)
+		return tea.Batch(m.current.Init(), m.mouseModeCmd())
 	}
 	return m.current.Init()
 }

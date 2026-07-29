@@ -87,7 +87,7 @@ func Commands() []SlashCommand {
 		{
 			Name: "clear", Aliases: []string{"new", "c", "n", "reset"},
 			Description: "Empieza una conversación nueva y vuelve al agente Build.",
-			Run:         func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd { chat.Clear(); return nil },
+			Run:         func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd { chat.Clear(); return tea.DisableMouse },
 		},
 		{
 			Name: "history", Aliases: []string{"chats", "resume", "continue"},

@@ -46,7 +46,7 @@ func init() {
 		PromptSnippet: "Ask 1-3 material clarification questions during Plan mode",
 		PromptGuidelines: []string{
 			"Use plan_question only for decisions that materially change the implementation and cannot be discovered from code or documentation.",
-			"After plan_question, stop and wait for the user's normal chat reply before continuing the plan.",
+			"After plan_question, stop. Lilith will collect the answers interactively one question at a time and resume the same Plan turn only after all answers are submitted.",
 		},
 		Available: func(env Env) bool { return env.Plan != nil && env.AgentMode == planstate.Plan },
 		Parameters: map[string]any{
