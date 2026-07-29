@@ -1059,10 +1059,8 @@ func (m *ChatModel) Resize(w, h int) {
 		m.textarea.SetWidth(w - 4)
 	}
 	m.setInputHeightForContent()
-	vpHeight := h - m.bottomChromeHeight(w)
-	if vpHeight < 3 {
-		vpHeight = 3
-	}
+	used, maxCtx := m.contextUsage()
+	vpHeight := m.viewportHeightForFrame(w, h, used, maxCtx)
 	// Reservamos 1 columna a la derecha para la scrollbar vertical.
 	vpWidth := w - 1
 	if vpWidth < 10 {
@@ -1671,8 +1669,11 @@ func (m *ChatModel) pinnedActivityView(w int) string {
 	return lipgloss.NewStyle().Width(boxWidth).Padding(0, 1).Render(body)
 }
 
-func (m *ChatModel) bottomChromeHeight(w int) int {
-	parts := []string{}
+// bottomChromeParts devuelve exactamente los bloques que se dibujan debajo
+// del transcript. Mantener una única fuente de verdad evita que Resize y View
+// diverjan cuando aparecen/desaparecen TodoWrite, actividad, cola o paleta.
+func (m *ChatModel) bottomChromeParts(w, usedTokens, maxTokens int) []string {
+	parts := make([]string, 0, 6)
 	if plan := m.todoWidgetView(w); plan != "" {
 		parts = append(parts, plan)
 	}
@@ -1687,17 +1688,84 @@ func (m *ChatModel) bottomChromeHeight(w int) int {
 	}
 	parts = append(parts,
 		m.inputBoxView(w),
-
-		RenderStatusBar(m.ctx, string(m.mode), 0, 0),
+		RenderStatusBar(m.ctx, string(m.mode), usedTokens, maxTokens),
 	)
-	height := 1 // separador entre transcript y controles inferiores
-	for i, part := range parts {
-		height += lipgloss.Height(part)
-		if i < len(parts)-1 {
-			height++
+	return parts
+}
+
+func (m *ChatModel) bottomChromeView(w, usedTokens, maxTokens int) string {
+	return strings.Join(m.bottomChromeParts(w, usedTokens, maxTokens), "\n")
+}
+
+func (m *ChatModel) bottomChromeHeight(w int) int {
+	chrome := m.bottomChromeView(w, 0, 0)
+	if chrome == "" {
+		return 0
+	}
+	// Una fila separa físicamente el transcript del primer bloque inferior.
+	return lipgloss.Height(chrome) + 1
+}
+
+func (m *ChatModel) viewportHeightForFrame(w, h, usedTokens, maxTokens int) int {
+	if h <= 0 {
+		if m.viewport.Height > 0 {
+			return m.viewport.Height
 		}
+		return 1
+	}
+	chrome := m.bottomChromeView(w, usedTokens, maxTokens)
+	chromeHeight := 0
+	if chrome != "" {
+		chromeHeight = lipgloss.Height(chrome) + 1
+	}
+	height := h - chromeHeight
+	if height < 1 {
+		height = 1
 	}
 	return height
+}
+
+// viewportForFrame corrige en render la geometría dinámica del transcript sin
+// depender de que cada transición visual emita un WindowSizeMsg/Resize. Esto es
+// importante porque flags como thinking/working y paneles como TodoWrite pueden
+// cambiar entre dos frames manteniendo exactamente el mismo tamaño de terminal.
+func (m *ChatModel) viewportForFrame(w, h, usedTokens, maxTokens int) viewport.Model {
+	vp := m.viewport
+	targetHeight := m.viewportHeightForFrame(w, h, usedTokens, maxTokens)
+	if vp.Height == targetHeight {
+		return vp
+	}
+
+	wasAtBottom := m.viewport.AtBottom()
+	vp.Height = targetHeight
+	if !m.userScrolled || wasAtBottom {
+		vp.GotoBottom()
+	} else {
+		vp.SetYOffset(m.viewport.YOffset)
+	}
+	return vp
+}
+
+// syncViewportGeometry actualiza también el modelo persistido antes de procesar
+// input/scroll. View() ya corrige el frame inmediatamente; este sync hace que
+// el siguiente evento de navegación opere con la misma geometría que el usuario
+// está viendo.
+func (m *ChatModel) syncViewportGeometry() {
+	if m == nil || m.ctx == nil || m.ctx.Width <= 0 || m.ctx.Height <= 0 {
+		return
+	}
+	used, maxCtx := m.contextUsage()
+	targetHeight := m.viewportHeightForFrame(m.ctx.Width, m.ctx.Height, used, maxCtx)
+	if targetHeight == m.viewport.Height {
+		return
+	}
+	wasAtBottom := m.viewport.AtBottom()
+	m.viewport.Height = targetHeight
+	if !m.userScrolled || wasAtBottom {
+		m.viewport.GotoBottom()
+	} else {
+		m.viewport.SetYOffset(m.viewport.YOffset)
+	}
 }
 
 func (m *ChatModel) updatePalette() {
@@ -1752,6 +1820,10 @@ func (m *ChatModel) buildPalette(query string) []SlashCommand {
 }
 
 func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Los componentes inferiores son dinámicos (TodoWrite, actividad, cola,
+	// paleta e input autoajustable). Sincroniza su geometría antes de que una
+	// tecla de scroll use una altura heredada del frame anterior.
+	m.syncViewportGeometry()
 	switch v := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.Resize(v.Width, v.Height)
@@ -3239,35 +3311,23 @@ func (m *ChatModel) View() string {
 	if w <= 0 {
 		w = 80
 	}
+	h := m.ctx.Height
 
-	// Viewport (transcript)
-	transcript := m.viewport.View()
-	// Barra de scroll a la derecha. Muestra la posición del viewport dentro
-	// del transcript total (perilla deslizable).
-	if bar := m.renderScrollbar(); bar != "" {
+	used, maxCtx := m.contextUsage()
+	// El viewport persistido se usa para contenido/scroll, pero su altura puede
+	// quedar obsoleta cuando cambia el cromo dinámico sin redimensionar la
+	// terminal. Renderizamos una copia con la geometría exacta de ESTE frame.
+	vp := m.viewportForFrame(w, h, used, maxCtx)
+	transcript := vp.View()
+	if bar := m.renderScrollbarFor(vp); bar != "" {
 		transcript = lipgloss.JoinHorizontal(lipgloss.Top, transcript, bar)
 	}
 
-	used, maxCtx := m.contextUsage()
-	parts := []string{transcript}
-	if plan := m.todoWidgetView(w); plan != "" {
-		parts = append(parts, plan)
+	chrome := m.bottomChromeView(w, used, maxCtx)
+	if chrome == "" {
+		return transcript
 	}
-	if act := m.pinnedActivityView(w); act != "" {
-		parts = append(parts, act)
-	}
-	if queue := m.queuePanelView(w); queue != "" {
-		parts = append(parts, queue)
-	}
-	if palette := m.paletteView(w); palette != "" {
-		parts = append(parts, palette)
-	}
-
-	parts = append(parts,
-		m.inputBoxView(w),
-		RenderStatusBar(m.ctx, string(m.mode), used, maxCtx),
-	)
-	return strings.Join(parts, "\n")
+	return transcript + "\n" + chrome
 }
 
 var _ tea.Model = (*ChatModel)(nil)

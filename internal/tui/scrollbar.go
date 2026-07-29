@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -12,7 +13,14 @@ import (
 // interactiva con el mouse (el propio bubble tea ya soporta rueda), pero
 // da retroalimentación visual mientras el usuario navega con PgUp/PgDown.
 func (m *ChatModel) renderScrollbar() string {
-	h := m.viewport.Height
+	return m.renderScrollbarFor(m.viewport)
+}
+
+// renderScrollbarFor permite que View dibuje la barra con la altura efectiva
+// del frame, aunque la geometría persistida del viewport aún corresponda al
+// frame anterior.
+func (m *ChatModel) renderScrollbarFor(vp viewport.Model) string {
+	h := vp.Height
 	if h < 2 {
 		return ""
 	}
@@ -20,7 +28,7 @@ func (m *ChatModel) renderScrollbar() string {
 	trackStyle := lipgloss.NewStyle().Foreground(theme.Muted)
 	thumbStyle := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
 
-	total := m.viewport.TotalLineCount()
+	total := vp.TotalLineCount()
 	visible := h
 	// Si todo el contenido cabe en la ventana, no dibujamos perilla: sólo el
 	// canal apagado. Así el usuario ve que hay un carril pero no ruido.
@@ -36,7 +44,7 @@ func (m *ChatModel) renderScrollbar() string {
 	if thumbH > h {
 		thumbH = h
 	}
-	off := m.viewport.YOffset
+	off := vp.YOffset
 	maxOff := total - visible
 	if maxOff < 1 {
 		maxOff = 1

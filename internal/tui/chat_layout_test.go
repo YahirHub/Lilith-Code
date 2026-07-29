@@ -7,9 +7,11 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/lilith/li/internal/providers"
 	"github.com/lilith/li/internal/providers/openai"
+	litodo "github.com/lilith/li/internal/todo"
 )
 
 var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
@@ -48,6 +50,45 @@ func TestResizeReservaElAltoRenderizadoDeLaEntrada(t *testing.T) {
 	if got := m.viewport.Height + m.bottomChromeHeight(80); got != 24 {
 		t.Fatalf("layout con entrada envuelta no cuadra con terminal: %d", got)
 	}
+}
+
+func TestChatViewOcupaTodoElAltoConChromeDinamico(t *testing.T) {
+	ctx := &AppContext{Styles: NewStyles(DefaultTheme())}
+	m := NewChat(ctx)
+	m.working = true
+	m.Resize(100, 36)
+
+	assertHeight := func(label string) {
+		t.Helper()
+		if got := lipgloss.Height(m.View()); got != 36 {
+			t.Fatalf("%s: View debe ocupar las 36 filas de la terminal, obtuvo %d", label, got)
+		}
+	}
+	assertHeight("actividad visible")
+
+	// La actividad puede desaparecer al completar/cancelar un turno sin que el
+	// terminal emita WindowSizeMsg. Antes dejaba reservadas sus filas y el
+	// status bar quedaba flotando sobre un bloque negro al fondo.
+	m.working = false
+	assertHeight("actividad retirada sin resize")
+
+	// TodoWrite también puede aparecer entre dos frames con la misma geometría.
+	err := m.todos.Restore(&litodo.State{
+		SchemaVersion: litodo.SchemaVersion,
+		Revision:      1,
+		Tasks: []litodo.Task{
+			{Key: "inspect", Subject: "Revisar proyecto", Status: litodo.Completed},
+			{Key: "implement", Subject: "Implementar cambio", Status: litodo.InProgress},
+			{Key: "verify", Subject: "Verificar resultado", Status: litodo.Pending},
+		},
+	})
+	if err != nil {
+		t.Fatalf("restaurar todo de prueba: %v", err)
+	}
+	assertHeight("TodoWrite agregado sin resize")
+
+	m.todos.Reset()
+	assertHeight("TodoWrite retirado sin resize")
 }
 
 func TestTextareaAutoresizeNoOcultaPrimeraLineaEnvuelta(t *testing.T) {
