@@ -101,27 +101,38 @@ func (m RootModel) chatVisible() bool {
 	return ok && chat == m.chat
 }
 
+func (m *ChatModel) wantsMouseCapture() bool {
+	return m != nil && (m.hasPendingPlanQuestions() || m.todoExpandable())
+}
+
 // chatMouseModeCmd enables mouse reporting only when chat currently exposes a
 // clickable inline control. Most of the time reporting remains disabled so the
 // terminal keeps native text selection/copy behavior. A large TodoWrite also
 // opts in because its visible block can be clicked to expand/collapse.
 func (m *ChatModel) chatMouseModeCmd() tea.Cmd {
-	if m != nil && (m.hasPendingPlanQuestions() || m.todoExpandable()) {
+	if m.wantsMouseCapture() {
 		return tea.EnableMouseCellMotion
 	}
 	return tea.DisableMouse
 }
 
+// wantsMouseCapture reports the logical mouse mode independently from the
+// terminal backend. Bubble Tea uses it through mouseModeCmd; the Windows Tcell
+// runtime reads the same value when publishing each complete frame.
+func (m RootModel) wantsMouseCapture() bool {
+	if m.chatVisible() {
+		return m.chat.wantsMouseCapture()
+	}
+	return true
+}
+
 // mouseModeCmd keeps click support on settings/select screens but releases
 // mouse capture in ordinary chat.
 func (m RootModel) mouseModeCmd() tea.Cmd {
-	if m.chatVisible() {
-		if m.chat != nil {
-			return m.chat.chatMouseModeCmd()
-		}
-		return tea.DisableMouse
+	if m.wantsMouseCapture() {
+		return tea.EnableMouseCellMotion
 	}
-	return tea.EnableMouseCellMotion
+	return tea.DisableMouse
 }
 
 // NewRootModel builds the root Bubble Tea model. If firstRun is true, the
@@ -144,8 +155,8 @@ func (m RootModel) Init() tea.Cmd {
 	if m.current == nil {
 		return nil
 	}
-	// Program starts with WithMouseCellMotion so first-run/settings screens are
-	// interactive from frame zero. Only chat needs an Init-time override.
+	// Auxiliary screens start with logical mouse capture in both terminal backends.
+	// Only chat needs an Init-time override so native text selection stays active.
 	if m.chatVisible() {
 		return tea.Batch(m.current.Init(), m.mouseModeCmd())
 	}

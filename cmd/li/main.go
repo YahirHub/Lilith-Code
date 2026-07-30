@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"github.com/lilith/li/internal/config"
@@ -104,24 +102,12 @@ func runTUI(_ *cobra.Command, _ []string) error {
 
 	root := tui.NewRootModel(ctx)
 
-	// Start with mouse support for onboarding/settings. RootModel disables it
-	// whenever chat is active so terminal text can be selected/copied normally,
-	// then re-enables it when a clickable settings screen opens.
-	programOptions := []tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion()}
-	if runtime.GOOS == "windows" {
-		// Bubble Tea 1.x reads direct os.Stdin through ReadConsoleInput on
-		// Windows, which emits one KeyMsg per pasted character. WithInputTTY
-		// opens CONIN$ as a distinct console handle, so Bubble Tea selects its
-		// ANSI parser, enables VT/bracketed-paste mode and restores the terminal
-		// itself when the program exits.
-		programOptions = append(programOptions, tea.WithInputTTY())
-	}
-	p := tea.NewProgram(root, programOptions...)
-	finalModel, err := p.Run()
-	if err != nil {
+	// The terminal backend is selected per platform. Windows uses Tcell for
+	// input/rendering while Bubble Tea remains the headless model runtime;
+	// other systems keep Bubble Tea's native terminal renderer.
+	if err := tui.RunRoot(root); err != nil {
 		return err
 	}
-	_ = finalModel
 
 	// If we finished onboarding, persist the version.
 	if firstRun {
