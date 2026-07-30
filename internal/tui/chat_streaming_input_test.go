@@ -122,6 +122,35 @@ func TestBracketedPasteMultilineaSeInsertaComoUnBloque(t *testing.T) {
 	}
 }
 
+func TestBracketedPasteNoSeTruncaAlSuperarOchoLineas(t *testing.T) {
+	m := newInputTestChat(t)
+
+	lines := make([]string, 24)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("línea %02d con contenido suficiente para detectar cualquier recorte", i+1)
+	}
+	pasted := strings.Join(lines, "\r\n")
+	want := strings.Join(lines, "\n")
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pasted), Paste: true})
+	if cmd != nil {
+		t.Fatal("un paste bracketed no debe crear tareas asíncronas")
+	}
+	if got := m.textarea.Value(); got != want {
+		t.Fatalf("el pegado multilinea fue truncado: obtuvo %d líneas/%d runes, esperaba %d líneas/%d runes",
+			m.textarea.LineCount(), len([]rune(got)), len(lines), len([]rune(want)))
+	}
+	if got := m.textarea.LineCount(); got != len(lines) {
+		t.Fatalf("el textarea debe conservar todas las líneas lógicas: obtuvo %d, esperaba %d", got, len(lines))
+	}
+	if got := m.textarea.Height(); got != chatInputVisibleMaxHeight {
+		t.Fatalf("la caja sólo debe ocupar %d filas visibles, obtuvo %d", chatInputVisibleMaxHeight, got)
+	}
+	if m.textarea.MaxHeight > 0 {
+		t.Fatalf("MaxHeight debe quedar ilimitado para no recortar contenido, obtuvo %d", m.textarea.MaxHeight)
+	}
+}
+
 func TestPasteMultilineaSinBracketedPasteNoEnviaNiEncola(t *testing.T) {
 	m := newInputTestChat(t)
 

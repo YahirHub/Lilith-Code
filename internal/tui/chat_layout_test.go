@@ -28,7 +28,7 @@ func TestVisualInputLineCountCuentaWrapPorAncho(t *testing.T) {
 		t.Fatalf("esperaba 2 líneas lógicas, obtuvo %d", got)
 	}
 	if got := visualInputLineCount(strings.Repeat("x", 500), 10, 8); got != 8 {
-		t.Fatalf("debe respetar MaxHeight=8, obtuvo %d", got)
+		t.Fatalf("debe respetar el límite visual de 8 filas, obtuvo %d", got)
 	}
 }
 

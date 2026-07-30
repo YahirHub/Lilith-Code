@@ -369,6 +369,7 @@ type pasteEnterDecisionMsg struct{ seq uint64 }
 type pasteFallbackIdleMsg struct{ seq uint64 }
 
 const (
+	chatInputVisibleMaxHeight         = 8
 	transcriptRefreshInterval         = 50 * time.Millisecond
 	transcriptScrolledRefreshInterval = 250 * time.Millisecond
 	livePersistInterval               = 200 * time.Millisecond
@@ -559,7 +560,11 @@ func NewChat(ctx *AppContext) ChatModel {
 	ta.CharLimit = 20_000
 	ta.ShowLineNumbers = false
 	ta.SetHeight(1)
-	ta.MaxHeight = 8
+	// MaxHeight limita las líneas LÓGICAS almacenadas por Bubbles, no sólo
+	// la altura visible. Debe quedar ilimitado para aceptar documentos
+	// multilinea completos; chatInputVisibleMaxHeight controla únicamente
+	// cuántas filas ocupa la caja en pantalla.
+	ta.MaxHeight = 0
 	ta.Focus()
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(ctx.Styles.Theme.Primary)
@@ -1849,10 +1854,9 @@ func visualInputLineCount(value string, textWidth, maxLines int) int {
 }
 
 func (m *ChatModel) setInputHeightForContent() bool {
-	maxHeight := m.textarea.MaxHeight
-	if maxHeight < 1 {
-		maxHeight = 8
-	}
+	// textarea.MaxHeight no puede usarse como límite visual: Bubbles también
+	// lo aplica al contenido y descartaría todas las líneas posteriores.
+	maxHeight := chatInputVisibleMaxHeight
 	value := m.textarea.Value()
 	totalLines := visualInputLineCount(value, m.textarea.Width(), 1_000_000)
 	lines := totalLines
