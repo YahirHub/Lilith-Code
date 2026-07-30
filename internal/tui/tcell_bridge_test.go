@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gdamore/tcell/v2"
@@ -39,6 +40,62 @@ func TestTcellPasteIsAtomic(t *testing.T) {
 	}
 	if got := string(key.Runes); got != "ab\nc" {
 		t.Fatalf("contenido pegado inesperado: %q", got)
+	}
+}
+
+func TestTcellEventBridgeDrainsLargePasteBeforePublishing(t *testing.T) {
+	events := make(chan tcell.Event)
+	messages := make(chan tea.Msg)
+	quit := make(chan struct{})
+	go bridgeTCellEvents(events, messages, quit)
+
+	const pasteSize = 5000
+	producerDone := make(chan struct{})
+	go func() {
+		defer close(producerDone)
+		events <- tcell.NewEventPaste(true)
+		for i := 0; i < pasteSize; i++ {
+			events <- tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone)
+		}
+		events <- tcell.NewEventPaste(false)
+		close(events)
+	}()
+
+	// Keep the downstream channel intentionally blocked. A bridge that forwards
+	// each pasted rune separately would stop draining the physical event stream
+	// and this producer would never finish.
+	select {
+	case <-producerDone:
+	case <-time.After(time.Second):
+		t.Fatal("el puente dejó de drenar el pegado largo mientras la salida estaba bloqueada")
+	}
+
+	select {
+	case raw, ok := <-messages:
+		if !ok {
+			t.Fatal("el puente cerró la salida sin publicar el pegado")
+		}
+		key, ok := raw.(tea.KeyMsg)
+		if !ok {
+			t.Fatalf("el mensaje debe ser tea.KeyMsg, obtuvo %T", raw)
+		}
+		if !key.Paste {
+			t.Fatal("el pegado largo debe conservar Paste=true")
+		}
+		if got := string(key.Runes); got != strings.Repeat("x", pasteSize) {
+			t.Fatalf("pegado largo truncado: obtuvo %d runes, esperaba %d", len(key.Runes), pasteSize)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("el puente no publicó el pegado largo completo")
+	}
+
+	select {
+	case _, ok := <-messages:
+		if ok {
+			t.Fatal("el puente publicó más de un mensaje para un solo pegado")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("el puente no cerró la salida al terminar los eventos")
 	}
 }
 

@@ -104,6 +104,34 @@ type tcellInputState struct {
 	lastButton       tcell.ButtonMask
 }
 
+// bridgeTCellEvents drains the physical Tcell stream independently from the
+// Bubble Tea/render loop. This is important on Windows: a bracketed paste is
+// delivered as one EventKey per rune, and rendering a concurrent streaming
+// frame must not stop us from consuming those events. The bridge accumulates
+// the complete paste before publishing a single tea.KeyMsg downstream.
+func bridgeTCellEvents(events <-chan tcell.Event, messages chan<- tea.Msg, quit <-chan struct{}) {
+	defer close(messages)
+
+	var input tcellInputState
+	for {
+		select {
+		case <-quit:
+			return
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
+			for _, msg := range input.messages(event) {
+				select {
+				case messages <- msg:
+				case <-quit:
+					return
+				}
+			}
+		}
+	}
+}
+
 func (s *tcellInputState) messages(event tcell.Event) []tea.Msg {
 	switch event := event.(type) {
 	case *tcell.EventPaste:

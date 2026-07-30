@@ -73,12 +73,17 @@ func RunRoot(root RootModel) error {
 		programDone <- runErr
 	}()
 
+	// Tcell emits one EventKey per pasted rune. Keep draining that physical
+	// stream in a dedicated bridge so rendering or Bubble Tea command traffic
+	// cannot cap a large clipboard at the combined channel queue sizes.
 	events := make(chan tcell.Event, 64)
+	inputMessages := make(chan tea.Msg, 64)
 	eventQuit := make(chan struct{})
 	var stopEvents sync.Once
 	stopEventLoop := func() { stopEvents.Do(func() { close(eventQuit) }) }
 	defer stopEventLoop()
 	go screen.ChannelEvents(events, eventQuit)
+	go bridgeTCellEvents(events, inputMessages, eventQuit)
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt)
@@ -87,7 +92,6 @@ func RunRoot(root RootModel) error {
 	width, height := screen.Size()
 	program.Send(tea.WindowSizeMsg{Width: width, Height: height})
 
-	var input tcellInputState
 	mouseCaptured := false
 	forceSync := true
 	previousOccupiedHeight := 0
@@ -123,7 +127,7 @@ func RunRoot(root RootModel) error {
 			forceSync = false
 			previousOccupiedHeight = occupiedHeight
 
-		case event, ok := <-events:
+		case msg, ok := <-inputMessages:
 			if !ok {
 				if !quitting {
 					quitting = true
@@ -131,12 +135,10 @@ func RunRoot(root RootModel) error {
 				}
 				continue
 			}
-			if _, resized := event.(*tcell.EventResize); resized {
+			if _, resized := msg.(tea.WindowSizeMsg); resized {
 				forceSync = true
 			}
-			for _, msg := range input.messages(event) {
-				program.Send(msg)
-			}
+			program.Send(msg)
 		}
 	}
 }
