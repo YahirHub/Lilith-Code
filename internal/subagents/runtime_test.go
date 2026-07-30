@@ -55,7 +55,7 @@ func TestRunStartsFreshIsolatedContext(t *testing.T) {
 
 func TestPlanParentForcesChildReadOnly(t *testing.T) {
 	a := agents.Agent{Name: "worker", Description: "writes"}
-	p := newToolPolicy(a, "plan")
+	p := newToolPolicy(a, "plan", false)
 	def, _ := tools.Get("create_file")
 	if p.visible("create_file", def) {
 		t.Fatal("write leaked through parent plan mode")
@@ -63,7 +63,7 @@ func TestPlanParentForcesChildReadOnly(t *testing.T) {
 }
 
 func TestClaudeToolMapping(t *testing.T) {
-	p := newToolPolicy(agents.Agent{Tools: []string{"Read", "Glob", "Grep"}}, "build")
+	p := newToolPolicy(agents.Agent{Tools: []string{"Read", "Glob", "Grep"}}, "build", false)
 	for _, name := range []string{"read_files", "glob", "code_search"} {
 		def, _ := tools.Get(name)
 		if !p.visible(name, def) {
@@ -76,7 +76,7 @@ func TestClaudeToolMapping(t *testing.T) {
 	}
 }
 
-func TestWorktreeIsolationFailsClosed(t *testing.T) {
+func TestWorktreeIsolationRequiresRepository(t *testing.T) {
 	fake := &fakeStreamer{}
 	cfg := Config{
 		Client: fake, ConfigDir: t.TempDir(), Root: t.TempDir(), ParentProviderID: "p", ParentModelID: "m",
@@ -85,8 +85,8 @@ func TestWorktreeIsolationFailsClosed(t *testing.T) {
 	_, err := Run(context.Background(), cfg, tools.AgentRequest{
 		Agent: agents.Agent{Name: "isolated", Isolation: "worktree"}, Prompt: "inspect",
 	})
-	if err == nil || !strings.Contains(err.Error(), "isolation: worktree") {
-		t.Fatalf("expected explicit worktree isolation error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "requires a git repository") {
+		t.Fatalf("expected explicit worktree repository error, got %v", err)
 	}
 	if len(fake.requests) != 0 {
 		t.Fatalf("model should not start when worktree isolation cannot be honored")
@@ -94,7 +94,7 @@ func TestWorktreeIsolationFailsClosed(t *testing.T) {
 }
 
 func TestOpenCodeLegacyDisabledToolsStayDenied(t *testing.T) {
-	p := newToolPolicy(agents.Agent{ToolFlags: map[string]bool{"write": false, "bash": false}}, "build")
+	p := newToolPolicy(agents.Agent{ToolFlags: map[string]bool{"write": false, "bash": false}}, "build", false)
 	for _, name := range []string{"create_file", "str_replace", "apply_diff", "run_terminal_command"} {
 		def, _ := tools.Get(name)
 		if p.visible(name, def) {
@@ -281,5 +281,44 @@ func TestLifecycleCarriesParentTaskID(t *testing.T) {
 	}
 	if started.ParentTaskID != "agent-parent" || started.Depth != 2 || started.TaskID == "" {
 		t.Fatalf("started=%#v", started)
+	}
+}
+
+func TestWorktreeIncludePatternsAndShellGuard(t *testing.T) {
+	patterns := parseIncludePatterns(".env\ncache/**\n!cache/tmp/**\n")
+	if !includedByPatterns(".env", patterns) || !includedByPatterns("cache/data.bin", patterns) || includedByPatterns("cache/tmp/x", patterns) {
+		t.Fatal("unexpected .worktreeinclude matching")
+	}
+	main := filepath.Join(t.TempDir(), "repo")
+	if err := validateWorktreeCommand("git status --short", main); err != nil {
+		t.Fatalf("safe git status blocked: %v", err)
+	}
+	if err := validateWorktreeCommand("git -C "+main+" status", main); err == nil {
+		t.Fatal("git -C escape should be blocked")
+	}
+}
+
+func TestWorktreeBaseRefHonorsTrustedClaudeSetting(t *testing.T) {
+	home := t.TempDir()
+	cfg := filepath.Join(home, ".li")
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".claude", "settings.json"), []byte(`{"worktree":{"baseRef":"head"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadWorktreeSettings(cfg, root, true).BaseRef; got != "head" {
+		t.Fatalf("base ref=%q", got)
+	}
+}
+
+func TestBackgroundPolicyUsesClaudeNarrowBuiltinSet(t *testing.T) {
+	p := newToolPolicy(agents.Agent{}, "build", true)
+	if !p.allowsName("read_files") || !p.allowsName("run_terminal_command") || !p.allowsName("Agent") {
+		t.Fatal("background agent lost allowed core tools")
+	}
+	if p.allowsName("create_goal") {
+		t.Fatal("background agent should not inherit unrelated built-in tools")
 	}
 }

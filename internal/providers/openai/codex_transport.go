@@ -224,9 +224,13 @@ func buildCodexPayload(req Request) ([]byte, error) {
 		"include":             []string{},
 	}
 
-	// Modelos de razonamiento (gpt-5.*): pedimos resumen breve. Es opcional
-	// pero el backend lo tolera bien y evita respuestas vacías.
-	payload["reasoning"] = map[string]any{"summary": "auto"}
+	// Modelos de razonamiento (gpt-5.*): pedimos resumen breve. El esfuerzo
+	// puede venir de una skill/subagente Claude y es estrictamente turn-scoped.
+	reasoning := map[string]any{"summary": "auto"}
+	if strings.TrimSpace(req.ReasoningEffort) != "" {
+		reasoning["effort"] = strings.TrimSpace(req.ReasoningEffort)
+	}
+	payload["reasoning"] = reasoning
 
 	if len(req.Tools) > 0 {
 		payload["tools"] = convertToolsToResponses(req.Tools)

@@ -90,6 +90,16 @@ func (c *ConfigScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch hit.id {
 		case "skills":
 			return c.toggleSkills()
+		case "lilith-md":
+			return c.toggleSetting("lilith-md")
+		case "claude-md":
+			return c.toggleSetting("claude-md")
+		case "auto-memory":
+			return c.toggleSetting("auto-memory")
+		case "hooks":
+			return c.toggleSetting("hooks")
+		case "trusted-project":
+			return c.toggleSetting("trusted-project")
 		case "back":
 			return c, switchToChat()
 		}
@@ -152,6 +162,14 @@ func (c *ConfigScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if c.section == configSectionGeneral {
 					return c.toggleSkills()
 				}
+			case "lilith-md", "claude-md", "auto-memory", "hooks":
+				if c.section == configSectionGeneral {
+					return c.toggleSetting(c.focus)
+				}
+			case "trusted-project":
+				if c.section == configSectionSecurity {
+					return c.toggleSetting(c.focus)
+				}
 			case "back":
 				return c, switchToChat()
 			}
@@ -205,7 +223,9 @@ func (c *ConfigScreen) focusFirstContent() {
 func (c *ConfigScreen) moveFocus(delta int) {
 	order := []string{"back"}
 	if c.section == configSectionGeneral {
-		order = []string{"skills", "back"}
+		order = []string{"skills", "lilith-md", "claude-md", "auto-memory", "hooks", "back"}
+	} else if c.section == configSectionSecurity {
+		order = []string{"trusted-project", "back"}
 	}
 	idx := 0
 	for i, id := range order {
@@ -261,6 +281,14 @@ func (c *ConfigScreen) layout() (string, []settingsHit) {
 	case configSectionGeneral:
 		canvas.block(c.skillsFocusCard(w))
 		canvas.blank()
+		canvas.block(c.toggleFocusCard(w, "lilith-md", "Lilith / LILITH.md", "Carga LILITH.md o LI.md del usuario y del proyecto como instrucciones persistentes.", c.settings.ProjectInstructionsEnabled))
+		canvas.blank()
+		canvas.block(c.toggleFocusCard(w, "claude-md", "Claude / CLAUDE.md", "Compatibilidad con CLAUDE.md, CLAUDE.local.md, .claude/rules y .claude/commands.", c.settings.ClaudeCompatibilityEnabled))
+		canvas.blank()
+		canvas.block(c.toggleFocusCard(w, "auto-memory", "Memoria automática", "Carga memoria persistente de Lilith y memoria declarada por subagentes.", c.settings.AutoMemoryEnabled))
+		canvas.blank()
+		canvas.block(c.toggleFocusCard(w, "hooks", "Hooks Claude", "Permite hooks compatibles de settings para validar o reaccionar a eventos del agente.", c.settings.HooksEnabled))
+		canvas.blank()
 		canvas.block(settingsCard(s, settingsCardSpec{
 			Title:       "Ruta de configuración",
 			Description: c.ctx.ConfigDir,
@@ -272,10 +300,13 @@ func (c *ConfigScreen) layout() (string, []settingsHit) {
 	case configSectionSearch:
 		c.search.appendLayout(canvas, w, c.focus == "search-content")
 	case configSectionSecurity:
+		trusted := config.IsProjectTrusted(c.settings, currentProject())
+		canvas.block(c.toggleFocusCard(w, "trusted-project", "Proyecto confiable", "Autoriza hooks y configuración ejecutable de .claude para este proyecto. Desactívalo si no confías en el repositorio.", trusted))
+		canvas.blank()
 		canvas.block(settingsCard(s, settingsCardSpec{
-			Title:       "Características en desarrollo",
-			Description: c.developmentDescription(),
-			Badge:       "PRÓXIMO",
+			Title:       "Hooks de proyecto",
+			Description: "Los hooks de ~/.claude pueden ejecutarse sin esta autorización; los hooks dentro del repositorio requieren Proyecto confiable.",
+			Badge:       "SEGURIDAD",
 			Width:       w,
 		}))
 		canvas.blank()
@@ -319,15 +350,66 @@ func (c *ConfigScreen) sectionSubtitle() string {
 	}
 }
 
-func (c *ConfigScreen) developmentDescription() string {
-	return "Los controles de seguridad se añadirán en esta sección."
-}
-
 func (c *ConfigScreen) footerText() string {
 	if c.focus == configSectionNavFocus {
 		return "←→ cambiar sección · ↓ entrar · clic · Esc volver"
 	}
 	return "↑↓ mover foco · ↑ hasta la barra superior · Enter/Espacio usar · clic · Esc volver"
+}
+
+func (c *ConfigScreen) toggleSetting(id string) (tea.Model, tea.Cmd) {
+	switch id {
+	case "lilith-md":
+		c.settings.ProjectInstructionsEnabled = !c.settings.ProjectInstructionsEnabled
+	case "claude-md":
+		c.settings.ClaudeCompatibilityEnabled = !c.settings.ClaudeCompatibilityEnabled
+	case "auto-memory":
+		c.settings.AutoMemoryEnabled = !c.settings.AutoMemoryEnabled
+	case "hooks":
+		c.settings.HooksEnabled = !c.settings.HooksEnabled
+	case "trusted-project":
+		config.SetProjectTrusted(&c.settings, currentProject(), !config.IsProjectTrusted(c.settings, currentProject()))
+	default:
+		return c, nil
+	}
+	if err := config.Save(c.ctx.ConfigDir, c.settings); err != nil {
+		c.danger = "No se pudo guardar: " + err.Error()
+		return c, nil
+	}
+	c.danger = ""
+	c.message = "Configuración actualizada."
+	return c, nil
+}
+
+func (c *ConfigScreen) toggleFocusCard(width int, id, title, description string, enabled bool) settingsBlock {
+	s := c.ctx.Styles
+	inner := width - 4
+	if inner < 10 {
+		inner = 10
+	}
+	marker := "  "
+	if c.focus == id {
+		marker = "› "
+	}
+	state := "OFF"
+	stateStyle := s.Muted
+	if enabled {
+		state = "ON"
+		stateStyle = s.Success
+	}
+	titleText := marker + s.Title.Render(title)
+	status := stateStyle.Render("[" + state + "]")
+	gap := inner - lipgloss.Width(titleText) - lipgloss.Width(status)
+	if gap < 2 {
+		gap = 2
+	}
+	lines := []string{titleText + strings.Repeat(" ", gap) + status, s.Muted.Render(settingsWrapPlain(description, inner))}
+	style := lipgloss.NewStyle().Width(inner).Padding(0, 1).Border(lipgloss.RoundedBorder()).BorderForeground(s.Theme.Border)
+	if c.focus == id {
+		style = style.BorderForeground(s.Theme.BorderFocus).Background(s.Theme.SurfaceHover).Bold(true)
+	}
+	text := style.Render(strings.Join(lines, "\n"))
+	return settingsBlock{text: text, hits: []settingsHit{{id: id, rect: settingsRect{w: lipgloss.Width(text), h: lipgloss.Height(text)}}}}
 }
 
 func (c *ConfigScreen) skillsFocusCard(width int) settingsBlock {

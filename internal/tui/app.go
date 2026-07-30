@@ -86,6 +86,9 @@ func chatRuntimeMsg(msg tea.Msg) bool {
 		chatStreamMsg,
 		toolResultsMsg,
 		manualAgentResultMsg,
+		agentEventBatchMsg,
+		agentEventStreamDoneMsg,
+		mcpReadyMsg,
 		bashResultMsg:
 		return true
 	default:
@@ -162,7 +165,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Return to chat
 			m.chat.invalidateContextUsage()
 			m.current = m.chat
-			return m, m.mouseModeCmd()
+			return m, tea.Batch(m.mouseModeCmd(), m.chat.connectMCP())
 		}
 		m.current = v.next
 		return m, tea.Batch(m.current.Init(), m.mouseModeCmd())
@@ -175,7 +178,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case resumeSessionMsg:
 		m.chat.LoadSession(v.sess)
 		m.current = m.chat
-		return m, m.mouseModeCmd()
+		return m, tea.Batch(m.mouseModeCmd(), m.chat.connectMCP(), m.chat.resumeActiveGoalCmd())
 	}
 
 	// Chat work is long-lived and independent of the visible screen. Bubble Tea

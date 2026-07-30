@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -98,22 +99,91 @@ func (m *ChatModel) toolEnvWithAgentEvents(root string, mode planstate.Mode, eve
 		Root:      root,
 		ConfigDir: m.ctx.ConfigDir,
 		Todos:     m.todos,
+		MemoryDir: m.mainMemoryDir(),
 		Plan:      m.plans,
+		Goal:      m.goals,
 		AgentMode: mode,
 		Agents:    agentCatalog,
 	}
 	env.RunAgent = func(ctx context.Context, req tools.AgentRequest) (tools.AgentResult, error) {
-		return subagents.Run(ctx, subagents.Config{
-			Client: m.ctx.Client, Providers: m.ctx.Providers, ConfigDir: m.ctx.ConfigDir, Root: root,
+		cfg := subagents.Config{
+			Client: m.ctx.Client, Providers: m.ctx.Providers, ConfigDir: m.ctx.ConfigDir, Root: root, StoreProject: m.project,
 			ParentProviderID: providerID, ParentModelID: modelID, ParentMode: mode, Skills: skillCatalog,
-			Agents: agentCatalog, Depth: 1, Events: events,
-		}, req)
+			Agents: agentCatalog, Depth: 1, Events: events, BackgroundContext: m.sessionCtx, ParentMCP: m.mcpRuntime,
+		}
+		if req.Background && backgroundTasksAllowed() {
+			return subagents.StartBackground(cfg, req)
+		}
+		return subagents.Run(ctx, cfg, req)
+	}
+	env.BeforeTool = func(ctx context.Context, name string, args map[string]any) (map[string]any, error) {
+		runner := m.toolHookRunner()
+		if runner.Count() == 0 {
+			return args, nil
+		}
+		input := m.hookInput("PreToolUse")
+		input["tool_name"] = claudeToolName(name)
+		input["tool_input"] = args
+		res, err := runner.Run(ctx, "PreToolUse", claudeToolName(name), input)
+		if err != nil {
+			return nil, err
+		}
+		if res.Blocked {
+			return nil, fmt.Errorf("tool bloqueada por hook: %s", res.Reason)
+		}
+		if res.SystemMessage != "" { /* delivered through logs/transcript only when safe */
+		}
+		if res.UpdatedInput != nil {
+			return res.UpdatedInput, nil
+		}
+		return args, nil
+	}
+	env.AfterTool = func(ctx context.Context, name string, args map[string]any, output string, runErr error) (string, error) {
+		runner := m.toolHookRunner()
+		if runner.Count() == 0 {
+			return output, nil
+		}
+		event := "PostToolUse"
+		if runErr != nil {
+			event = "PostToolUseFailure"
+		}
+		input := m.hookInput(event)
+		input["tool_name"] = claudeToolName(name)
+		input["tool_input"] = args
+		if runErr != nil {
+			input["error"] = runErr.Error()
+		} else {
+			input["tool_response"] = output
+		}
+		res, err := runner.Run(ctx, event, claudeToolName(name), input)
+		if err != nil {
+			return output, err
+		}
+		if res.Blocked {
+			return output, fmt.Errorf("resultado bloqueado por hook: %s", res.Reason)
+		}
+		if res.UpdatedOutput != "" {
+			return res.UpdatedOutput, nil
+		}
+		if res.AdditionalContext != "" {
+			output += "\n\n<hook_context>\n" + res.AdditionalContext + "\n</hook_context>"
+		}
+		return output, nil
 	}
 	env.ToolVisible = func(name string, def tools.Definition) bool {
-		return planstate.ToolVisible(mode, name, def.Mutating)
+		return !m.toolDeniedForTurn(name) && planstate.ToolVisible(mode, name, def.Mutating)
 	}
 	env.ValidateTool = func(name string, def tools.Definition, args map[string]any) error {
+		if m.toolDeniedForTurn(name) {
+			return fmt.Errorf("tool %s is disabled by the active skill", name)
+		}
 		return planstate.ValidateTool(mode, name, def.Mutating, args)
+	}
+	env.DynamicTool = func(ctx context.Context, name string, args map[string]any) (string, error) {
+		if m.toolDeniedForTurn(name) {
+			return "", fmt.Errorf("tool %s is disabled by the active skill", name)
+		}
+		return m.callMCP(ctx, mode, name, args)
 	}
 	return env
 }
@@ -166,8 +236,21 @@ func (m *ChatModel) rememberToolsForMode(mode planstate.Mode, names []string) []
 func (m *ChatModel) selectToolsForPrompt(text string, mode planstate.Mode) []string {
 	env := m.toolEnv("", mode)
 	selected := tools.SelectAvailable(text, env)
+	if !tools.IsDirectChat(text) && env.MemoryDir != "" {
+		selected = appendUniqueTool(selected, "memory_read")
+		if mode != planstate.Plan {
+			selected = appendUniqueTool(selected, "memory_write")
+		}
+	}
 	if !tools.IsDirectChat(text) && m.skillsEnabled() {
 		selected = tools.WithSkillTools(selected, len(m.loadSkills()) > 0)
+	}
+	if !tools.IsDirectChat(text) && m.goals != nil && m.goals.Snapshot() != nil {
+		for _, name := range []string{"create_goal", "get_goal", "update_goal"} {
+			if _, ok := tools.Get(name); ok {
+				selected = appendUniqueTool(selected, name)
+			}
+		}
 	}
 
 	// A greeting before any real work should stay schema-free. Once a coding

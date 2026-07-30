@@ -15,6 +15,11 @@ import (
 	"time"
 
 	"github.com/lilith/li/internal/agents"
+	"github.com/lilith/li/internal/config"
+	"github.com/lilith/li/internal/hooks"
+	"github.com/lilith/li/internal/instructions"
+	"github.com/lilith/li/internal/mcp"
+	limemory "github.com/lilith/li/internal/memory"
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/providers"
 	"github.com/lilith/li/internal/providers/openai"
@@ -32,10 +37,13 @@ type Streamer interface {
 // intentionally absent: normal subagents start fresh and receive only the
 // delegated task, matching Claude/OpenCode/Pi isolated-worker semantics.
 type Config struct {
-	Client           Streamer
-	Providers        providers.Config
-	ConfigDir        string
-	Root             string
+	Client    Streamer
+	Providers providers.Config
+	ConfigDir string
+	Root      string
+	// StoreProject keeps child sessions grouped under the original project even
+	// when execution moves into an isolated git worktree.
+	StoreProject     string
 	ParentProviderID string
 	ParentModelID    string
 	ParentMode       planstate.Mode
@@ -52,6 +60,33 @@ type Config struct {
 	// optional live progress stream; nested workers inherit it.
 	ParentTaskID string
 	Events       EventSink
+	// BackgroundContext outlives a single parent turn and is used for detached
+	// children. Nested runtimes inherit it so cancellation at session shutdown
+	// still tears down the whole background tree.
+	BackgroundContext context.Context
+	// ParentMCP is the already-connected main-session MCP runtime. Claude
+	// subagents inherit parent MCP tools without reconnecting, while their
+	// mcpServers frontmatter may add child-only inline servers.
+	ParentMCP *mcp.Runtime
+}
+
+func StartBackground(cfg Config, req tools.AgentRequest) (tools.AgentResult, error) {
+	ctx := cfg.BackgroundContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(req.TaskID) == "" && strings.TrimSpace(req.AllocatedTaskID) == "" {
+		req.AllocatedTaskID = newTaskID()
+	}
+	taskID := strings.TrimSpace(req.TaskID)
+	if taskID == "" {
+		taskID = req.AllocatedTaskID
+	}
+	req.Background = true
+	go func() {
+		_, _ = Run(ctx, cfg, req)
+	}()
+	return tools.AgentResult{TaskID: taskID, AgentName: req.Agent.Name, Text: "Subagente iniciado en background. El resultado llegará como notificación cuando termine.", Background: true, Resumed: strings.TrimSpace(req.TaskID) != ""}, nil
 }
 
 func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentResult, error) {
@@ -61,12 +96,35 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 	if strings.TrimSpace(cfg.Root) == "" {
 		return tools.AgentResult{}, errors.New("subagent project root is empty")
 	}
-	if strings.EqualFold(strings.TrimSpace(req.Agent.Isolation), "worktree") {
-		return tools.AgentResult{}, fmt.Errorf("agent %s requests isolation: worktree, which Lilith does not implement yet", req.Agent.Name)
+	storeProject := strings.TrimSpace(cfg.StoreProject)
+	if storeProject == "" {
+		storeProject = cfg.Root
 	}
+	originalRoot := cfg.Root
 	provider, model, err := resolveModel(cfg.Providers, cfg.ParentProviderID, cfg.ParentModelID, req.Agent.Model, req.Model)
 	if err != nil {
 		return tools.AgentResult{}, err
+	}
+
+	settings, _ := config.Load(cfg.ConfigDir)
+	projectTrusted := config.IsProjectTrusted(settings, originalRoot)
+	hookRunner := &hooks.Runner{}
+	if settings.HooksEnabled {
+		hookRunner = hooks.Load(cfg.ConfigDir, cfg.Root, projectTrusted)
+		if strings.TrimSpace(req.Agent.HooksRaw) != "" && (req.Agent.Source != "project" || projectTrusted) {
+			hookRunner.Merge(hooks.ParseFrontmatter(req.Agent.HooksRaw, req.Agent.BaseDir))
+		}
+	}
+	memoryDir := ""
+	if settings.AutoMemoryEnabled {
+		switch strings.ToLower(strings.TrimSpace(req.Agent.Memory)) {
+		case "user":
+			memoryDir = limemory.AgentDir(cfg.ConfigDir, cfg.Root, req.Agent.Name, limemory.User)
+		case "project":
+			memoryDir = limemory.AgentDir(cfg.ConfigDir, cfg.Root, req.Agent.Name, limemory.Project)
+		case "local":
+			memoryDir = limemory.AgentDir(cfg.ConfigDir, cfg.Root, req.Agent.Name, limemory.Local)
+		}
 	}
 
 	depth := cfg.Depth
@@ -78,7 +136,7 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 		maxDepth = configuredMaxDepth()
 	}
 
-	store := newChildStore(cfg.ConfigDir, cfg.Root)
+	store := newChildStore(cfg.ConfigDir, storeProject)
 	resumed := false
 	var child *childSession
 	if strings.TrimSpace(req.TaskID) != "" {
@@ -89,8 +147,13 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 		if !strings.EqualFold(child.AgentName, req.Agent.Name) {
 			return tools.AgentResult{}, fmt.Errorf("task %s belongs to agent %s, not %s", child.ID, child.AgentName, req.Agent.Name)
 		}
-		if filepathClean(child.Project) != filepathClean(cfg.Root) {
+		if filepathClean(child.Project) != filepathClean(storeProject) {
 			return tools.AgentResult{}, fmt.Errorf("task %s belongs to a different project", child.ID)
+		}
+		if strings.TrimSpace(child.WorktreeRoot) != "" {
+			if info, statErr := os.Stat(child.WorktreeRoot); statErr == nil && info.IsDir() {
+				cfg.Root = child.WorktreeRoot
+			}
 		}
 		resumed = true
 		child.ParentTaskID = cfg.ParentTaskID
@@ -106,14 +169,41 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 		child.Messages = append(child.Messages, openai.Message{Role: "user", Content: req.Prompt})
 	} else {
 		now := timeNow()
-		child = &childSession{
-			ID: newTaskID(), AgentName: req.Agent.Name, ParentTaskID: cfg.ParentTaskID, Description: req.Description, Depth: depth, Status: "running", Project: filepathClean(cfg.Root),
-			ProviderID: provider.ID, ModelID: model, CreatedAt: now, UpdatedAt: now,
-			Messages: []openai.Message{
-				{Role: "system", Content: buildSystemPrompt(req.Agent, cfg.Root, cfg.Skills, cfg.Agents, depth < maxDepth)},
-				{Role: "user", Content: req.Prompt},
-			},
+		taskID := strings.TrimSpace(req.AllocatedTaskID)
+		if taskID == "" {
+			taskID = newTaskID()
 		}
+		worktreeRoot := ""
+		worktreeCustom := false
+		if strings.EqualFold(strings.TrimSpace(req.Agent.Isolation), "worktree") {
+			wt, custom, wtErr := createWorktree(ctx, cfg.ConfigDir, originalRoot, taskID, projectTrusted, hookRunner)
+			if wtErr != nil {
+				return tools.AgentResult{}, fmt.Errorf("agent %s worktree: %w", req.Agent.Name, wtErr)
+			}
+			worktreeRoot = wt
+			worktreeCustom = custom
+			cfg.Root = wt
+		}
+		msgs := []openai.Message{{Role: "system", Content: buildSystemPrompt(req.Agent, cfg.Root, cfg.Skills, cfg.Agents, depth < maxDepth, memoryDir)}}
+		// Claude's built-in Explore/Plan intentionally omit CLAUDE.md. Custom
+		// subagents receive the normal project instruction flow before the task.
+		if !strings.EqualFold(req.Agent.Name, "Explore") && !strings.EqualFold(req.Agent.Name, "Plan") {
+			bundle := instructions.Load(instructions.Options{ConfigDir: cfg.ConfigDir, CWD: cfg.Root, NativeEnabled: settings.ProjectInstructionsEnabled, ClaudeEnabled: settings.ClaudeCompatibilityEnabled, ProjectTrusted: projectTrusted})
+			if block := strings.TrimSpace(bundle.StaticPrompt()); block != "" {
+				msgs = append(msgs, openai.Message{Role: "user", Content: block})
+			}
+		}
+		msgs = append(msgs, openai.Message{Role: "user", Content: req.Prompt})
+		child = &childSession{
+			ID: taskID, AgentName: req.Agent.Name, ParentTaskID: cfg.ParentTaskID, Description: req.Description, Depth: depth, Status: "running", Project: filepathClean(storeProject), WorktreeRoot: worktreeRoot, WorktreeCustom: worktreeCustom,
+			ProviderID: provider.ID, ModelID: model, CreatedAt: now, UpdatedAt: now, Messages: msgs,
+		}
+	}
+
+	// WorktreeCreate must run from the original checkout, but every subsequent
+	// subagent hook/tool should observe the isolated cwd.
+	if hookRunner != nil {
+		hookRunner.Root = cfg.Root
 	}
 
 	localTodos := litodo.NewManager(nil)
@@ -124,8 +214,87 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 		mode = planstate.Plan
 	}
 
-	policy := newToolPolicy(req.Agent, mode)
-	env := tools.Env{Root: cfg.Root, ConfigDir: cfg.ConfigDir, Skills: cfg.Skills, Todos: localTodos, AgentMode: mode}
+	policy := newToolPolicy(req.Agent, mode, req.Background)
+
+	// Claude subagents inherit the parent session's MCP tools. Inline mcpServers
+	// are additive and get a child-owned runtime; project-provided executable MCP
+	// configuration is honored only for trusted projects.
+	var inlineMCP *mcp.Runtime
+	if settings.ClaudeCompatibilityEnabled && strings.TrimSpace(req.Agent.MCPRaw) != "" {
+		if req.Agent.Source != "project" || projectTrusted {
+			inlineConfigs := mcp.ParseInlineServers(req.Agent.MCPRaw)
+			if len(inlineConfigs) > 0 {
+				inlineMCP = mcp.NewRuntime()
+				mcpCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				errs := inlineMCP.Connect(mcpCtx, inlineConfigs)
+				cancel()
+				if len(errs) > 0 {
+					_ = inlineMCP.Close()
+					return tools.AgentResult{}, fmt.Errorf("agent %s MCP: %v", req.Agent.Name, errs)
+				}
+				defer inlineMCP.Close()
+			}
+		}
+	}
+
+	env := tools.Env{Root: cfg.Root, ConfigDir: cfg.ConfigDir, Skills: cfg.Skills, Todos: localTodos, AgentMode: mode, MemoryDir: memoryDir}
+	env.DynamicTool = func(toolCtx context.Context, name string, args map[string]any) (string, error) {
+		if cfg.ParentMCP != nil && cfg.ParentMCP.Has(name) {
+			if !policy.allowsDynamic(name, cfg.ParentMCP.IsReadOnly(name)) {
+				return "", fmt.Errorf("MCP tool %s is not allowed for this subagent", name)
+			}
+			return cfg.ParentMCP.Call(toolCtx, name, args)
+		}
+		if inlineMCP != nil && inlineMCP.Has(name) {
+			if !policy.allowsDynamic(name, inlineMCP.IsReadOnly(name)) {
+				return "", fmt.Errorf("MCP tool %s is not allowed for this subagent", name)
+			}
+			return inlineMCP.Call(toolCtx, name, args)
+		}
+		return "", fmt.Errorf("MCP tool unavailable: %s", name)
+	}
+	if hookRunner.Count() > 0 {
+		env.BeforeTool = func(toolCtx context.Context, name string, args map[string]any) (map[string]any, error) {
+			cn := claudeToolName(name)
+			input := map[string]any{"session_id": child.ID, "cwd": cfg.Root, "hook_event_name": "PreToolUse", "tool_name": cn, "tool_input": args}
+			res, e := hookRunner.Run(toolCtx, "PreToolUse", cn, input)
+			if e != nil {
+				return nil, e
+			}
+			if res.Blocked {
+				return nil, fmt.Errorf("tool blocked by hook: %s", res.Reason)
+			}
+			if res.UpdatedInput != nil {
+				return res.UpdatedInput, nil
+			}
+			return args, nil
+		}
+		env.AfterTool = func(toolCtx context.Context, name string, args map[string]any, output string, runErr error) (string, error) {
+			event := "PostToolUse"
+			input := map[string]any{"session_id": child.ID, "cwd": cfg.Root, "tool_name": claudeToolName(name), "tool_input": args}
+			if runErr != nil {
+				event = "PostToolUseFailure"
+				input["error"] = runErr.Error()
+			} else {
+				input["tool_response"] = output
+			}
+			input["hook_event_name"] = event
+			res, e := hookRunner.Run(toolCtx, event, claudeToolName(name), input)
+			if e != nil {
+				return output, e
+			}
+			if res.Blocked {
+				return output, fmt.Errorf("tool result blocked by hook: %s", res.Reason)
+			}
+			if res.UpdatedOutput != "" {
+				output = res.UpdatedOutput
+			}
+			if res.AdditionalContext != "" {
+				output += "\n\n<hook_context>\n" + res.AdditionalContext + "\n</hook_context>"
+			}
+			return output, nil
+		}
+	}
 	if depth < maxDepth && len(cfg.Agents) > 0 {
 		env.Agents = cfg.Agents
 		env.RunAgent = func(childCtx context.Context, childReq tools.AgentRequest) (tools.AgentResult, error) {
@@ -136,28 +305,58 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 			nested.Depth = depth + 1
 			nested.MaxDepth = maxDepth
 			nested.ParentTaskID = child.ID
+			if childReq.Background && backgroundTasksEnabled() {
+				return StartBackground(nested, childReq)
+			}
 			return Run(childCtx, nested, childReq)
 		}
 	}
 	env.ToolVisible = func(name string, def tools.Definition) bool { return policy.visible(name, def) }
 	env.ValidateTool = func(name string, def tools.Definition, args map[string]any) error {
-		return policy.validate(name, def, args)
+		if err := policy.validate(name, def, args); err != nil {
+			return err
+		}
+		if child.WorktreeRoot != "" && name == "run_terminal_command" {
+			return validateWorktreeCommand(toolCommand(args), originalRoot)
+		}
+		return nil
 	}
 
 	active := append([]string(nil), child.Tools...)
 	if len(active) == 0 {
 		active = policy.initialTools(req.Prompt, env)
 	}
+	if memoryDir != "" {
+		active = appendUnique(active, "memory_read")
+		if mode != planstate.Plan {
+			active = appendUnique(active, "memory_write")
+		}
+	}
 	active = tools.FilterAvailable(active, env)
 	child.Tools = append([]string(nil), active...)
 	if err := store.save(child); err != nil {
 		return tools.AgentResult{}, err
 	}
+	if hookRunner.Count() > 0 {
+		input := map[string]any{"session_id": child.ID, "cwd": cfg.Root, "hook_event_name": "SubagentStart", "agent_type": req.Agent.Name}
+		if res, hookErr := hookRunner.Run(ctx, "SubagentStart", req.Agent.Name, input); hookErr != nil {
+			return tools.AgentResult{}, hookErr
+		} else if res.Blocked {
+			return tools.AgentResult{}, fmt.Errorf("subagent blocked by hook: %s", res.Reason)
+		}
+	}
 	emit(cfg, Event{
 		Kind: EventStarted, TaskID: child.ID, ParentTaskID: cfg.ParentTaskID,
 		AgentName: req.Agent.Name, Description: req.Description, Model: model,
-		Depth: depth, Resumed: resumed, At: timeNow(),
+		Depth: depth, Resumed: resumed, Background: req.Background, At: timeNow(),
 	})
+	defer func() {
+		if hookRunner.Count() == 0 {
+			return
+		}
+		input := map[string]any{"session_id": child.ID, "cwd": cfg.Root, "hook_event_name": "SubagentStop", "agent_type": req.Agent.Name, "status": child.Status}
+		_, _ = hookRunner.Run(context.Background(), "SubagentStop", req.Agent.Name, input)
+	}()
 
 	turns := 0
 	for {
@@ -165,7 +364,7 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 			child.Status = "killed"
 			child.FinishedAt = timeNow()
 			_ = store.save(child)
-			emit(cfg, Event{Kind: EventCanceled, TaskID: child.ID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Content: err.Error(), At: timeNow()})
+			emit(cfg, Event{Kind: EventCanceled, TaskID: child.ID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Background: req.Background, Content: err.Error(), At: timeNow()})
 			return tools.AgentResult{}, err
 		}
 		turns++
@@ -174,7 +373,7 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 			child.Status = "failed"
 			child.FinishedAt = timeNow()
 			_ = store.save(child)
-			emit(cfg, Event{Kind: EventFailed, TaskID: child.ID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Content: err.Error(), At: timeNow()})
+			emit(cfg, Event{Kind: EventFailed, TaskID: child.ID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Background: req.Background, Content: err.Error(), At: timeNow()})
 			return tools.AgentResult{}, err
 		}
 
@@ -182,7 +381,13 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 		for _, schema := range tools.Schemas(active) {
 			schemas = append(schemas, schema)
 		}
-		ch := cfg.Client.Stream(ctx, openai.Request{Provider: provider, Model: model, Messages: child.Messages, Stream: true, Tools: schemas})
+		if cfg.ParentMCP != nil {
+			schemas = append(schemas, filterMCPSchemas(cfg.ParentMCP.SchemasForMode(mode == planstate.Plan), cfg.ParentMCP, policy)...)
+		}
+		if inlineMCP != nil {
+			schemas = append(schemas, filterMCPSchemas(inlineMCP.SchemasForMode(mode == planstate.Plan), inlineMCP, policy)...)
+		}
+		ch := cfg.Client.Stream(ctx, openai.Request{Provider: provider, Model: model, Messages: child.Messages, Stream: true, Tools: schemas, ReasoningEffort: req.Agent.Effort})
 		text, reasoning, calls, err := collect(ch, cfg, child.ID, req, model, depth)
 		if err != nil {
 			wrapped := fmt.Errorf("subagent %s: %w", req.Agent.Name, err)
@@ -195,7 +400,7 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 			}
 			child.FinishedAt = timeNow()
 			_ = store.save(child)
-			emit(cfg, Event{Kind: kind, TaskID: child.ID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Content: wrapped.Error(), At: timeNow()})
+			emit(cfg, Event{Kind: kind, TaskID: child.ID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Background: req.Background, Content: wrapped.Error(), At: timeNow()})
 			return tools.AgentResult{}, wrapped
 		}
 		assistant := openai.Message{Role: "assistant", Content: text, ReasoningContent: reasoning, ToolCalls: calls}
@@ -203,11 +408,21 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 		if len(calls) == 0 {
 			child.Status = "completed"
 			child.FinishedAt = timeNow()
+			if child.WorktreeRoot != "" {
+				if hookRunner != nil {
+					hookRunner.Root = originalRoot
+				}
+				if removed, cleanErr := cleanupWorktree(context.Background(), originalRoot, child.WorktreeRoot, child.WorktreeCustom, hookRunner); cleanErr == nil && removed {
+					child.WorktreeRoot = ""
+				} else if !removed {
+					text = strings.TrimSpace(text) + "\n\nWorktree con cambios conservado en: " + child.WorktreeRoot
+				}
+			}
 			if err := store.save(child); err != nil {
 				return tools.AgentResult{}, err
 			}
-			emit(cfg, Event{Kind: EventCompleted, TaskID: child.ID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Content: strings.TrimSpace(text), At: timeNow()})
-			return tools.AgentResult{TaskID: child.ID, AgentName: req.Agent.Name, Text: strings.TrimSpace(text), Resumed: resumed}, nil
+			emit(cfg, Event{Kind: EventCompleted, TaskID: child.ID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Background: req.Background, Content: strings.TrimSpace(text), At: timeNow()})
+			return tools.AgentResult{TaskID: child.ID, AgentName: req.Agent.Name, Text: strings.TrimSpace(text), Resumed: resumed, Background: req.Background}, nil
 		}
 
 		materialized := append([]string(nil), active...)
@@ -236,11 +451,11 @@ func collect(ch <-chan openai.Chunk, cfg Config, taskID string, req tools.AgentR
 		}
 		if chunk.Delta != "" {
 			tb.WriteString(chunk.Delta)
-			emit(cfg, Event{Kind: EventText, TaskID: taskID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Content: chunk.Delta, At: timeNow()})
+			emit(cfg, Event{Kind: EventText, TaskID: taskID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Background: req.Background, Content: chunk.Delta, At: timeNow()})
 		}
 		if chunk.Thinking != "" {
 			rb.WriteString(chunk.Thinking)
-			emit(cfg, Event{Kind: EventThinking, TaskID: taskID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Content: chunk.Thinking, At: timeNow()})
+			emit(cfg, Event{Kind: EventThinking, TaskID: taskID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Background: req.Background, Content: chunk.Thinking, At: timeNow()})
 		}
 		if len(chunk.ToolCalls) > 0 && !chunk.Partial {
 			calls = append([]openai.ToolCall(nil), chunk.ToolCalls...)
@@ -300,7 +515,7 @@ func emit(cfg Config, event Event) {
 }
 
 func emitTool(cfg Config, kind EventKind, taskID string, req tools.AgentRequest, model string, depth int, call openai.ToolCall, content string) {
-	emit(cfg, Event{Kind: kind, TaskID: taskID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, ToolCallID: call.ID, ToolName: call.Function.Name, ToolArgs: call.Function.Arguments, Content: content, At: timeNow()})
+	emit(cfg, Event{Kind: kind, TaskID: taskID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Background: req.Background, ToolCallID: call.ID, ToolName: call.Function.Name, ToolArgs: call.Function.Arguments, Content: content, At: timeNow()})
 }
 
 func allAgentToolCalls(calls []openai.ToolCall) bool {
@@ -320,13 +535,18 @@ func toolMessage(call openai.ToolCall, content string) openai.Message {
 	return openai.Message{Role: "tool", ToolCallID: call.ID, Name: call.Function.Name, Content: content}
 }
 
-func buildSystemPrompt(a agents.Agent, root string, catalog []skills.Skill, agentCatalog []agents.Agent, canDelegate bool) string {
+func buildSystemPrompt(a agents.Agent, root string, catalog []skills.Skill, agentCatalog []agents.Agent, canDelegate bool, memoryDir string) string {
 	var b strings.Builder
 	prompt := strings.TrimSpace(a.Prompt)
 	if prompt == "" {
 		prompt = "Complete the delegated task accurately and return a concise final result."
 	}
 	b.WriteString(prompt)
+	// Claude's initialPrompt applies when a definition is used as the primary
+	// session agent. Spawned subagents receive only their system prompt + task.
+	if memoryDir != "" {
+		b.WriteString(limemory.Prompt(memoryDir))
+	}
 	b.WriteString("\n\nSubagent environment:\n- Working directory: ")
 	b.WriteString(filepathSlash(root))
 	b.WriteString("\n- You are an isolated subagent. You do not have the parent conversation history. The user-facing parent receives only your final result.\n")
@@ -349,7 +569,7 @@ func preloadSkills(names []string, catalog []skills.Skill) string {
 	var b strings.Builder
 	for _, name := range names {
 		sk := skills.Find(catalog, name)
-		if sk == nil {
+		if sk == nil || sk.DisableModelInvocation {
 			continue
 		}
 		body, err := skills.ReadContent(*sk)
@@ -362,13 +582,14 @@ func preloadSkills(names []string, catalog []skills.Skill) string {
 }
 
 type toolPolicy struct {
-	mode  planstate.Mode
-	allow map[string]bool // nil means inherit all
-	deny  map[string]bool
+	mode       planstate.Mode
+	background bool
+	allow      map[string]bool // nil means inherit all
+	deny       map[string]bool
 }
 
-func newToolPolicy(a agents.Agent, mode planstate.Mode) toolPolicy {
-	p := toolPolicy{mode: mode, deny: map[string]bool{"plan_question": true, "plan_exit": true}}
+func newToolPolicy(a agents.Agent, mode planstate.Mode, background bool) toolPolicy {
+	p := toolPolicy{mode: mode, background: background, deny: map[string]bool{"plan_question": true, "plan_exit": true}}
 	if len(a.Tools) > 0 {
 		p.allow = map[string]bool{}
 		for _, external := range a.Tools {
@@ -402,6 +623,9 @@ func newToolPolicy(a agents.Agent, mode planstate.Mode) toolPolicy {
 }
 
 func (p toolPolicy) visible(name string, def tools.Definition) bool {
+	if p.background && !backgroundBuiltinAllowed(name) {
+		return false
+	}
 	if p.deny[name] {
 		return false
 	}
@@ -410,6 +634,19 @@ func (p toolPolicy) visible(name string, def tools.Definition) bool {
 	}
 	return planstate.ToolVisible(p.mode, name, def.Mutating)
 }
+
+func backgroundBuiltinAllowed(name string) bool {
+	switch name {
+	case "Agent", "read_files", "list_directory", "glob", "code_search", "run_terminal_command",
+		"str_replace", "apply_diff", "create_file", "read_url", "web_search", "todo_write",
+		"list_skills", "skill_read", "skill_search", "skill_files", "tool_search",
+		"memory_read", "memory_write":
+		return true
+	default:
+		return false
+	}
+}
+
 func (p toolPolicy) validate(name string, def tools.Definition, args map[string]any) error {
 	if !p.visible(name, def) {
 		return fmt.Errorf("tool %s is not allowed for this subagent", name)
@@ -420,6 +657,49 @@ func (p toolPolicy) allowsName(name string) bool {
 	def, ok := tools.Get(name)
 	return ok && p.visible(name, def)
 }
+func (p toolPolicy) allowsDynamic(name string, readOnly bool) bool {
+	if p.deny[name] {
+		return false
+	}
+	if p.allow != nil && !p.allow[name] {
+		return false
+	}
+	if p.mode == planstate.Plan && !readOnly {
+		return false
+	}
+	return true
+}
+func filterMCPSchemas(schemas []any, runtime *mcp.Runtime, policy toolPolicy) []any {
+	out := make([]any, 0, len(schemas))
+	for _, schema := range schemas {
+		m, ok := schema.(map[string]any)
+		if !ok {
+			continue
+		}
+		fn, ok := m["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := fn["name"].(string)
+		if name == "" || runtime == nil || !runtime.Has(name) {
+			continue
+		}
+		if policy.allowsDynamic(name, runtime.IsReadOnly(name)) {
+			out = append(out, schema)
+		}
+	}
+	return out
+}
+
+func toolCommand(args map[string]any) string {
+	for _, key := range []string{"command", "cmd", "script"} {
+		if value, ok := args[key].(string); ok {
+			return value
+		}
+	}
+	return ""
+}
+
 func (p toolPolicy) initialTools(prompt string, env tools.Env) []string {
 	if p.allow != nil {
 		var names []string
@@ -450,6 +730,9 @@ func (p toolPolicy) initialTools(prompt string, env tools.Env) []string {
 
 func mapExternalTool(raw string) []string {
 	v := strings.TrimSpace(raw)
+	if strings.HasPrefix(strings.ToLower(v), "mcp__") {
+		return []string{v}
+	}
 	if i := strings.IndexByte(v, '('); i > 0 {
 		v = v[:i]
 	}
@@ -520,6 +803,10 @@ func mapPermissionKey(key string) []string {
 	}
 }
 
+func backgroundTasksEnabled() bool {
+	return strings.TrimSpace(os.Getenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS")) != "1"
+}
+
 func configuredMaxDepth() int {
 	for _, key := range []string{"LILITH_MAX_SUBAGENT_DEPTH", "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"} {
 		raw := strings.TrimSpace(os.Getenv(key))
@@ -534,7 +821,13 @@ func configuredMaxDepth() int {
 }
 
 func resolveModel(cfg providers.Config, parentProvider, parentModel, agentModel, invocationModel string) (providers.Provider, string, error) {
-	want := strings.TrimSpace(invocationModel)
+	want := strings.TrimSpace(os.Getenv("CLAUDE_CODE_SUBAGENT_MODEL"))
+	if strings.EqualFold(want, "inherit") {
+		want = ""
+	}
+	if want == "" {
+		want = strings.TrimSpace(invocationModel)
+	}
 	if want == "" {
 		want = strings.TrimSpace(agentModel)
 	}
@@ -566,7 +859,7 @@ func resolveModel(cfg providers.Config, parentProvider, parentModel, agentModel,
 	// Portable Claude agents often pin sonnet/opus/haiku. On a Lilith setup
 	// backed only by DeepSeek/Qwen/etc. there is no equivalent alias; inheriting
 	// the parent is more useful than making an otherwise portable agent fail.
-	if needle == "sonnet" || needle == "opus" || needle == "haiku" {
+	if needle == "sonnet" || needle == "opus" || needle == "haiku" || needle == "fable" {
 		if p := cfg.FindProvider(parentProvider); p != nil {
 			return *p, parentModel, nil
 		}
@@ -579,7 +872,7 @@ func findModel(p providers.Provider, want string) string {
 			return m.ID
 		}
 	}
-	if want == "sonnet" || want == "opus" || want == "haiku" {
+	if want == "sonnet" || want == "opus" || want == "haiku" || want == "fable" {
 		for _, m := range p.Models {
 			if strings.Contains(strings.ToLower(m.ID+" "+m.Name), want) {
 				return m.ID
@@ -615,4 +908,29 @@ func uniqueSorted(in []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func claudeToolName(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "run_terminal_command":
+		return "Bash"
+	case "read_files":
+		return "Read"
+	case "glob", "list_directory":
+		return "Glob"
+	case "code_search":
+		return "Grep"
+	case "create_file":
+		return "Write"
+	case "str_replace", "apply_diff":
+		return "Edit"
+	case "read_url":
+		return "WebFetch"
+	case "web_search":
+		return "WebSearch"
+	case "agent", "task":
+		return "Agent"
+	default:
+		return name
+	}
 }

@@ -112,3 +112,30 @@ func mustWriteSkillFile(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestApplyClaudeOverridesRespectsTrustAndVisibility(t *testing.T) {
+	home := t.TempDir()
+	cfg := filepath.Join(home, ".li")
+	root := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(`{"skillOverrides":{"review":"name-only"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".claude", "settings.json"), []byte(`{"skillOverrides":{"review":"off"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := []Skill{{Name: "review", Description: "Review code"}}
+	got := ApplyClaudeOverrides(cfg, root, false, base)
+	if len(got) != 1 || got[0].Visibility != "name-only" {
+		t.Fatalf("unexpected untrusted override: %#v", got)
+	}
+	got = ApplyClaudeOverrides(cfg, root, true, base)
+	if len(got) != 0 {
+		t.Fatalf("trusted project off should hide skill: %#v", got)
+	}
+}

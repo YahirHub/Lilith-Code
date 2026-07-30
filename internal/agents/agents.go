@@ -29,8 +29,15 @@ type Agent struct {
 	Mode            string // subagent | all | primary (OpenCode compatibility)
 	Hidden          bool
 	Background      bool
+	BackgroundSet   bool
 	Isolation       string
 	Color           string
+	Memory          string
+	Effort          string
+	InitialPrompt   string
+	MCPServers      []string
+	MCPRaw          string
+	HooksRaw        string
 	Permissions     map[string]string // OpenCode permission shorthand
 	ToolFlags       map[string]bool   // OpenCode legacy tools: {name: true|false}
 	Source          string
@@ -194,8 +201,15 @@ func loadFile(path, source string) (Agent, bool) {
 		Mode:            mode,
 		Hidden:          parseBool(fm.scalars["hidden"]),
 		Background:      parseBool(fm.scalars["background"]),
+		BackgroundSet:   strings.TrimSpace(fm.scalars["background"]) != "",
 		Isolation:       cleanScalar(fm.scalars["isolation"]),
 		Color:           cleanScalar(fm.scalars["color"]),
+		Memory:          strings.ToLower(cleanScalar(fm.scalars["memory"])),
+		Effort:          strings.ToLower(cleanScalar(fm.scalars["effort"])),
+		InitialPrompt:   cleanScalar(firstNonEmpty(fm.scalars["initialprompt"], fm.scalars["initial_prompt"])),
+		MCPServers:      appendUnique(nil, append(listValue(fm, "mcpservers"), listValue(fm, "mcp_servers")...)...),
+		MCPRaw:          strings.TrimSpace(firstNonEmpty(fm.blocks["mcpservers"], fm.blocks["mcp_servers"])),
+		HooksRaw:        strings.TrimSpace(fm.blocks["hooks"]),
 		Permissions:     fm.permission,
 		ToolFlags:       fm.toolFlags,
 		Source:          source,
@@ -209,10 +223,11 @@ type frontmatter struct {
 	lists      map[string][]string
 	permission map[string]string
 	toolFlags  map[string]bool
+	blocks     map[string]string
 }
 
 func parseDocument(content string) (frontmatter, string) {
-	fm := frontmatter{scalars: map[string]string{}, lists: map[string][]string{}, permission: map[string]string{}, toolFlags: map[string]bool{}}
+	fm := frontmatter{scalars: map[string]string{}, lists: map[string][]string{}, permission: map[string]string{}, toolFlags: map[string]bool{}, blocks: map[string]string{}}
 	text := strings.ReplaceAll(content, "\r\n", "\n")
 	lines := strings.Split(text, "\n")
 	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
@@ -243,6 +258,27 @@ func parseFrontmatterLines(lines []string, fm *frontmatter) {
 			continue
 		}
 		indent := len(raw) - len(strings.TrimLeft(raw, " \t"))
+		if indent == 0 {
+			if key, val, ok := splitKV(trim); ok && strings.TrimSpace(val) == "" {
+				normal := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(key), "-", "_"))
+				if normal == "hooks" || normal == "mcpservers" || normal == "mcp_servers" {
+					var block []string
+					for i+1 < len(lines) {
+						next := lines[i+1]
+						if strings.TrimSpace(next) != "" && len(next)-len(strings.TrimLeft(next, " \t")) == 0 {
+							break
+						}
+						i++
+						block = append(block, next)
+					}
+					fm.blocks[normal] = strings.Join(block, "\n")
+					currentList = ""
+					inPermission = false
+					inToolsMap = false
+					continue
+				}
+			}
+		}
 		if strings.HasPrefix(trim, "-") && currentList != "" {
 			item := cleanScalar(strings.TrimSpace(strings.TrimPrefix(trim, "-")))
 			if item != "" {
@@ -338,7 +374,7 @@ func splitKV(line string) (string, string, bool) {
 
 func isListKey(key string) bool {
 	switch key {
-	case "tools", "disallowedtools", "disallowed_tools", "skills":
+	case "tools", "disallowedtools", "disallowed_tools", "skills", "mcpservers", "mcp_servers":
 		return true
 	default:
 		return false

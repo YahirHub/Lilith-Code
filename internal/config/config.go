@@ -25,6 +25,30 @@ type Settings struct {
 	// Lilith/Claude/Agent, tanto globales como del proyecto. Off por defecto:
 	// sólo se cargan cuando el usuario lo activa desde /config.
 	SkillsEnabled bool `json:"skillsEnabled,omitempty"`
+	// ProjectInstructionsEnabled carga LILITH.md/LI.md. Es true por defecto para
+	// que un proyecto Lilith pueda llevar instrucciones sin configuración previa.
+	ProjectInstructionsEnabled bool `json:"projectInstructionsEnabled"`
+	// ClaudeCompatibilityEnabled habilita CLAUDE.md, CLAUDE.local.md,
+	// .claude/rules, commands y settings compatibles. Es true por defecto.
+	ClaudeCompatibilityEnabled bool `json:"claudeCompatibilityEnabled"`
+	// AutoMemoryEnabled carga la memoria persistente curada por Lilith y permite
+	// que agentes con memory: user|project|local la actualicen.
+	AutoMemoryEnabled bool `json:"autoMemoryEnabled"`
+	// HooksEnabled permite ejecutar hooks declarados por el usuario/proyecto.
+	// Se puede apagar de emergencia desde /config sin editar settings.json.
+	HooksEnabled bool `json:"hooksEnabled"`
+	// TrustedProjects authoriza settings/hooks ejecutables del proyecto. Los
+	// hooks globales del usuario no requieren esta aprobación explícita.
+	TrustedProjects []string `json:"trustedProjects,omitempty"`
+}
+
+func Defaults() Settings {
+	return Settings{
+		ProjectInstructionsEnabled: true,
+		ClaudeCompatibilityEnabled: true,
+		AutoMemoryEnabled:          true,
+		HooksEnabled:               true,
+	}
 }
 
 // Dir returns the config directory path (~/.li), creating it if missing.
@@ -49,7 +73,7 @@ func SettingsPath(dir string) string {
 
 // Load reads settings.json. Missing file returns zero-value Settings without error.
 func Load(dir string) (Settings, error) {
-	var s Settings
+	s := Defaults()
 	data, err := os.ReadFile(SettingsPath(dir))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -59,7 +83,7 @@ func Load(dir string) (Settings, error) {
 	}
 	if err := json.Unmarshal(data, &s); err != nil {
 		// Corrupted file: return defaults so onboarding can rewrite it.
-		return Settings{}, nil
+		return Defaults(), nil
 	}
 	return s, nil
 }
@@ -100,4 +124,38 @@ func Complete(dir string) error {
 	s, _ := Load(dir)
 	s.OnboardingVersion = CurrentOnboardingVersion
 	return Save(dir, s)
+}
+
+// IsProjectTrusted reports whether executable project-level compatibility
+// settings may run for this exact project root.
+func IsProjectTrusted(s Settings, project string) bool {
+	clean := filepath.Clean(project)
+	for _, p := range s.TrustedProjects {
+		if filepath.Clean(p) == clean {
+			return true
+		}
+	}
+	return false
+}
+
+func SetProjectTrusted(s *Settings, project string, trusted bool) {
+	if s == nil {
+		return
+	}
+	clean := filepath.Clean(project)
+	out := make([]string, 0, len(s.TrustedProjects)+1)
+	found := false
+	for _, p := range s.TrustedProjects {
+		if filepath.Clean(p) == clean {
+			found = true
+			if !trusted {
+				continue
+			}
+		}
+		out = append(out, p)
+	}
+	if trusted && !found {
+		out = append(out, clean)
+	}
+	s.TrustedProjects = out
 }

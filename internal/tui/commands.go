@@ -28,6 +28,20 @@ func Commands() []SlashCommand {
 			},
 		},
 		{
+			Name:        "init",
+			Description: "Analiza el proyecto y crea o mejora LILITH.md con instrucciones persistentes.",
+			Run: func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd {
+				return chat.runInit()
+			},
+		},
+		{
+			Name: "goal", Usage: "[--tokens N] <objetivo>|status|pause|resume|complete|clear",
+			Description: "Define o administra un objetivo persistente para trabajo autónomo de larga duración.",
+			Run: func(ctx *AppContext, chat *ChatModel, args string) tea.Cmd {
+				return chat.runGoalCommand(args)
+			},
+		},
+		{
 			Name: "plan", Usage: "[show|status|exit|<instrucción>]",
 			Description: "Activa Plan para explorar sin mutar; show muestra el plan listo y exit vuelve a Build.",
 			Run: func(ctx *AppContext, chat *ChatModel, args string) tea.Cmd {
@@ -63,6 +77,21 @@ func Commands() []SlashCommand {
 				chat.setAgentMode(planstate.Build)
 				return chat.chatMouseModeCmd()
 			},
+		},
+		{
+			Name: "memory", Usage: "[on|off|status]",
+			Description: "Muestra instrucciones/memoria Claude-compatible y permite activar o desactivar auto memory.",
+			Run:         func(ctx *AppContext, chat *ChatModel, args string) tea.Cmd { return chat.runMemoryCommand(args) },
+		},
+		{
+			Name: "mcp", Usage: "[reload]",
+			Description: "Muestra servidores/herramientas MCP conectados o fuerza una reconexión.",
+			Run:         func(ctx *AppContext, chat *ChatModel, args string) tea.Cmd { return chat.runMCPCommand(args) },
+		},
+		{
+			Name:        "tasks",
+			Description: "Lista subagentes foreground/background de la sesión, estado, task_id y relación padre-hijo.",
+			Run:         func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd { return chat.runTasksCommand() },
 		},
 		{
 			Name: "agents", Aliases: []string{"subagents"},
@@ -139,8 +168,11 @@ func Commands() []SlashCommand {
 			Name:        "exit",
 			Description: "Cierra Lilith. Es la única salida explícita del proceso.",
 			Run: func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd {
-				if chat != nil && chat.activeTurnID != 0 {
-					chat.cancelTurn()
+				if chat != nil {
+					if chat.activeTurnID != 0 {
+						chat.cancelTurn()
+					}
+					chat.runSessionHook("SessionEnd")
 				}
 				return tea.Quit
 			},

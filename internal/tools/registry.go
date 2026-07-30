@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/lilith/li/internal/agents"
+	ligoal "github.com/lilith/li/internal/goal"
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/skills"
 	litodo "github.com/lilith/li/internal/todo"
@@ -40,6 +41,11 @@ type Env struct {
 	Todos *litodo.Manager
 	// Plan is the session-local Build/Plan state used by plan-specific tools.
 	Plan *planstate.Manager
+	// Goal is the durable Codex-style objective bound to this chat thread.
+	Goal *ligoal.Manager
+	// MemoryDir is set only when persistent memory is enabled for the current
+	// main/subagent context. Dedicated memory tools are hidden otherwise.
+	MemoryDir string
 	// AgentMode is the mode snapshotted for THIS turn. It intentionally differs
 	// from Plan.Mode() when the user presses Tab while a turn is running.
 	AgentMode planstate.Mode
@@ -47,9 +53,16 @@ type Env struct {
 	// selection, tool_search materialization and direct execution. Plan mode uses
 	// it as a hard read-only ceiling rather than relying on prompt obedience.
 	ToolVisible func(name string, def Definition) bool
+	// BeforeTool/AfterTool host Claude-compatible lifecycle hooks without
+	// coupling the registry to settings or the TUI. BeforeTool may replace args.
+	BeforeTool func(ctx context.Context, name string, args map[string]any) (map[string]any, error)
+	AfterTool  func(ctx context.Context, name string, args map[string]any, output string, runErr error) (string, error)
 	// ValidateTool performs argument-aware runtime policy checks immediately
 	// before execution (for example the Plan-mode shell allowlist).
 	ValidateTool func(name string, def Definition, args map[string]any) error
+	// DynamicTool executes schemas supplied outside the static registry (MCP).
+	// It is consulted only for unknown names, keeping built-in policy explicit.
+	DynamicTool func(ctx context.Context, name string, args map[string]any) (string, error)
 }
 
 // Definition describes one callable tool.
@@ -180,17 +193,54 @@ func Execute(ctx context.Context, name string, args map[string]any, env Env) (st
 	}
 	d, ok := registry[name]
 	if !ok {
+		if env.DynamicTool != nil && strings.HasPrefix(name, "mcp__") {
+			if env.BeforeTool != nil {
+				updated, err := env.BeforeTool(ctx, name, args)
+				if err != nil {
+					return "", err
+				}
+				if updated != nil {
+					args = updated
+				}
+			}
+			out, runErr := env.DynamicTool(ctx, name, args)
+			if env.AfterTool != nil {
+				updated, hookErr := env.AfterTool(ctx, name, args, out, runErr)
+				if hookErr != nil {
+					return updated, hookErr
+				}
+				out = updated
+			}
+			return out, runErr
+		}
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
 	if !availableInEnv(name, d, env) {
 		return "", fmt.Errorf("tool unavailable: %s", name)
+	}
+	if env.BeforeTool != nil {
+		updated, err := env.BeforeTool(ctx, name, args)
+		if err != nil {
+			return "", err
+		}
+		if updated != nil {
+			args = updated
+		}
 	}
 	if env.ValidateTool != nil {
 		if err := env.ValidateTool(name, d, args); err != nil {
 			return "", err
 		}
 	}
-	return d.Run(ctx, args, env)
+	out, runErr := d.Run(ctx, args, env)
+	if env.AfterTool != nil {
+		updated, hookErr := env.AfterTool(ctx, name, args, out, runErr)
+		if hookErr != nil {
+			return updated, hookErr
+		}
+		out = updated
+	}
+	return out, runErr
 }
 
 // -----------------------------------------------------------------------------

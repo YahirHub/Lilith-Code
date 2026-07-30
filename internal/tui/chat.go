@@ -19,6 +19,9 @@ import (
 
 	"github.com/lilith/li/internal/agents"
 	"github.com/lilith/li/internal/config"
+	ligoal "github.com/lilith/li/internal/goal"
+	"github.com/lilith/li/internal/hooks"
+	"github.com/lilith/li/internal/mcp"
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/providers/openai"
 	"github.com/lilith/li/internal/session"
@@ -92,6 +95,17 @@ type ChatModel struct {
 	streamBuf     strings.Builder
 	cancel        context.CancelFunc
 	requestCancel context.CancelFunc
+	// sessionCtx outlives individual turns so background subagents can keep
+	// running while the parent is idle. It is canceled only when Lilith exits.
+	sessionCtx    context.Context
+	sessionCancel context.CancelFunc
+	agentEventCh  chan subagents.Event
+	mcpRuntime    *mcp.Runtime
+	mcpSignature  string
+	mcpLoading    bool
+	// Completed detached workers are delivered to the model at the next safe
+	// request boundary, matching Claude's later-turn completion notification.
+	pendingBackgroundAgentMessages []openai.Message
 
 	// Cada request HTTP/SSE dentro de un mismo turno recibe un ID propio. Esto
 	// es distinto de activeTurnID: un turno puede hacer varias peticiones al
@@ -104,14 +118,17 @@ type ChatModel struct {
 	// turnCtx abarca TODO el turno del usuario: streaming del proveedor y
 	// herramientas. Escape cancela este contexto una sola vez y los resultados
 	// tardíos quedan invalidados por activeTurnID.
-	turnCtx         context.Context
-	turnSeq         uint64
-	activeTurnID    uint64
-	turnProvider    string
-	turnModel       string
-	turnAgentMode   planstate.Mode
-	turnPlanHandoff string
-	runningCalls    []openai.ToolCall
+	turnCtx             context.Context
+	turnSeq             uint64
+	activeTurnID        uint64
+	turnProvider        string
+	turnModel           string
+	turnAgentMode       planstate.Mode
+	turnPlanHandoff     string
+	turnReasoningEffort string
+	turnDeniedTools     map[string]bool
+	turnSkillHooks      *hooks.Runner
+	runningCalls        []openai.ToolCall
 
 	// history is the real conversation sent to the model (incluye mensajes
 	// de herramienta), separada del transcript que se dibuja en pantalla.
@@ -150,6 +167,12 @@ type ChatModel struct {
 	// plan/questions for this session. The selected mode applies to the NEXT
 	// turn; turnAgentMode snapshots it when a request starts, like OpenCode.
 	plans *planstate.Manager
+
+	// goals owns the Codex-style durable objective for this session. The goal is
+	// persisted independently from chat text and can keep the agent running across
+	// multiple autonomous continuation turns until complete, blocked or limited.
+	goals             *ligoal.Manager
+	goalRequestTokens int64
 
 	// planQuestion is only presentation state. The authoritative questions and
 	// partial answers live in plan.Manager so closing the dock or resuming a
@@ -466,7 +489,31 @@ func (m *ChatModel) applyAgentEvent(event subagents.Event) {
 		m.messages = append(m.messages, ChatMessage{Kind: MsgAgent, Agent: panel, Time: event.At})
 	}
 	panel.Apply(event)
+	if event.Background && (event.Kind == subagents.EventCompleted || event.Kind == subagents.EventFailed || event.Kind == subagents.EventCanceled) {
+		status := "completed"
+		if event.Kind == subagents.EventFailed {
+			status = "failed"
+		} else if event.Kind == subagents.EventCanceled {
+			status = "canceled"
+		}
+		content := strings.TrimSpace(event.Content)
+		if content == "" {
+			content = "No textual result."
+		}
+		note := fmt.Sprintf("<background_agent_completion task_id=\"%s\" agent=\"%s\" status=\"%s\">\n%s\n</background_agent_completion>", event.TaskID, event.AgentName, status, content)
+		m.pendingBackgroundAgentMessages = append(m.pendingBackgroundAgentMessages, openai.Message{Role: "user", Content: note})
+	}
 	m.invalidateTranscriptCache()
+}
+
+func (m *ChatModel) deliverBackgroundAgentMessages() {
+	if len(m.pendingBackgroundAgentMessages) == 0 {
+		return
+	}
+	for _, msg := range m.pendingBackgroundAgentMessages {
+		m.appendHistory(msg)
+	}
+	m.pendingBackgroundAgentMessages = nil
 }
 
 // hasRunningCommand devuelve true si algún CommandPanel sigue vivo.
@@ -519,6 +566,7 @@ func NewChat(ctx *AppContext) ChatModel {
 	vp.SetContent("")
 
 	project, _ := os.Getwd()
+	sessionCtx, sessionCancel := context.WithCancel(context.Background())
 	m := ChatModel{
 		ctx:               ctx,
 		viewport:          vp,
@@ -529,12 +577,17 @@ func NewChat(ctx *AppContext) ChatModel {
 		sess:              session.New(project),
 		todos:             litodo.NewManager(nil),
 		plans:             planstate.NewManager(nil),
+		goals:             ligoal.NewManager(nil),
 		planQuestion:      newPlanQuestionDock(ctx),
+		sessionCtx:        sessionCtx,
+		sessionCancel:     sessionCancel,
+		agentEventCh:      make(chan subagents.Event, 512),
 		assistantActive:   -1,
 		contextCacheDirty: true,
 	}
 	m.agentCatalog = agents.Load(agents.DefaultLoadOptions(ctx.ConfigDir, project))
 	m.syncAgentModePresentation()
+	m.runSessionHook("SessionStart")
 	return m
 }
 
@@ -563,6 +616,9 @@ func (m *ChatModel) beginTurnMode(mode planstate.Mode) error {
 	m.turnProvider = active.ProviderID
 	m.turnModel = active.ModelID
 	m.turnAgentMode = mode
+	m.turnReasoningEffort = ""
+	m.turnDeniedTools = nil
+	m.turnSkillHooks = nil
 	if m.plans != nil {
 		m.plans.BeginUserTurn(m.turnAgentMode)
 		m.turnPlanHandoff = ""
@@ -597,6 +653,9 @@ func (m *ChatModel) endTurn() {
 	m.turnModel = ""
 	m.turnAgentMode = ""
 	m.turnPlanHandoff = ""
+	m.turnReasoningEffort = ""
+	m.turnDeniedTools = nil
+	m.turnSkillHooks = nil
 	m.runningCalls = nil
 }
 
@@ -668,7 +727,12 @@ func (m *ChatModel) cancelTurn() string {
 	}
 	m.finishThinkingPanel()
 
+	goalWasActive := m.goals != nil && m.goals.Active()
+	m.pauseGoalOnInterrupt()
 	notice := "Tarea cancelada."
+	if goalWasActive {
+		notice += " Goal pausado; usa /goal resume para continuarlo."
+	}
 	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: notice, Time: time.Now()})
 
 	// Cancellation writes only the mutable checkpoint synchronously. The completed
@@ -714,6 +778,7 @@ func (m *ChatModel) persist() {
 	m.sess.Transcript = m.snapshotTranscriptRange(0, len(m.messages))
 	m.sess.Todo = m.todoStatePointer()
 	m.sess.Plan = m.planStatePointer()
+	m.sess.Goal = m.goalStatePointer()
 	m.sess.Revision = m.persistRevision
 	if err := m.store.Save(m.sess); err != nil {
 		return
@@ -837,7 +902,7 @@ func (m *ChatModel) snapshotTranscriptRange(start, end int) []session.Transcript
 		if ap := msg.Agent; ap != nil {
 			progress := &session.AgentProgress{
 				TaskID: ap.TaskID, ParentTaskID: ap.ParentTaskID, Name: ap.Name, Description: ap.Description,
-				Model: ap.Model, Depth: ap.Depth, Resumed: ap.Resumed, Status: ap.Status,
+				Model: ap.Model, Depth: ap.Depth, Resumed: ap.Resumed, Background: ap.Background, Status: ap.Status,
 				StartedAt: ap.StartedAt, FinishedAt: ap.FinishedAt, Reasoning: ap.Reasoning, Output: ap.Output, Expanded: ap.Expanded,
 			}
 			for _, a := range ap.Activities {
@@ -903,6 +968,7 @@ func (m *ChatModel) startLivePersist() tea.Cmd {
 		History: cloneHistoryMessages(m.history[historyStart:]),
 		Todo:    m.todoStatePointer(),
 		Plan:    m.planStatePointer(),
+		Goal:    m.goalStatePointer(),
 	}
 	store := m.store
 	project := m.project
@@ -942,6 +1008,7 @@ func (m *ChatModel) forceLivePersist() {
 		History: cloneHistoryMessages(m.history[historyStart:]),
 		Todo:    m.todoStatePointer(),
 		Plan:    m.planStatePointer(),
+		Goal:    m.goalStatePointer(),
 	}
 	_ = m.store.SaveLive(m.project, m.sess.ID, checkpoint)
 	m.lastLivePersist = time.Now()
@@ -1022,7 +1089,7 @@ func (m *ChatModel) restoreTranscriptEntries(entries []session.TranscriptEntry, 
 			ap := e.Agent
 			p := &AgentPanel{
 				TaskID: ap.TaskID, ParentTaskID: ap.ParentTaskID, Name: ap.Name, Description: ap.Description, Model: ap.Model,
-				Depth: ap.Depth, Resumed: ap.Resumed, Status: ap.Status, StartedAt: ap.StartedAt, FinishedAt: ap.FinishedAt,
+				Depth: ap.Depth, Resumed: ap.Resumed, Background: ap.Background, Status: ap.Status, StartedAt: ap.StartedAt, FinishedAt: ap.FinishedAt,
 				Reasoning: ap.Reasoning, Output: ap.Output, Expanded: ap.Expanded,
 			}
 			for _, a := range ap.Activities {
@@ -1113,6 +1180,12 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 	} else if err := m.plans.Restore(s.Plan); err != nil {
 		m.plans.Reset()
 	}
+	if m.goals == nil {
+		m.goals = ligoal.NewManager(s.Goal)
+	} else {
+		m.goals = ligoal.NewManager(s.Goal)
+	}
+	m.goalRequestTokens = 0
 	m.syncAgentModePresentation()
 	m.invalidateContextUsage()
 	m.livePanels = map[int]*FilePanel{}
@@ -1135,6 +1208,9 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 			if s.Live.Plan != nil {
 				_ = m.plans.Restore(s.Live.Plan)
 				m.syncAgentModePresentation()
+			}
+			if s.Live.Goal != nil {
+				m.goals = ligoal.NewManager(s.Live.Goal)
 			}
 			m.restoreTranscriptEntries(s.Live.Entries, true)
 			appendedLiveHistory := false
@@ -1341,6 +1417,12 @@ func (m *ChatModel) Clear() {
 	} else {
 		m.plans.Reset()
 	}
+	if m.goals == nil {
+		m.goals = ligoal.NewManager(nil)
+	} else {
+		m.goals.Clear()
+	}
+	m.goalRequestTokens = 0
 	m.planQuestion.resetPresentation()
 	m.syncAgentModePresentation()
 	m.liveBaseMessageCount = 0
@@ -1725,7 +1807,9 @@ func indent(s, prefix string) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m *ChatModel) Init() tea.Cmd { return textarea.Blink }
+func (m *ChatModel) Init() tea.Cmd {
+	return tea.Batch(textarea.Blink, agentEventPump(m.agentEventCh), m.connectMCP(), m.resumeActiveGoalCmd())
+}
 
 // visualInputLineCount estima las filas visibles que ocupará el valor dentro
 // del textarea. Bubbles no expone el conteo de líneas soft-wrapped: LineCount
@@ -2080,7 +2164,14 @@ func (m *ChatModel) buildPalette(query string) []SlashCommand {
 	}
 	q := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(query, "/")))
 	q = strings.TrimPrefix(q, "skills:")
+	seen := map[string]bool{}
+	for _, row := range rows {
+		seen[strings.ToLower(row.Name)] = true
+	}
 	for _, s := range m.loadSkills() {
+		if !s.UserInvocable || seen[strings.ToLower(s.Name)] {
+			continue
+		}
 		if q != "" {
 			if _, ok := subsequenceMatch(s.Name, q); !ok {
 				if _, ok2 := subsequenceMatch("skills:"+s.Name, q); !ok2 {
@@ -2088,11 +2179,16 @@ func (m *ChatModel) buildPalette(query string) []SlashCommand {
 				}
 			}
 		}
-		name := "skills:" + s.Name
-		desc := "skill · " + s.Description
+		name := s.Name
+		kind := "skill"
+		if s.LegacyCommand {
+			kind = "comando Claude"
+		}
+		desc := kind + " · " + s.Description
 		skillName := s.Name
 		rows = append(rows, SlashCommand{
 			Name:        name,
+			Usage:       s.ArgumentHint,
 			Description: desc,
 			Run: func(ctx *AppContext, chat *ChatModel, args string) tea.Cmd {
 				return chat.invokeSkill(skillName, args)
@@ -2186,6 +2282,19 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTranscript(true)
 		return m, cmdElapsedTick()
 
+	case mcpReadyMsg:
+		m.mcpLoading = false
+		if m.mcpRuntime != nil && m.mcpRuntime != v.runtime {
+			_ = m.mcpRuntime.Close()
+		}
+		m.mcpRuntime = v.runtime
+		m.mcpSignature = v.signature
+		if text := formatMCPErrors(v.errors); text != "" {
+			m.AddSystem("MCP: algunos servidores no pudieron conectarse: " + text)
+		}
+		m.invalidateContextUsage()
+		return m, nil
+
 	case agentEventBatchMsg:
 		for _, event := range v.events {
 			m.applyAgentEvent(event)
@@ -2237,6 +2346,10 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if v.err != nil {
+			usageLimited := m.markGoalUsageLimited(v.err)
+			if !usageLimited {
+				m.accountGoalRequest()
+			}
 			m.checkpointPartialAssistantHistory()
 			m.finishThinkingPanel()
 			for _, p := range m.livePanels {
@@ -2254,7 +2367,11 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.working = false
 			m.assistantActive = -1
 			m.endTurn()
-			m.AddError("Error del proveedor: " + v.err.Error())
+			if usageLimited {
+				m.AddError("Error del proveedor: " + v.err.Error() + "\nGoal pausado por límite de uso del proveedor.")
+			} else {
+				m.AddError("Error del proveedor: " + v.err.Error())
+			}
 			m.persist()
 			return m, nil
 		}
@@ -2351,6 +2468,10 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.finishThinkingPanel()
 			text := m.streamBuf.String()
 			reasoning := m.reasoningBuf.String()
+			if m.goals != nil && m.goals.Active() {
+				m.goalRequestTokens += int64(EstimateTokens([]openai.Message{{Role: "assistant", Content: text, ReasoningContent: reasoning}}))
+			}
+			m.accountGoalRequest()
 			last := m.assistantActive
 			if last >= 0 && last < len(m.messages) {
 				m.messages[last].Content = text
@@ -2423,6 +2544,9 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.thinking = true
 				m.working = false
 				m.assistantActive = -1
+				return m, m.runTurn()
+			}
+			if m.continueGoalAtBoundary() {
 				return m, m.runTurn()
 			}
 
@@ -2556,6 +2680,20 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.refreshTranscript(true)
 			}
 			return m, tea.Batch(todoMouseCmd, m.chatMouseModeCmd())
+		}
+
+		if m.goalStopsCurrentLoop() {
+			m.toolFallback = ""
+			m.streaming = false
+			m.thinking = false
+			m.working = false
+			m.assistantActive = -1
+			m.endTurn()
+			if state := m.goalStatePointer(); state != nil {
+				m.AddSystem("Goal detenido: " + goalStatusLabel(state.Status) + ".")
+			}
+			m.persist()
+			return m, tea.Batch(todoMouseCmd, m.chatMouseModeCmd(), m.drainFollowUp())
 		}
 
 		// Tool outputs are a stable API boundary. This is also the preferred
@@ -2963,7 +3101,23 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 		if m.activeTurnID != 0 {
 			m.cancelTurn()
 		}
+		m.runSessionHook("SessionEnd")
+		if m.sessionCancel != nil {
+			m.sessionCancel()
+		}
+		if m.mcpRuntime != nil {
+			_ = m.mcpRuntime.Close()
+		}
 		return m, tea.Quit
+	}
+
+	// Codex exposes /goal while a task is running. Treat it as durable state,
+	// never as queued chat text, so updating the objective cannot be delayed
+	// behind an unrelated tool batch.
+	trimmedVal := strings.TrimSpace(val)
+	if strings.EqualFold(trimmedVal, "/goal") || strings.HasPrefix(strings.ToLower(trimmedVal), "/goal ") {
+		args := strings.TrimSpace(trimmedVal[len("/goal"):])
+		return m, m.runGoalCommand(args)
 	}
 
 	// Enter durante una tarea es steering: no abre un turno paralelo. Se
@@ -2993,6 +3147,11 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 		}
 		if cmd := FindCommand(name); cmd != nil {
 			return m, cmd.Run(m.ctx, m, args)
+		}
+		if m.skillsEnabled() {
+			if sk := skills.Find(m.loadSkills(), strings.TrimPrefix(name, "/")); sk != nil && sk.UserInvocable {
+				return m, m.invokeSkill(sk.Name, args)
+			}
 		}
 		m.AddError("Comando no reconocido: " + name)
 		return m, nil
@@ -3024,8 +3183,13 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	modelPrompt, hookErr := m.runUserPromptHooks(val)
+	if hookErr != nil {
+		m.AddError(hookErr.Error())
+		return m, nil
+	}
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: val, Time: time.Now()})
-	m.appendHistory(openai.Message{Role: "user", Content: val})
+	m.appendHistory(openai.Message{Role: "user", Content: modelPrompt})
 	// OpenCode treats Build/Plan as primary agents. Capture the currently
 	// selected agent for lazy tool selection; beginTurn snapshots the same mode
 	// so a Tab press during execution only affects the NEXT user turn.
@@ -3085,20 +3249,28 @@ func (m *ChatModel) runTurn() tea.Cmd {
 	// is open if their configuration changes in /config. Filter them before
 	// both the prompt and wire schemas so hidden tools never leak to the model.
 	m.activeTools = tools.FilterAvailable(m.activeTools, m.toolEnv("", m.turnAgentMode))
+	m.deliverBackgroundAgentMessages()
 
 	msgs := m.prepareRequestMessages(m.turnAgentMode)
+	if m.goals != nil && m.goals.Active() {
+		m.goalRequestTokens = int64(EstimateTokens(msgs))
+	} else {
+		m.goalRequestTokens = 0
+	}
 
 	var schemas []any
 	for _, s := range tools.Schemas(m.activeTools) {
 		schemas = append(schemas, s)
 	}
+	schemas = append(schemas, m.mcpSchemas(m.turnAgentMode)...)
 
 	req := openai.Request{
-		Provider: *provider,
-		Model:    m.turnModel,
-		Messages: msgs,
-		Stream:   true,
-		Tools:    schemas,
+		Provider:        *provider,
+		Model:           m.turnModel,
+		Messages:        msgs,
+		Stream:          true,
+		Tools:           schemas,
+		ReasoningEffort: m.turnReasoningEffort,
 	}
 	if m.requestCancel != nil {
 		m.requestCancel()
@@ -3179,33 +3351,11 @@ func (m *ChatModel) runTools(calls []openai.ToolCall, assistantText string) tea.
 	if m.skillsEnabled() {
 		skillCatalog = m.loadSkills()
 	}
-	var agentEvents chan subagents.Event
-	for _, call := range calls {
-		if isAgentToolName(call.Function.Name) {
-			agentEvents = make(chan subagents.Event, 256)
-			break
-		}
-	}
-	var eventSink subagents.EventSink
-	if agentEvents != nil {
-		eventSink = func(event subagents.Event) {
-			if event.Kind == subagents.EventCompleted || event.Kind == subagents.EventFailed || event.Kind == subagents.EventCanceled {
-				agentEvents <- event
-				return
-			}
-			select {
-			case agentEvents <- event:
-			case <-runCtx.Done():
-			}
-		}
-	}
+	eventSink := m.agentEventSink()
 	env := m.toolEnvWithAgentEvents(root, m.turnAgentMode, eventSink)
 	env.Skills = skillCatalog
 	startTodoRevision := m.todoRevision()
 	execCmd := func() tea.Msg {
-		if agentEvents != nil {
-			defer close(agentEvents)
-		}
 		results := make([]openai.Message, 0, len(calls))
 		materialized := make([]string, 0, 4)
 		env.Materialize = func(names []string) {
@@ -3297,9 +3447,6 @@ func (m *ChatModel) runTools(calls []openai.ToolCall, assistantText string) tea.
 			planQuestion:  planQuestion,
 			planCompleted: planCompleted,
 		}
-	}
-	if agentEvents != nil {
-		return tea.Batch(execCmd, agentEventPump(agentEvents))
 	}
 	return execCmd
 }
@@ -3669,26 +3816,39 @@ func (m *ChatModel) invokeAgentDirect(name, prompt, visible string) (tea.Model, 
 		m.AddError("Subagente no encontrado: " + name)
 		return m, nil
 	}
+	return m.invokeAgentDefinition(*a, prompt, visible, "direct @"+a.Name)
+}
+
+func (m *ChatModel) invokeAgentDefinition(a agents.Agent, prompt, visible, description string) (tea.Model, tea.Cmd) {
+	return m.invokeAgentDefinitionWithBackground(a, prompt, visible, description, false)
+}
+
+func (m *ChatModel) invokeAgentDefinitionWithBackground(a agents.Agent, prompt, visible, description string, background bool) (tea.Model, tea.Cmd) {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return m, nil
+	}
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: visible, Time: time.Now()})
 	m.appendHistory(openai.Message{Role: "user", Content: visible})
+	if background && backgroundTasksAllowed() {
+		env := m.toolEnvWithAgentEvents("", m.selectedAgentMode(), m.agentEventSink())
+		req := tools.AgentRequest{Agent: a, Prompt: prompt, Description: description, Model: a.Model, Background: true}
+		m.persist()
+		return m, func() tea.Msg {
+			result, err := env.RunAgent(m.sessionCtx, req)
+			if err != nil {
+				return systemMsg{text: "No se pudo iniciar @" + a.Name + " en background: " + err.Error()}
+			}
+			return systemMsg{text: "@" + a.Name + " ejecutándose en background · " + result.TaskID}
+		}
+	}
 	if err := m.beginTurn(); err != nil {
 		m.AddError(err.Error())
 		return m, nil
 	}
 	turnID := m.activeTurnID
 	runCtx := m.turnCtx
-	agentEvents := make(chan subagents.Event, 256)
-	eventSink := func(event subagents.Event) {
-		if event.Kind == subagents.EventCompleted || event.Kind == subagents.EventFailed || event.Kind == subagents.EventCanceled {
-			agentEvents <- event
-			return
-		}
-		select {
-		case agentEvents <- event:
-		case <-runCtx.Done():
-		}
-	}
-	env := m.toolEnvWithAgentEvents("", m.turnAgentMode, eventSink)
+	env := m.toolEnvWithAgentEvents("", m.turnAgentMode, m.agentEventSink())
 	m.streaming = true
 	m.thinking = false
 	m.working = true
@@ -3696,22 +3856,42 @@ func (m *ChatModel) invokeAgentDirect(name, prompt, visible string) (tea.Model, 
 	m.persistTurnStart()
 	m.refreshTranscript(true)
 	execCmd := func() tea.Msg {
-		defer close(agentEvents)
 		result, err := env.RunAgent(runCtx, tools.AgentRequest{
-			Agent: *a, Prompt: prompt, Description: "direct @" + a.Name,
+			Agent: a, Prompt: prompt, Description: description, Model: a.Model,
 		})
 		return manualAgentResultMsg{turnID: turnID, agent: a.Name, taskID: result.TaskID, text: result.Text, err: err}
 	}
-	return m, tea.Batch(execCmd, agentEventPump(agentEvents))
+	return m, execCmd
+}
+
+func backgroundTasksAllowed() bool {
+	return strings.TrimSpace(os.Getenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS")) != "1"
+}
+
+func (m *ChatModel) agentEventSink() subagents.EventSink {
+	return func(event subagents.Event) {
+		if m == nil || m.agentEventCh == nil {
+			return
+		}
+		if m.sessionCtx == nil {
+			m.agentEventCh <- event
+			return
+		}
+		select {
+		case m.agentEventCh <- event:
+		case <-m.sessionCtx.Done():
+		}
+	}
 }
 
 // loadAgents discovers Claude-compatible subagents from bundled, user and
 // project scopes. Only routing metadata enters the parent prompt; each agent's
 // full Markdown body is loaded inside its isolated child context.
 func (m *ChatModel) loadAgents() []agents.Agent {
-	if m.agentCatalog == nil {
-		m.agentCatalog = agents.Load(agents.DefaultLoadOptions(m.ctx.ConfigDir, m.project))
-	}
+	// Claude watches agent definitions during the session. Rescanning metadata is
+	// cheap compared with a model request and means edits are picked up on the
+	// next delegation without restarting Lilith.
+	m.agentCatalog = agents.Load(agents.DefaultLoadOptions(m.ctx.ConfigDir, m.project))
 	return append([]agents.Agent(nil), m.agentCatalog...)
 }
 
@@ -3737,7 +3917,27 @@ func (m *ChatModel) skillsEnabled() bool {
 // sólo inspecciona metadata SKILL.md; los recursos grandes se consultan después
 // mediante skill_search/skill_files/skill_read.
 func (m *ChatModel) loadSkills() []skills.Skill {
-	return skills.Load(skills.DefaultLoadOptions(m.ctx.ConfigDir, m.project))
+	base := skills.Load(skills.DefaultLoadOptions(m.ctx.ConfigDir, m.project))
+	settings, _ := config.Load(m.ctx.ConfigDir)
+	if !settings.ClaudeCompatibilityEnabled {
+		return base
+	}
+	// Legacy .claude/commands are explicit-only and lower precedence than real
+	// Agent Skills with the same name. This keeps old Claude projects portable
+	// without shadowing their modern SKILL.md replacements.
+	byName := map[string]skills.Skill{}
+	for _, sk := range skills.LoadLegacyCommands(m.ctx.ConfigDir, m.project) {
+		byName[strings.ToLower(sk.Name)] = sk
+	}
+	for _, sk := range base {
+		byName[strings.ToLower(sk.Name)] = sk
+	}
+	out := make([]skills.Skill, 0, len(byName))
+	for _, sk := range byName {
+		out = append(out, sk)
+	}
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })
+	return skills.ApplyClaudeOverrides(m.ctx.ConfigDir, m.project, config.IsProjectTrusted(settings, m.project), out)
 }
 
 // skillsBlock renderiza el bloque XML de skills disponibles cuando el toggle
@@ -3746,7 +3946,15 @@ func (m *ChatModel) skillsBlock() string {
 	if !m.skillsEnabled() {
 		return ""
 	}
-	return skills.FormatForPrompt(m.loadSkills())
+	paths := instructionPathsFromHistory(m.history, m.project)
+	all := m.loadSkills()
+	visible := make([]skills.Skill, 0, len(all))
+	for _, sk := range all {
+		if skills.ApplicableToPaths(sk, paths) {
+			visible = append(visible, sk)
+		}
+	}
+	return skills.FormatForPrompt(visible)
 }
 
 // invokeSkill maneja "/skills:<nombre> [args]": lee SKILL.md, la inyecta como
@@ -3768,16 +3976,57 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 		m.AddError("Skill no encontrada: " + name + ". Revisa las carpetas de skills de Lilith/Claude/Agent del usuario o proyecto.")
 		return nil
 	}
+	if !sk.UserInvocable {
+		m.AddError("La skill " + name + " no permite invocación manual (user-invocable: false).")
+		return nil
+	}
 	body, err := skills.ReadContent(*sk)
 	if err != nil {
 		m.AddError("No se pudo leer la skill " + name + ": " + err.Error())
 		return nil
 	}
+	body = skills.ExpandArguments(*sk, body, args)
+	body, err = m.expandSkillShell(context.Background(), *sk, body)
+	if err != nil {
+		m.AddError("No se pudo preparar la skill " + name + ": " + err.Error())
+		return nil
+	}
 	payload := skills.FormatInvocation(*sk, body, args)
 
-	visible := "/skills:" + sk.Name
+	visible := "/" + sk.Name
 	if strings.TrimSpace(args) != "" {
 		visible += " " + args
+	}
+	if strings.EqualFold(sk.Context, "fork") {
+		agentName := strings.TrimSpace(sk.Agent)
+		if agentName == "" {
+			agentName = "general-purpose"
+		}
+		a := agents.Find(m.loadAgents(), agentName)
+		if a == nil {
+			m.AddError("La skill requiere context: fork pero no existe el subagente " + agentName + ".")
+			return nil
+		}
+		clone := *a
+		clone.DisallowedTools = append(append([]string(nil), clone.DisallowedTools...), sk.DisallowedTools...)
+		if strings.TrimSpace(sk.Model) != "" {
+			clone.Model = sk.Model
+		}
+		if strings.TrimSpace(sk.Effort) != "" {
+			clone.Effort = sk.Effort
+		}
+		if strings.TrimSpace(sk.HooksRaw) != "" && (sk.Source != "project" || m.skillAllowedToolsCanGrant(*sk)) {
+			clone.HooksRaw = strings.TrimSpace(clone.HooksRaw + "\n" + sk.HooksRaw)
+		}
+		// Claude forked skills default to background unless explicitly false. The
+		// Agent request carries this presentation/execution preference without
+		// changing the portable agent definition itself.
+		background := true
+		if sk.BackgroundSet {
+			background = sk.Background
+		}
+		_, cmd := m.invokeAgentDefinitionWithBackground(clone, payload, visible, "skill "+sk.Name, background)
+		return cmd
 	}
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: visible, Time: time.Now()})
 	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: "Skill cargada: " + sk.Name + " (" + sk.Source + ")", Time: time.Now()})
@@ -3805,6 +4054,14 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 		m.AddError(err.Error())
 		return nil
 	}
+	if err := m.applySkillTurnOverrides(*sk); err != nil {
+		m.endTurn()
+		m.AddError(err.Error())
+		return nil
+	}
+	m.materializeSkillAllowedTools(*sk)
+	m.activeTools = tools.FilterAvailable(m.activeTools, m.toolEnv("", m.turnAgentMode))
+	sort.Strings(m.activeTools)
 	if m.turnAgentMode != planstate.Plan {
 		m.cleanupCompletedTodos()
 	}

@@ -31,6 +31,7 @@ type Event struct {
 	Model        string
 	Depth        int
 	Resumed      bool
+	Background   bool
 
 	ToolCallID string
 	ToolName   string

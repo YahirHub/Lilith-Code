@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	ligoal "github.com/lilith/li/internal/goal"
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/providers/openai"
 	litodo "github.com/lilith/li/internal/todo"
@@ -101,6 +102,7 @@ type AgentProgress struct {
 	Model        string                  `json:"model,omitempty"`
 	Depth        int                     `json:"depth,omitempty"`
 	Resumed      bool                    `json:"resumed,omitempty"`
+	Background   bool                    `json:"background,omitempty"`
 	Status       string                  `json:"status,omitempty"`
 	StartedAt    time.Time               `json:"startedAt,omitempty"`
 	FinishedAt   time.Time               `json:"finishedAt,omitempty"`
@@ -134,6 +136,7 @@ type LiveCheckpoint struct {
 	History             []openai.Message  `json:"history,omitempty"`
 	Todo                *litodo.State     `json:"todo,omitempty"`
 	Plan                *planstate.State  `json:"plan,omitempty"`
+	Goal                *ligoal.State     `json:"goal,omitempty"`
 }
 
 // Session is one persisted conversation.
@@ -148,6 +151,7 @@ type Session struct {
 	Revision    uint64            `json:"revision,omitempty"`
 	Todo        *litodo.State     `json:"todo,omitempty"`
 	Plan        *planstate.State  `json:"plan,omitempty"`
+	Goal        *ligoal.State     `json:"goal,omitempty"`
 	Live        *LiveCheckpoint   `json:"-"`
 }
 

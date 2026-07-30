@@ -21,19 +21,27 @@ const (
 // wire copy sheds stale, re-fetchable tool payloads.
 func (m *ChatModel) prepareRequestMessages(mode planstate.Mode) []openai.Message {
 	history := compactHistoryForRequest(m.history)
-	runtime := strings.TrimSpace(m.todoBlockForMode(mode) + m.promptModeBlock(mode))
+	bundle := m.instructionBundle()
+	conditional := bundle.ConditionalPrompt(instructionPathsFromHistory(history, m.project))
+	runtime := strings.TrimSpace(m.todoBlockForMode(mode) + m.promptModeBlock(mode) + m.goalPromptBlock() + conditional)
 	if runtime != "" {
 		history = appendRuntimeState(history, runtime)
 	}
 
-	msgs := make([]openai.Message, 0, len(history)+1)
-	// Keep the reusable prefix stable. Todo/Plan state belongs near the current
-	// turn instead of at the start of the prompt, otherwise every revision
-	// invalidates provider prompt caches for the entire conversation.
+	msgs := make([]openai.Message, 0, len(history)+2)
+	// Keep the reusable prefix stable. Todo/Plan/path-scoped state belongs near
+	// the current turn; persistent project instructions sit immediately after the
+	// system prompt just like Claude Code's CLAUDE.md user-message layer.
 	msgs = append(msgs, openai.Message{
 		Role:    "system",
 		Content: systemPrompt(m.activeTools, m.skillsBlock(), m.agentsBlock(), "", ""),
 	})
+	if projectInstructions := strings.TrimSpace(bundle.StaticPrompt()); projectInstructions != "" {
+		msgs = append(msgs, openai.Message{Role: "user", Content: projectInstructions})
+	}
+	if memoryPrompt := strings.TrimSpace(m.mainMemoryPrompt()); memoryPrompt != "" {
+		msgs = append(msgs, openai.Message{Role: "user", Content: memoryPrompt})
+	}
 	msgs = append(msgs, history...)
 	return msgs
 }

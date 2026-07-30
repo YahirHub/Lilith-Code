@@ -35,6 +35,7 @@ type AgentPanel struct {
 	Model        string
 	Depth        int
 	Resumed      bool
+	Background   bool
 	Status       string // running | completed | failed | canceled
 	StartedAt    time.Time
 	FinishedAt   time.Time
@@ -80,6 +81,7 @@ func (p *AgentPanel) Apply(e subagents.Event) {
 		p.Depth = e.Depth
 	}
 	p.Resumed = p.Resumed || e.Resumed
+	p.Background = p.Background || e.Background
 
 	switch e.Kind {
 	case subagents.EventStarted:
@@ -219,6 +221,9 @@ func (p *AgentPanel) View(s Styles, width int) string {
 	head += s.Muted.Render("  " + depth + statusLabel + " · " + strconv.Itoa(p.toolCount()) + " tools · " + formatAgentDuration(p.elapsed()))
 	if p.Resumed {
 		head += s.Muted.Render(" · reanudado")
+	}
+	if p.Background {
+		head += s.Muted.Render(" · background")
 	}
 
 	body := head

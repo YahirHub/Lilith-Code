@@ -48,6 +48,9 @@ type Request struct {
 	Stream   bool
 	// Tools are the JSON-schema tool definitions offered to the model.
 	Tools []any
+	// ReasoningEffort is a turn-scoped compatibility override used by Claude
+	// skills/subagents. Empty means provider/model default.
+	ReasoningEffort string
 }
 
 // Client makes chat completions against any OpenAI-compatible endpoint.
@@ -273,6 +276,9 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 		"model":    req.Model,
 		"messages": req.Messages,
 		"stream":   stream,
+	}
+	if strings.TrimSpace(req.ReasoningEffort) != "" {
+		body["reasoning_effort"] = strings.TrimSpace(req.ReasoningEffort)
 	}
 	if len(req.Tools) > 0 {
 		body["tools"] = req.Tools
