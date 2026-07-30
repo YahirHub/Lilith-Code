@@ -43,6 +43,7 @@ type Agent struct {
 	Source          string
 	FilePath        string
 	BaseDir         string
+	PluginRoot      string
 }
 
 // LoadOptions controls discovery. Directories are processed from low to high

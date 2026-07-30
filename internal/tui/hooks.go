@@ -17,7 +17,15 @@ func (m *ChatModel) hookRunner() *hooks.Runner {
 	if !s.HooksEnabled {
 		return &hooks.Runner{}
 	}
-	return hooks.Load(m.ctx.ConfigDir, m.project, config.IsProjectTrusted(s, m.project))
+	base := hooks.Load(m.ctx.ConfigDir, m.project, config.IsProjectTrusted(s, m.project))
+	base.Merge(m.loadClaudePluginHooks())
+	base.MCPTool = func(ctx context.Context, server, tool string, input map[string]any) (string, error) {
+		if m.mcpRuntime == nil {
+			return "", fmt.Errorf("MCP aún no está conectado")
+		}
+		return m.mcpRuntime.CallServerTool(ctx, server, tool, input)
+	}
+	return base
 }
 
 func (m *ChatModel) toolHookRunner() *hooks.Runner {

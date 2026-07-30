@@ -57,6 +57,7 @@ func (m *ChatModel) connectMCP() tea.Cmd {
 		return nil
 	}
 	configs := mcp.LoadClaudeConfig(m.ctx.ConfigDir, m.project, config.IsProjectTrusted(settings, m.project))
+	mcp.Merge(configs, m.loadClaudePluginMCP())
 	sig := mcpConfigSignature(configs)
 	if sig == m.mcpSignature && m.mcpRuntime != nil {
 		return nil

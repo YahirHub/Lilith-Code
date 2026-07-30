@@ -585,7 +585,7 @@ func NewChat(ctx *AppContext) ChatModel {
 		assistantActive:   -1,
 		contextCacheDirty: true,
 	}
-	m.agentCatalog = agents.Load(agents.DefaultLoadOptions(ctx.ConfigDir, project))
+	m.loadAgents()
 	m.syncAgentModePresentation()
 	m.runSessionHook("SessionStart")
 	return m
@@ -3820,35 +3820,49 @@ func (m *ChatModel) invokeAgentDirect(name, prompt, visible string) (tea.Model, 
 }
 
 func (m *ChatModel) invokeAgentDefinition(a agents.Agent, prompt, visible, description string) (tea.Model, tea.Cmd) {
-	return m.invokeAgentDefinitionWithBackground(a, prompt, visible, description, false)
+	return m.invokeAgentDefinitionWithOptions(a, prompt, visible, description, false, false, "")
 }
 
 func (m *ChatModel) invokeAgentDefinitionWithBackground(a agents.Agent, prompt, visible, description string, background bool) (tea.Model, tea.Cmd) {
+	return m.invokeAgentDefinitionWithOptions(a, prompt, visible, description, background, false, "")
+}
+
+func (m *ChatModel) invokeForkDefinitionWithBackground(a agents.Agent, prompt, visible, description string, background bool, isolation string) (tea.Model, tea.Cmd) {
+	return m.invokeAgentDefinitionWithOptions(a, prompt, visible, description, background, true, isolation)
+}
+
+func (m *ChatModel) invokeAgentDefinitionWithOptions(a agents.Agent, prompt, visible, description string, background, fork bool, isolation string) (tea.Model, tea.Cmd) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return m, nil
 	}
+	// Capture the fork before the visible slash/@ invocation is appended. The
+	// delegated prompt is added once by the child runtime and does not appear
+	// twice in the inherited branch.
+	selectedMode := m.selectedAgentMode()
+	env := m.toolEnvWithAgentEvents("", selectedMode, m.agentEventSink())
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: visible, Time: time.Now()})
 	m.appendHistory(openai.Message{Role: "user", Content: visible})
+	request := tools.AgentRequest{Agent: a, Prompt: prompt, Description: description, Model: a.Model, Background: background, Fork: fork, Isolation: isolation}
 	if background && backgroundTasksAllowed() {
-		env := m.toolEnvWithAgentEvents("", m.selectedAgentMode(), m.agentEventSink())
-		req := tools.AgentRequest{Agent: a, Prompt: prompt, Description: description, Model: a.Model, Background: true}
 		m.persist()
 		return m, func() tea.Msg {
-			result, err := env.RunAgent(m.sessionCtx, req)
+			result, err := env.RunAgent(m.sessionCtx, request)
 			if err != nil {
 				return systemMsg{text: "No se pudo iniciar @" + a.Name + " en background: " + err.Error()}
 			}
 			return systemMsg{text: "@" + a.Name + " ejecutándose en background · " + result.TaskID}
 		}
 	}
+	// When background tasks are disabled through Claude's compatibility env,
+	// execute synchronously with foreground policies and result semantics.
+	request.Background = false
 	if err := m.beginTurn(); err != nil {
 		m.AddError(err.Error())
 		return m, nil
 	}
 	turnID := m.activeTurnID
 	runCtx := m.turnCtx
-	env := m.toolEnvWithAgentEvents("", m.turnAgentMode, m.agentEventSink())
 	m.streaming = true
 	m.thinking = false
 	m.working = true
@@ -3856,9 +3870,7 @@ func (m *ChatModel) invokeAgentDefinitionWithBackground(a agents.Agent, prompt, 
 	m.persistTurnStart()
 	m.refreshTranscript(true)
 	execCmd := func() tea.Msg {
-		result, err := env.RunAgent(runCtx, tools.AgentRequest{
-			Agent: a, Prompt: prompt, Description: description, Model: a.Model,
-		})
+		result, err := env.RunAgent(runCtx, request)
 		return manualAgentResultMsg{turnID: turnID, agent: a.Name, taskID: result.TaskID, text: result.Text, err: err}
 	}
 	return m, execCmd
@@ -3891,7 +3903,20 @@ func (m *ChatModel) loadAgents() []agents.Agent {
 	// Claude watches agent definitions during the session. Rescanning metadata is
 	// cheap compared with a model request and means edits are picked up on the
 	// next delegation without restarting Lilith.
-	m.agentCatalog = agents.Load(agents.DefaultLoadOptions(m.ctx.ConfigDir, m.project))
+	byName := map[string]agents.Agent{}
+	for _, agent := range agents.Load(agents.DefaultLoadOptions(m.ctx.ConfigDir, m.project)) {
+		byName[strings.ToLower(agent.Name)] = agent
+	}
+	for _, agent := range m.loadClaudePluginAgents() {
+		byName[strings.ToLower(agent.Name)] = agent
+	}
+	m.agentCatalog = m.agentCatalog[:0]
+	for _, agent := range byName {
+		m.agentCatalog = append(m.agentCatalog, agent)
+	}
+	sort.Slice(m.agentCatalog, func(i, j int) bool {
+		return strings.ToLower(m.agentCatalog[i].Name) < strings.ToLower(m.agentCatalog[j].Name)
+	})
 	return append([]agents.Agent(nil), m.agentCatalog...)
 }
 
@@ -3927,6 +3952,9 @@ func (m *ChatModel) loadSkills() []skills.Skill {
 	// without shadowing their modern SKILL.md replacements.
 	byName := map[string]skills.Skill{}
 	for _, sk := range skills.LoadLegacyCommands(m.ctx.ConfigDir, m.project) {
+		byName[strings.ToLower(sk.Name)] = sk
+	}
+	for _, sk := range m.loadClaudePluginSkills() {
 		byName[strings.ToLower(sk.Name)] = sk
 	}
 	for _, sk := range base {
@@ -4025,7 +4053,7 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 		if sk.BackgroundSet {
 			background = sk.Background
 		}
-		_, cmd := m.invokeAgentDefinitionWithBackground(clone, payload, visible, "skill "+sk.Name, background)
+		_, cmd := m.invokeForkDefinitionWithBackground(clone, payload, visible, "skill "+sk.Name, background, "")
 		return cmd
 	}
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: visible, Time: time.Now()})

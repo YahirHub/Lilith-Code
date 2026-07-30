@@ -95,6 +95,8 @@ func (m *ChatModel) toolEnvWithAgentEvents(root string, mode planstate.Mode, eve
 		active := m.ctx.Providers.Active()
 		providerID, modelID = active.ProviderID, active.ModelID
 	}
+	parentMessages := m.forkContextMessages(mode)
+	parentTools := append([]string(nil), m.activeTools...)
 	env := tools.Env{
 		Root:      root,
 		ConfigDir: m.ctx.ConfigDir,
@@ -108,8 +110,10 @@ func (m *ChatModel) toolEnvWithAgentEvents(root string, mode planstate.Mode, eve
 	env.RunAgent = func(ctx context.Context, req tools.AgentRequest) (tools.AgentResult, error) {
 		cfg := subagents.Config{
 			Client: m.ctx.Client, Providers: m.ctx.Providers, ConfigDir: m.ctx.ConfigDir, Root: root, StoreProject: m.project,
-			ParentProviderID: providerID, ParentModelID: modelID, ParentMode: mode, Skills: skillCatalog,
+			ParentProviderID: providerID, ParentModelID: modelID, ParentMode: mode,
+			ParentMessages: parentMessages, ParentToolNames: parentTools, Skills: skillCatalog,
 			Agents: agentCatalog, Depth: 1, Events: events, BackgroundContext: m.sessionCtx, ParentMCP: m.mcpRuntime,
+			PluginHooks: m.loadClaudePluginHooks(),
 		}
 		if req.Background && backgroundTasksAllowed() {
 			return subagents.StartBackground(cfg, req)

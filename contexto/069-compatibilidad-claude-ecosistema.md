@@ -21,6 +21,8 @@ Los comentarios HTML de bloque se eliminan del contexto inyectado. La UI de `/co
 
 Se conservan Agent Skills (`SKILL.md`) como formato compartido. Además se interpretan metadatos Claude relevantes: invocación manual/modelo, `allowed-tools`, `disallowed-tools`, `context: fork`, agent, background, model, effort, hooks, shell dinámico y `skillOverrides` desde settings. `.claude/commands/*.md` se incorpora como compatibilidad legacy sin crear un segundo runtime de comandos.
 
+Los plugins locales guardados en `~/.claude/skills/<plugin>` o `.claude/skills/<plugin>` con `.claude-plugin/plugin.json` aportan skills, commands, agents, hooks y servidores MCP. Skills, commands y agents usan namespace `plugin:nombre`; MCP se expone como `mcp__plugin_<plugin>_<server>__<tool>`. Los plugins del proyecto sólo se cargan cuando el workspace es confiable; sus agentes ignoran `hooks`, `mcpServers` y `permissionMode`, igual que Claude por seguridad. Las rutas declaradas en el manifest no pueden escapar del root del plugin y se resuelven `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}` y `${CLAUDE_PROJECT_DIR}`.
+
 ## Memoria
 
 La conversación principal usa la ubicación Claude-compatible `~/.claude/projects/<repo>/memory/` cuando la compatibilidad está activa. Los worktrees del mismo repositorio comparten memoria. Se respeta `autoMemoryDirectory` y `CLAUDE_CODE_DISABLE_AUTO_MEMORY`; overrides de proyecto sólo se aceptan con workspace confiable.
@@ -29,7 +31,7 @@ Los subagentes admiten `memory: user|project|local` usando `.claude/agent-memory
 
 ## Hooks, MCP y confianza
 
-Se soportan hooks de usuario/proyecto y hooks declarados por skills/subagentes para los eventos principales de tools, sesiones y subagentes. Los hooks ejecutables del proyecto y MCP inline del proyecto sólo se habilitan cuando `/config > Seguridad > Proyecto confiable` está activo.
+Se soportan hooks de usuario/proyecto, plugins y hooks declarados por skills/subagentes para los eventos principales de tools, sesiones y subagentes. Los handlers portables implementados son `command`, `http` y `mcp_tool`; este último resuelve entradas declarativas desde el payload del evento e invoca un tool MCP namespaced sin bloquear el evento ante fallos de transporte. Los hooks ejecutables del proyecto y MCP inline del proyecto sólo se habilitan cuando `/config > Seguridad > Proyecto confiable` está activo.
 
 MCP soporta stdio, Streamable HTTP, SSE legacy y WebSocket. Los subagentes heredan MCP del padre y pueden añadir servidores inline propios. Plan Mode sólo expone MCP marcados read-only. Los hooks `WorktreeCreate`/`WorktreeRemove` participan en el ciclo de aislamiento: `WorktreeCreate` reemplaza la creación git predeterminada y debe devolver una ruta absoluta; `WorktreeRemove` permite limpiar checkouts personalizados.
 
@@ -39,4 +41,4 @@ MCP soporta stdio, Streamable HTTP, SSE legacy y WebSocket. Los subagentes hered
 
 ## Compatibilidad deliberadamente no fingida
 
-Lilith no pretende ejecutar plugins binarios de Claude Code ni reproducir servicios propietarios/enterprise. La compatibilidad de hooks se centra en handlers `command`/`http`; los backends propietarios o dependientes del runtime Claude (`prompt`, `agent`, `mcp_tool` como hook) no se anuncian como equivalencia 1:1. Tampoco se replica el sistema experimental de Agent Teams ni el marketplace de plugins. Campos o políticas que requieran infraestructura específica de Anthropic deben fallar de forma explícita o degradarse de forma segura; nunca deben ampliar permisos silenciosamente.
+Lilith no pretende ejecutar plugins binarios de Claude Code ni reproducir servicios propietarios/enterprise. El loader de plugins se limita por ahora al formato local en skills directories y a sus componentes portables `skills`, `commands`, `agents`, `hooks` y `mcpServers`; no instala marketplaces ni ejecuta todavía LSP, monitors, workflows, binarios declarados, temas u output styles suministrados por un plugin. La compatibilidad de hooks cubre handlers `command`, `http` y `mcp_tool`; los backends que requieren una inferencia adicional del runtime Claude (`prompt` y `agent`) no se anuncian como equivalencia 1:1. Tampoco se replica el sistema experimental de Agent Teams ni Agent View como daemon multiproceso. Campos o políticas que requieran infraestructura específica de Anthropic deben fallar de forma explícita o degradarse de forma segura; nunca deben ampliar permisos silenciosamente.

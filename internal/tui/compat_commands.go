@@ -2,11 +2,13 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/lilith/li/internal/agents"
 	"github.com/lilith/li/internal/config"
 )
 
@@ -128,4 +130,40 @@ func (m *ChatModel) runTasksCommand() tea.Cmd {
 	}
 	m.AddSystem(b.String())
 	return nil
+}
+
+func (m *ChatModel) runForkCommand(args string) tea.Cmd {
+	if strings.TrimSpace(os.Getenv("CLAUDE_CODE_FORK_SUBAGENT")) == "0" {
+		m.AddSystem("Los forks están desactivados por CLAUDE_CODE_FORK_SUBAGENT=0.")
+		return nil
+	}
+	raw := strings.TrimSpace(args)
+	if raw == "" {
+		m.AddSystem("Uso: /subtask [--foreground] [--worktree] <tarea>")
+		return nil
+	}
+	background := true
+	isolation := ""
+	var promptParts []string
+	for _, field := range strings.Fields(raw) {
+		switch strings.ToLower(field) {
+		case "--foreground", "--fg":
+			background = false
+		case "--background", "--bg":
+			background = true
+		case "--worktree":
+			isolation = "worktree"
+		default:
+			promptParts = append(promptParts, field)
+		}
+	}
+	prompt := strings.TrimSpace(strings.Join(promptParts, " "))
+	if prompt == "" {
+		m.AddSystem("Uso: /subtask [--foreground] [--worktree] <tarea>")
+		return nil
+	}
+	visible := "/subtask " + raw
+	a := agents.Agent{Name: "fork", Description: "Conversation fork", Model: "default"}
+	_, cmd := m.invokeForkDefinitionWithBackground(a, prompt, visible, "conversation fork", background, isolation)
+	return cmd
 }

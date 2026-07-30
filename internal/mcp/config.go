@@ -25,6 +25,100 @@ type fileConfig struct {
 	MCPServers map[string]ServerConfig `json:"mcpServers"`
 }
 
+// LoadConfigFile reads a standard .mcp.json file or a direct server map.
+func LoadConfigFile(path string) map[string]ServerConfig {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return map[string]ServerConfig{}
+	}
+	return ParseConfig(data)
+}
+
+// ParseConfig accepts both {"mcpServers": {...}} and the inline manifest form
+// where the value itself is the server-name map.
+func ParseConfig(data []byte) map[string]ServerConfig {
+	out := map[string]ServerConfig{}
+	var wrapped fileConfig
+	if json.Unmarshal(data, &wrapped) == nil && wrapped.MCPServers != nil {
+		mergeConfigs(out, wrapped.MCPServers)
+		normalizeConfigs(out)
+		return out
+	}
+	var direct map[string]ServerConfig
+	if json.Unmarshal(data, &direct) == nil {
+		mergeConfigs(out, direct)
+	}
+	normalizeConfigs(out)
+	return out
+}
+
+// Merge adds source definitions to destination, overwriting duplicate names.
+func Merge(dst, src map[string]ServerConfig) {
+	mergeConfigs(dst, src)
+	normalizeConfigs(dst)
+}
+
+// ScopePluginConfigs namespaces plugin servers exactly as Claude exposes their
+// tools: mcp__plugin_<plugin>_<server>__<tool>. It also resolves portable path
+// variables and exports them to stdio subprocesses.
+func ScopePluginConfigs(pluginName, pluginRoot, pluginData, projectDir string, in map[string]ServerConfig) map[string]ServerConfig {
+	out := map[string]ServerConfig{}
+	for name, cfg := range in {
+		scoped := "plugin_" + sanitizeConfigName(pluginName) + "_" + sanitizeConfigName(name)
+		cfg.Name = scoped
+		cfg.Command = expandPluginValue(cfg.Command, pluginRoot, pluginData, projectDir)
+		for i := range cfg.Args {
+			cfg.Args[i] = expandPluginValue(cfg.Args[i], pluginRoot, pluginData, projectDir)
+		}
+		cfg.URL = expandPluginValue(cfg.URL, pluginRoot, pluginData, projectDir)
+		cfg.Env = cloneStrings(cfg.Env)
+		for key, value := range cfg.Env {
+			cfg.Env[key] = expandPluginValue(value, pluginRoot, pluginData, projectDir)
+		}
+		cfg.Env["CLAUDE_PLUGIN_ROOT"] = pluginRoot
+		if pluginData != "" {
+			cfg.Env["CLAUDE_PLUGIN_DATA"] = pluginData
+		}
+		if projectDir != "" {
+			cfg.Env["CLAUDE_PROJECT_DIR"] = projectDir
+		}
+		cfg.Headers = cloneStrings(cfg.Headers)
+		for key, value := range cfg.Headers {
+			cfg.Headers[key] = expandPluginValue(value, pluginRoot, pluginData, projectDir)
+		}
+		out[scoped] = cfg
+	}
+	normalizeConfigs(out)
+	return out
+}
+
+func expandPluginValue(value, root, data, project string) string {
+	value = strings.ReplaceAll(value, "${CLAUDE_PLUGIN_ROOT}", root)
+	value = strings.ReplaceAll(value, "${CLAUDE_PLUGIN_DATA}", data)
+	value = strings.ReplaceAll(value, "${CLAUDE_PROJECT_DIR}", project)
+	return value
+}
+
+func cloneStrings(in map[string]string) map[string]string {
+	out := map[string]string{}
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func sanitizeConfigName(value string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(value)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return strings.Trim(b.String(), "_-")
+}
+
 // LoadClaudeConfig loads user/local MCP definitions with project definitions
 // taking precedence. Project config is executable configuration and therefore
 // callers decide whether it is trusted before setting includeProject=true.
@@ -57,13 +151,7 @@ func LoadClaudeConfig(configDir, projectRoot string, includeProject bool) map[st
 		}
 	}
 	if includeProject && strings.TrimSpace(projectRoot) != "" {
-		data, err := os.ReadFile(filepath.Join(projectRoot, ".mcp.json"))
-		if err == nil {
-			var raw fileConfig
-			if json.Unmarshal(data, &raw) == nil {
-				mergeConfigs(out, raw.MCPServers)
-			}
-		}
+		mergeConfigs(out, LoadConfigFile(filepath.Join(projectRoot, ".mcp.json")))
 	}
 	normalizeConfigs(out)
 	return out

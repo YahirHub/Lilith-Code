@@ -33,9 +33,9 @@ type Streamer interface {
 	Stream(ctx context.Context, req openai.Request) <-chan openai.Chunk
 }
 
-// Config is inherited from the parent session. ParentMessages are
-// intentionally absent: normal subagents start fresh and receive only the
-// delegated task, matching Claude/OpenCode/Pi isolated-worker semantics.
+// Config is inherited from the parent session. Normal named subagents ignore
+// ParentMessages and start fresh; Claude-compatible forks explicitly opt into
+// inheriting this model-facing snapshot and the active lazy-tool set.
 type Config struct {
 	Client    Streamer
 	Providers providers.Config
@@ -47,8 +47,13 @@ type Config struct {
 	ParentProviderID string
 	ParentModelID    string
 	ParentMode       planstate.Mode
-	Skills           []skills.Skill
-	Agents           []agents.Agent
+	ParentMessages   []openai.Message
+	ParentToolNames  []string
+	// ParentIsFork prevents recursive conversation forks while still allowing a
+	// forked worker to delegate normal isolated subagents.
+	ParentIsFork bool
+	Skills       []skills.Skill
+	Agents       []agents.Agent
 	// Depth is 1 for a top-level subagent. MaxDepth follows Claude Code's
 	// current default of three subagent layers below the main conversation.
 	// LILITH_MAX_SUBAGENT_DEPTH or the Claude-compatible
@@ -68,6 +73,10 @@ type Config struct {
 	// subagents inherit parent MCP tools without reconnecting, while their
 	// mcpServers frontmatter may add child-only inline servers.
 	ParentMCP *mcp.Runtime
+	// PluginHooks carries active plugin-owned lifecycle hooks. Standard
+	// user/project hooks are loaded directly in the child so their cwd follows
+	// worktree isolation without duplicating entries from the parent.
+	PluginHooks *hooks.Runner
 }
 
 func StartBackground(cfg Config, req tools.AgentRequest) (tools.AgentResult, error) {
@@ -96,6 +105,12 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 	if strings.TrimSpace(cfg.Root) == "" {
 		return tools.AgentResult{}, errors.New("subagent project root is empty")
 	}
+	if req.Fork && cfg.ParentIsFork {
+		return tools.AgentResult{}, errors.New("a conversation fork cannot create another fork")
+	}
+	if req.Fork && len(cfg.ParentMessages) == 0 {
+		return tools.AgentResult{}, errors.New("conversation fork requires a parent context snapshot")
+	}
 	storeProject := strings.TrimSpace(cfg.StoreProject)
 	if storeProject == "" {
 		storeProject = cfg.Root
@@ -111,6 +126,7 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 	hookRunner := &hooks.Runner{}
 	if settings.HooksEnabled {
 		hookRunner = hooks.Load(cfg.ConfigDir, cfg.Root, projectTrusted)
+		hookRunner.Merge(cfg.PluginHooks)
 		if strings.TrimSpace(req.Agent.HooksRaw) != "" && (req.Agent.Source != "project" || projectTrusted) {
 			hookRunner.Merge(hooks.ParseFrontmatter(req.Agent.HooksRaw, req.Agent.BaseDir))
 		}
@@ -175,7 +191,11 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 		}
 		worktreeRoot := ""
 		worktreeCustom := false
-		if strings.EqualFold(strings.TrimSpace(req.Agent.Isolation), "worktree") {
+		isolation := strings.TrimSpace(req.Isolation)
+		if isolation == "" {
+			isolation = strings.TrimSpace(req.Agent.Isolation)
+		}
+		if strings.EqualFold(isolation, "worktree") {
 			wt, custom, wtErr := createWorktree(ctx, cfg.ConfigDir, originalRoot, taskID, projectTrusted, hookRunner)
 			if wtErr != nil {
 				return tools.AgentResult{}, fmt.Errorf("agent %s worktree: %w", req.Agent.Name, wtErr)
@@ -184,13 +204,28 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 			worktreeCustom = custom
 			cfg.Root = wt
 		}
-		msgs := []openai.Message{{Role: "system", Content: buildSystemPrompt(req.Agent, cfg.Root, cfg.Skills, cfg.Agents, depth < maxDepth, memoryDir)}}
-		// Claude's built-in Explore/Plan intentionally omit CLAUDE.md. Custom
-		// subagents receive the normal project instruction flow before the task.
-		if !strings.EqualFold(req.Agent.Name, "Explore") && !strings.EqualFold(req.Agent.Name, "Plan") {
-			bundle := instructions.Load(instructions.Options{ConfigDir: cfg.ConfigDir, CWD: cfg.Root, NativeEnabled: settings.ProjectInstructionsEnabled, ClaudeEnabled: settings.ClaudeCompatibilityEnabled, ProjectTrusted: projectTrusted})
-			if block := strings.TrimSpace(bundle.StaticPrompt()); block != "" {
-				msgs = append(msgs, openai.Message{Role: "user", Content: block})
+		var msgs []openai.Message
+		if req.Fork {
+			msgs = SanitizeForkMessages(cfg.ParentMessages)
+			if strings.TrimSpace(req.Agent.Prompt) != "" && !strings.EqualFold(req.Agent.Name, "fork") {
+				agentPrompt := strings.TrimSpace(req.Agent.Prompt)
+				if strings.TrimSpace(req.Agent.PluginRoot) != "" {
+					agentPrompt = strings.ReplaceAll(agentPrompt, "${CLAUDE_PLUGIN_ROOT}", filepathSlash(req.Agent.PluginRoot))
+				}
+				msgs = append(msgs, openai.Message{Role: "user", Content: "<fork_agent_instructions agent=\"" + req.Agent.Name + "\">\n" + agentPrompt + "\n</fork_agent_instructions>"})
+			}
+			if worktreeRoot != "" {
+				msgs = append(msgs, openai.Message{Role: "user", Content: "<fork_environment>\nWorking directory: " + filepathSlash(cfg.Root) + "\nThis fork is isolated in a git worktree.\n</fork_environment>"})
+			}
+		} else {
+			msgs = []openai.Message{{Role: "system", Content: buildSystemPrompt(req.Agent, cfg.Root, cfg.Skills, cfg.Agents, depth < maxDepth, memoryDir)}}
+			// Claude's built-in Explore/Plan intentionally omit CLAUDE.md. Custom
+			// subagents receive the normal project instruction flow before the task.
+			if !strings.EqualFold(req.Agent.Name, "Explore") && !strings.EqualFold(req.Agent.Name, "Plan") {
+				bundle := instructions.Load(instructions.Options{ConfigDir: cfg.ConfigDir, CWD: cfg.Root, NativeEnabled: settings.ProjectInstructionsEnabled, ClaudeEnabled: settings.ClaudeCompatibilityEnabled, ProjectTrusted: projectTrusted})
+				if block := strings.TrimSpace(bundle.StaticPrompt()); block != "" {
+					msgs = append(msgs, openai.Message{Role: "user", Content: block})
+				}
 			}
 		}
 		msgs = append(msgs, openai.Message{Role: "user", Content: req.Prompt})
@@ -236,7 +271,31 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 			}
 		}
 	}
+	if hookRunner.Count() > 0 {
+		hookRunner.MCPTool = func(toolCtx context.Context, server, tool string, input map[string]any) (string, error) {
+			var parentErr error
+			if cfg.ParentMCP != nil {
+				if text, callErr := cfg.ParentMCP.CallServerTool(toolCtx, server, tool, input); callErr == nil {
+					return text, nil
+				} else {
+					parentErr = callErr
+				}
+			}
+			if inlineMCP != nil {
+				if text, callErr := inlineMCP.CallServerTool(toolCtx, server, tool, input); callErr == nil {
+					return text, nil
+				} else if parentErr == nil {
+					return "", callErr
+				}
+			}
+			if parentErr != nil {
+				return "", parentErr
+			}
+			return "", fmt.Errorf("MCP tool unavailable: %s/%s", server, tool)
+		}
+	}
 
+	var active []string
 	env := tools.Env{Root: cfg.Root, ConfigDir: cfg.ConfigDir, Skills: cfg.Skills, Todos: localTodos, AgentMode: mode, MemoryDir: memoryDir}
 	env.DynamicTool = func(toolCtx context.Context, name string, args map[string]any) (string, error) {
 		if cfg.ParentMCP != nil && cfg.ParentMCP.Has(name) {
@@ -298,10 +357,16 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 	if depth < maxDepth && len(cfg.Agents) > 0 {
 		env.Agents = cfg.Agents
 		env.RunAgent = func(childCtx context.Context, childReq tools.AgentRequest) (tools.AgentResult, error) {
+			if req.Fork && childReq.Fork {
+				return tools.AgentResult{}, errors.New("a conversation fork cannot create another fork")
+			}
 			nested := cfg
 			nested.ParentProviderID = provider.ID
 			nested.ParentModelID = model
 			nested.ParentMode = mode
+			nested.ParentMessages = SanitizeForkMessages(child.Messages)
+			nested.ParentToolNames = append([]string(nil), active...)
+			nested.ParentIsFork = req.Fork
 			nested.Depth = depth + 1
 			nested.MaxDepth = maxDepth
 			nested.ParentTaskID = child.ID
@@ -322,7 +387,10 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 		return nil
 	}
 
-	active := append([]string(nil), child.Tools...)
+	active = append([]string(nil), child.Tools...)
+	if len(active) == 0 && req.Fork {
+		active = append([]string(nil), cfg.ParentToolNames...)
+	}
 	if len(active) == 0 {
 		active = policy.initialTools(req.Prompt, env)
 	}
@@ -538,6 +606,9 @@ func toolMessage(call openai.ToolCall, content string) openai.Message {
 func buildSystemPrompt(a agents.Agent, root string, catalog []skills.Skill, agentCatalog []agents.Agent, canDelegate bool, memoryDir string) string {
 	var b strings.Builder
 	prompt := strings.TrimSpace(a.Prompt)
+	if strings.TrimSpace(a.PluginRoot) != "" {
+		prompt = strings.ReplaceAll(prompt, "${CLAUDE_PLUGIN_ROOT}", filepathSlash(a.PluginRoot))
+	}
 	if prompt == "" {
 		prompt = "Complete the delegated task accurately and return a concise final result."
 	}
@@ -576,6 +647,7 @@ func preloadSkills(names []string, catalog []skills.Skill) string {
 		if err != nil {
 			continue
 		}
+		body = skills.ExpandArguments(*sk, body, "")
 		fmt.Fprintf(&b, "\n\n<preloaded_skill name=\"%s\">\n%s\n</preloaded_skill>", sk.Name, strings.TrimSpace(body))
 	}
 	return b.String()

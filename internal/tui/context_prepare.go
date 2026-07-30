@@ -6,6 +6,7 @@ import (
 
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/providers/openai"
+	"github.com/lilith/li/internal/subagents"
 )
 
 const (
@@ -44,6 +45,14 @@ func (m *ChatModel) prepareRequestMessages(mode planstate.Mode) []openai.Message
 	}
 	msgs = append(msgs, history...)
 	return msgs
+}
+
+// forkContextMessages returns a protocol-valid snapshot for Claude-compatible
+// conversation forks. During an Agent tool call the durable history already
+// contains the assistant tool_call but not its result; carrying that dangling
+// call into a child would make the provider reject the request.
+func (m *ChatModel) forkContextMessages(mode planstate.Mode) []openai.Message {
+	return subagents.SanitizeForkMessages(m.prepareRequestMessages(mode))
 }
 
 func compactHistoryForRequest(history []openai.Message) []openai.Message {

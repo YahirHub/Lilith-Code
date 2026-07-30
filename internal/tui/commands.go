@@ -94,6 +94,21 @@ func Commands() []SlashCommand {
 			Run:         func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd { return chat.runTasksCommand() },
 		},
 		{
+			Name: "subtask", Aliases: []string{"fork"}, Usage: "[--foreground] [--worktree] <tarea>",
+			Description: "Crea un fork Claude-compatible que hereda la conversación, modelo, instrucciones y tools activos.",
+			Run:         func(ctx *AppContext, chat *ChatModel, args string) tea.Cmd { return chat.runForkCommand(args) },
+		},
+		{
+			Name:        "plugins",
+			Description: "Lista plugins locales Claude detectados y sus componentes namespaced.",
+			Run:         func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd { return chat.runPluginsCommand() },
+		},
+		{
+			Name:        "reload-plugins",
+			Description: "Fuerza un rescan de plugins locales Claude para el siguiente turno.",
+			Run:         func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd { return chat.runReloadPluginsCommand() },
+		},
+		{
 			Name: "agents", Aliases: []string{"subagents"},
 			Description: "Lista subagentes Claude-compatible detectados; también puedes invocarlos con @nombre tarea.",
 			Run: func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd {

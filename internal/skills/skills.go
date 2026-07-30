@@ -24,6 +24,7 @@ type Skill struct {
 	Description string // one-liner (frontmatter: description)
 	FilePath    string // ruta absoluta a SKILL.md/legacy command
 	BaseDir     string // dirname(FilePath)
+	PluginRoot  string // non-empty for Claude plugin components
 	Source      string // "builtin" | "user" | "project" | "path"
 
 	// Claude-compatible frontmatter. Legacy .claude/commands are represented as
@@ -153,6 +154,12 @@ func scan(dir, source string, out map[string]Skill) {
 		if path != root {
 			name := d.Name()
 			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" || name == "dist" || name == "build" {
+				return filepath.SkipDir
+			}
+			// A directory with a Claude plugin manifest is a namespace boundary.
+			// The plugin loader imports its components as plugin:name; the normal
+			// recursive skill scan must not also expose them unscoped.
+			if info, statErr := os.Stat(filepath.Join(path, ".claude-plugin", "plugin.json")); statErr == nil && !info.IsDir() {
 				return filepath.SkipDir
 			}
 		}
@@ -615,7 +622,27 @@ func LoadLegacyCommands(configDir, projectRoot string) []Skill {
 	return out
 }
 
+// LoadLegacyCommandDirs loads explicit command directories for a Claude
+// plugin. Callers apply the plugin namespace after parsing so the underlying
+// legacy command format remains unchanged.
+func LoadLegacyCommandDirs(dirs []string, source string) []Skill {
+	seen := map[string]Skill{}
+	for _, dir := range dirs {
+		scanCommands(dir, source, seen)
+	}
+	out := make([]Skill, 0, len(seen))
+	for _, skill := range seen {
+		out = append(out, skill)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 func scanCommands(dir, source string, out map[string]Skill) {
+	root := filepath.Clean(dir)
+	if info, err := os.Stat(root); err == nil && !info.IsDir() {
+		root = filepath.Dir(root)
+	}
 	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -631,12 +658,12 @@ func scanCommands(dir, source string, out map[string]Skill) {
 			return nil
 		}
 		fm, body := parseSkillFrontmatter(string(data))
-		rel, _ := filepath.Rel(dir, path)
+		rel, _ := filepath.Rel(root, path)
 		name := strings.TrimSuffix(filepath.ToSlash(rel), filepath.Ext(rel))
 		name = strings.ReplaceAll(name, "/", ":")
 		name = strings.ToLower(strings.TrimSpace(fm.scalars["name"]))
 		if name == "" {
-			rel, _ = filepath.Rel(dir, path)
+			rel, _ = filepath.Rel(root, path)
 			name = strings.TrimSuffix(filepath.ToSlash(rel), filepath.Ext(rel))
 			name = strings.ReplaceAll(name, "/", "-")
 		}
@@ -683,6 +710,9 @@ func ExpandArguments(s Skill, content, raw string) string {
 		content = strings.ReplaceAll(content, "$"+name, value)
 	}
 	content = strings.ReplaceAll(content, "${CLAUDE_SKILL_DIR}", filepath.ToSlash(s.BaseDir))
+	if strings.TrimSpace(s.PluginRoot) != "" {
+		content = strings.ReplaceAll(content, "${CLAUDE_PLUGIN_ROOT}", filepath.ToSlash(s.PluginRoot))
+	}
 	return content
 }
 
@@ -800,6 +830,9 @@ func runSkillShell(ctx context.Context, s Skill, projectRoot, command string) (s
 	}
 	cmd.Dir = projectRoot
 	cmd.Env = append(os.Environ(), "CLAUDE_SKILL_DIR="+s.BaseDir, "LILITH_SKILL_DIR="+s.BaseDir)
+	if strings.TrimSpace(s.PluginRoot) != "" {
+		cmd.Env = append(cmd.Env, "CLAUDE_PLUGIN_ROOT="+s.PluginRoot)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

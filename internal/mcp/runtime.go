@@ -185,6 +185,45 @@ func (r *Runtime) Call(ctx context.Context, fullName string, args map[string]any
 	}
 	return c.Call(ctx, t.Name, args)
 }
+
+// CallServerTool invokes an MCP tool by the server/tool pair used by Claude
+// mcp_tool hooks. Plugin references use plugin:<plugin-name>:<server-name> and
+// are translated to the isolated server namespace used by ScopePluginConfigs.
+func (r *Runtime) CallServerTool(ctx context.Context, server, tool string, args map[string]any) (string, error) {
+	if r == nil {
+		return "", errors.New("MCP unavailable")
+	}
+	server = runtimeServerName(server)
+	tool = strings.TrimSpace(tool)
+	if server == "" || tool == "" {
+		return "", errors.New("MCP server and tool are required")
+	}
+	r.mu.Lock()
+	var selected Tool
+	found := false
+	for _, candidate := range r.tools {
+		if candidate.Server == server && candidate.Name == tool {
+			selected = candidate
+			found = true
+			break
+		}
+	}
+	c := r.clients[server]
+	r.mu.Unlock()
+	if !found || c == nil {
+		return "", fmt.Errorf("unknown MCP tool %s/%s", server, tool)
+	}
+	return c.Call(ctx, selected.Name, args)
+}
+
+func runtimeServerName(server string) string {
+	server = strings.TrimSpace(server)
+	parts := strings.Split(server, ":")
+	if len(parts) >= 3 && strings.EqualFold(parts[0], "plugin") {
+		return "plugin_" + sanitizeConfigName(parts[1]) + "_" + sanitizeConfigName(strings.Join(parts[2:], "_"))
+	}
+	return server
+}
 func (r *Runtime) Close() error {
 	if r == nil {
 		return nil

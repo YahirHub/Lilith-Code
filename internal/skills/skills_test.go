@@ -139,3 +139,35 @@ func TestApplyClaudeOverridesRespectsTrustAndVisibility(t *testing.T) {
 		t.Fatalf("trusted project off should hide skill: %#v", got)
 	}
 }
+
+func TestDefaultSkillScanSkipsClaudePluginNamespaceRoots(t *testing.T) {
+	root := t.TempDir()
+	pluginRoot := filepath.Join(root, "quality")
+	if err := os.MkdirAll(filepath.Join(pluginRoot, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(pluginRoot, "skills", "review"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, ".claude-plugin", "plugin.json"), []byte(`{"name":"quality"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, "skills", "review", "SKILL.md"), []byte("---\nname: review\ndescription: Review code\n---\nReview."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := Load(LoadOptions{UserDirs: []string{root}}); len(got) != 0 {
+		t.Fatalf("plugin skill leaked without namespace: %#v", got)
+	}
+}
+
+func TestLoadLegacyCommandDirsAcceptsIndividualFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "deploy.md")
+	if err := os.WriteFile(path, []byte("Deploy the application."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := LoadLegacyCommandDirs([]string{path}, "user")
+	if len(got) != 1 || got[0].Name != "deploy" || got[0].FilePath != path {
+		t.Fatalf("commands=%#v", got)
+	}
+}

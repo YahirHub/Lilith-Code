@@ -11,6 +11,7 @@ import (
 	"github.com/lilith/li/internal/agents"
 	"github.com/lilith/li/internal/providers"
 	"github.com/lilith/li/internal/providers/openai"
+	"github.com/lilith/li/internal/skills"
 	"github.com/lilith/li/internal/tools"
 )
 
@@ -418,5 +419,127 @@ func TestBackgroundPolicyUsesClaudeNarrowBuiltinSet(t *testing.T) {
 	}
 	if p.allowsName("create_goal") {
 		t.Fatal("background agent should not inherit unrelated built-in tools")
+	}
+}
+
+func TestRunForkInheritsConversationAndDropsDanglingToolCall(t *testing.T) {
+	fake := &fakeStreamer{}
+	var dangling openai.ToolCall
+	dangling.ID = "call-fork"
+	dangling.Type = "function"
+	dangling.Function.Name = "Agent"
+	dangling.Function.Arguments = `{"subagent_type":"fork"}`
+	cfg := Config{
+		Client: fake, ConfigDir: t.TempDir(), Root: t.TempDir(), ParentProviderID: "p", ParentModelID: "m",
+		Providers: providers.Config{Providers: []providers.Provider{{ID: "p", Name: "P", Models: []providers.Model{{ID: "m"}}}}},
+		ParentMessages: []openai.Message{
+			{Role: "system", Content: "main system"},
+			{Role: "user", Content: "original request"},
+			{Role: "assistant", Content: "I will branch this.", ToolCalls: []openai.ToolCall{dangling}},
+		},
+		ParentToolNames: []string{"read_files"},
+	}
+	_, err := Run(context.Background(), cfg, tools.AgentRequest{
+		Agent:  agents.Agent{Name: "fork", Description: "branch", Model: "default"},
+		Prompt: "inspect the alternative", Description: "inspect alternative", Fork: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.requests) != 1 {
+		t.Fatalf("requests=%d", len(fake.requests))
+	}
+	request := fake.requests[0]
+	if request.Provider.ID != "p" || request.Model != "m" {
+		t.Fatalf("fork model=%s/%s, want p/m", request.Provider.ID, request.Model)
+	}
+	if len(request.Messages) != 4 {
+		t.Fatalf("messages=%#v", request.Messages)
+	}
+	if request.Messages[0].Content != "main system" || request.Messages[1].Content != "original request" {
+		t.Fatalf("fork did not inherit parent context: %#v", request.Messages)
+	}
+	if len(request.Messages[2].ToolCalls) != 0 || request.Messages[2].Content != "I will branch this." {
+		t.Fatalf("dangling tool call was not sanitized: %#v", request.Messages[2])
+	}
+	if got := request.Messages[len(request.Messages)-1]; got.Role != "user" || got.Content != "inspect the alternative" {
+		t.Fatalf("fork task=%#v", got)
+	}
+	if len(request.Tools) != 1 {
+		t.Fatalf("fork tools=%d, want inherited read_files", len(request.Tools))
+	}
+}
+
+func TestRunNamedSubagentStillIgnoresParentMessages(t *testing.T) {
+	fake := &fakeStreamer{}
+	cfg := Config{
+		Client: fake, ConfigDir: t.TempDir(), Root: t.TempDir(), ParentProviderID: "p", ParentModelID: "m",
+		Providers:      providers.Config{Providers: []providers.Provider{{ID: "p", Name: "P", Models: []providers.Model{{ID: "m"}}}}},
+		ParentMessages: []openai.Message{{Role: "user", Content: "secret parent context"}},
+	}
+	_, err := Run(context.Background(), cfg, tools.AgentRequest{
+		Agent:  agents.Agent{Name: "reviewer", Description: "reviews", Prompt: "Review only."},
+		Prompt: "inspect auth", Description: "inspect auth",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range fake.requests[0].Messages {
+		if strings.Contains(msg.Content, "secret parent context") {
+			t.Fatalf("normal isolated child inherited parent context: %#v", fake.requests[0].Messages)
+		}
+	}
+}
+
+func TestRunRejectsRecursiveFork(t *testing.T) {
+	fake := &fakeStreamer{}
+	cfg := Config{
+		Client: fake, ConfigDir: t.TempDir(), Root: t.TempDir(), ParentProviderID: "p", ParentModelID: "m", ParentIsFork: true,
+		Providers:      providers.Config{Providers: []providers.Provider{{ID: "p", Name: "P", Models: []providers.Model{{ID: "m"}}}}},
+		ParentMessages: []openai.Message{{Role: "system", Content: "main"}},
+	}
+	_, err := Run(context.Background(), cfg, tools.AgentRequest{Agent: agents.Agent{Name: "fork"}, Prompt: "again", Fork: true})
+	if err == nil || !strings.Contains(err.Error(), "cannot create another fork") {
+		t.Fatalf("expected recursive fork error, got %v", err)
+	}
+	if len(fake.requests) != 0 {
+		t.Fatal("recursive fork should fail before model request")
+	}
+}
+
+func TestRunExpandsPluginRootInAgentAndPreloadedSkill(t *testing.T) {
+	fake := &fakeStreamer{}
+	pluginRoot := t.TempDir()
+	skillDir := filepath.Join(pluginRoot, "skills", "review")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillFile := filepath.Join(skillDir, "SKILL.md")
+	if err := os.WriteFile(skillFile, []byte("---\nname: quality:review\ndescription: review\n---\nPlugin=${CLAUDE_PLUGIN_ROOT}\nSkill=${CLAUDE_SKILL_DIR}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalog := []skills.Skill{{Name: "quality:review", FilePath: skillFile, BaseDir: skillDir, PluginRoot: pluginRoot}}
+	cfg := Config{
+		Client: fake, ConfigDir: t.TempDir(), Root: t.TempDir(), ParentProviderID: "p", ParentModelID: "m", Skills: catalog,
+		Providers: providers.Config{Providers: []providers.Provider{{ID: "p", Name: "P", Models: []providers.Model{{ID: "m"}}}}},
+	}
+	_, err := Run(context.Background(), cfg, tools.AgentRequest{
+		Agent: agents.Agent{
+			Name: "quality:worker", Prompt: "Use ${CLAUDE_PLUGIN_ROOT}.", PluginRoot: pluginRoot,
+			Skills: []string{"quality:review"},
+		},
+		Prompt: "review",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	system := fake.requests[0].Messages[0].Content
+	pluginSlash := filepath.ToSlash(pluginRoot)
+	skillSlash := filepath.ToSlash(skillDir)
+	if strings.Contains(system, "${CLAUDE_PLUGIN_ROOT}") || strings.Contains(system, "${CLAUDE_SKILL_DIR}") {
+		t.Fatalf("plugin placeholders were not expanded: %q", system)
+	}
+	if !strings.Contains(system, "Use "+pluginSlash+".") || !strings.Contains(system, "Plugin="+pluginSlash) || !strings.Contains(system, "Skill="+skillSlash) {
+		t.Fatalf("expanded plugin paths missing: %q", system)
 	}
 }
