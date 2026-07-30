@@ -95,6 +95,7 @@ func (m *ChatModel) runGoalCommand(args string) tea.Cmd {
 			m.AddSystem("Goal reanudado.")
 			m.persistGoalState()
 			if m.activeTurnID != 0 {
+				m.turnGoalManaged = true
 				m.enqueue("El goal persistente fue reanudado. Continúa trabajando hacia el objetivo activo.", queueSteer)
 				return nil
 			}
@@ -127,6 +128,7 @@ func (m *ChatModel) runGoalCommand(args string) tea.Cmd {
 	// the durable objective must not create a parallel parent turn; steer the
 	// running agent and let the next safe boundary pick up the new goal state.
 	if m.activeTurnID != 0 {
+		m.turnGoalManaged = true
 		m.enqueue("El objetivo persistente cambió a: "+objective+". Ajusta el trabajo actual a este goal.", queueSteer)
 		return nil
 	}
@@ -195,7 +197,7 @@ func (m *ChatModel) startGoalContinuation(instruction string) tea.Cmd {
 // visible synthetic user message. It is called only after a complete model
 // response or tool boundary and therefore never overlaps provider requests.
 func (m *ChatModel) continueGoalAtBoundary() bool {
-	if m.goals == nil || !m.goals.Active() || m.activeTurnID == 0 {
+	if !m.turnGoalManaged || m.goals == nil || !m.goals.Active() || m.activeTurnID == 0 {
 		return false
 	}
 	m.appendHistory(openai.Message{Role: "user", Content: "<goal_continue>Continue working autonomously toward the active durable goal. Do not stop merely to report progress. Finish the objective, or use update_goal with status=blocked/complete when appropriate.</goal_continue>"})
@@ -218,8 +220,11 @@ func (m *ChatModel) accountGoalRequest() {
 }
 
 func (m *ChatModel) goalStopsCurrentLoop() bool {
+	if m == nil || !m.turnGoalManaged {
+		return false
+	}
 	s := m.goalStatePointer()
-	return s != nil && s.Status != ligoal.Active
+	return s == nil || s.Status != ligoal.Active
 }
 
 func (m *ChatModel) pauseGoalOnInterrupt() {

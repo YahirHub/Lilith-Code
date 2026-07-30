@@ -128,7 +128,11 @@ type ChatModel struct {
 	turnReasoningEffort string
 	turnDeniedTools     map[string]bool
 	turnSkillHooks      *hooks.Runner
-	runningCalls        []openai.ToolCall
+	// turnGoalManaged snapshots whether this parent turn belongs to an active
+	// durable goal. A completed/paused goal must never terminate an unrelated
+	// later user request at its first tool boundary.
+	turnGoalManaged bool
+	runningCalls    []openai.ToolCall
 
 	// history is the real conversation sent to the model (incluye mensajes
 	// de herramienta), separada del transcript que se dibuja en pantalla.
@@ -619,6 +623,7 @@ func (m *ChatModel) beginTurnMode(mode planstate.Mode) error {
 	m.turnReasoningEffort = ""
 	m.turnDeniedTools = nil
 	m.turnSkillHooks = nil
+	m.turnGoalManaged = m.goals != nil && m.goals.Active()
 	if m.plans != nil {
 		m.plans.BeginUserTurn(m.turnAgentMode)
 		m.turnPlanHandoff = ""
@@ -656,6 +661,7 @@ func (m *ChatModel) endTurn() {
 	m.turnReasoningEffort = ""
 	m.turnDeniedTools = nil
 	m.turnSkillHooks = nil
+	m.turnGoalManaged = false
 	m.runningCalls = nil
 }
 
@@ -688,6 +694,7 @@ func (m *ChatModel) cancelTurn() string {
 	// never re-enter runTurn().
 	m.activeRequestID = 0
 	m.activeTurnID = 0
+	m.turnGoalManaged = false
 	// Mantener streaming=true sólo hasta refrescar el transcript permite reutilizar
 	// el prefijo cacheado de conversaciones largas. El indicador ya desaparece
 	// porque thinking/working se limpian inmediatamente.
@@ -3216,6 +3223,12 @@ func (m *ChatModel) runTurn() tea.Cmd {
 	turnID := m.activeTurnID
 	if turnID == 0 || m.turnCtx == nil || m.turnCtx.Err() != nil {
 		return nil
+	}
+	// A model may create/resume a durable goal through a tool after the parent
+	// turn already started. Bind it before the next provider request so a later
+	// blocked/complete/clear transition stops only this managed loop.
+	if m.goals != nil && m.goals.Active() {
+		m.turnGoalManaged = true
 	}
 	provider := m.ctx.Providers.FindProvider(m.turnProvider)
 	if provider == nil {
