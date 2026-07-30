@@ -823,6 +823,9 @@ func configuredMaxDepth() int {
 func resolveModel(cfg providers.Config, parentProvider, parentModel, agentModel, invocationModel string) (providers.Provider, string, error) {
 	want := strings.TrimSpace(os.Getenv("CLAUDE_CODE_SUBAGENT_MODEL"))
 	if strings.EqualFold(want, "inherit") {
+		// Preserve the existing Claude-compatible behavior: an environment value
+		// of inherit disables the global override so the invocation/agent may
+		// still choose its own model.
 		want = ""
 	}
 	if want == "" {
@@ -831,40 +834,95 @@ func resolveModel(cfg providers.Config, parentProvider, parentModel, agentModel,
 	if want == "" {
 		want = strings.TrimSpace(agentModel)
 	}
-	if want == "" || strings.EqualFold(want, "inherit") {
-		p := cfg.FindProvider(parentProvider)
-		if p == nil {
-			return providers.Provider{}, "", errors.New("parent provider not found")
-		}
-		return *p, parentModel, nil
+
+	candidates := splitModelCandidates(want)
+	if len(candidates) == 0 {
+		return parentModelSelection(cfg, parentProvider, parentModel)
 	}
-	if strings.Contains(want, "/") {
-		parts := strings.SplitN(want, "/", 2)
+
+	hasClaudeAlias := false
+	for _, candidate := range candidates {
+		if isDefaultModel(candidate) {
+			return parentModelSelection(cfg, parentProvider, parentModel)
+		}
+		if isClaudeModelAlias(candidate) {
+			hasClaudeAlias = true
+		}
+		if provider, model, ok := resolveModelCandidate(cfg, parentProvider, candidate); ok {
+			return provider, model, nil
+		}
+	}
+
+	// Portable Claude agents often pin sonnet/opus/haiku. On a Lilith setup
+	// backed only by DeepSeek/Qwen/etc. there is no equivalent alias; inheriting
+	// the parent is more useful than making an otherwise portable agent fail.
+	// For a comma-separated list we try every explicit candidate first and only
+	// then apply this compatibility fallback.
+	if hasClaudeAlias {
+		return parentModelSelection(cfg, parentProvider, parentModel)
+	}
+	return providers.Provider{}, "", fmt.Errorf("subagent models %q are not configured; use default/inherit, provider/model, or a comma-separated preference list", want)
+}
+
+func splitModelCandidates(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func isDefaultModel(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.EqualFold(value, "default") || strings.EqualFold(value, "inherit")
+}
+
+func isClaudeModelAlias(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "sonnet", "opus", "haiku", "fable":
+		return true
+	default:
+		return false
+	}
+}
+
+func parentModelSelection(cfg providers.Config, parentProvider, parentModel string) (providers.Provider, string, error) {
+	p := cfg.FindProvider(parentProvider)
+	if p == nil {
+		return providers.Provider{}, "", errors.New("parent provider not found")
+	}
+	if strings.TrimSpace(parentModel) == "" {
+		return providers.Provider{}, "", errors.New("parent model not found")
+	}
+	return *p, parentModel, nil
+}
+
+func resolveModelCandidate(cfg providers.Config, parentProvider, candidate string) (providers.Provider, string, bool) {
+	if strings.Contains(candidate, "/") {
+		parts := strings.SplitN(candidate, "/", 2)
 		if p := cfg.FindProvider(parts[0]); p != nil && providerHasModel(*p, parts[1]) {
-			return *p, parts[1], nil
+			return *p, parts[1], true
 		}
 	}
-	// Claude aliases are resolved pragmatically against configured model IDs.
-	needle := strings.ToLower(want)
+
+	// Claude aliases and exact model names are resolved pragmatically against
+	// configured model IDs, preferring the provider already selected by /models.
+	needle := strings.ToLower(strings.TrimSpace(candidate))
 	if p := cfg.FindProvider(parentProvider); p != nil {
 		if model := findModel(*p, needle); model != "" {
-			return *p, model, nil
+			return *p, model, true
 		}
 	}
 	for _, p := range cfg.Providers {
 		if model := findModel(p, needle); model != "" {
-			return p, model, nil
+			return p, model, true
 		}
 	}
-	// Portable Claude agents often pin sonnet/opus/haiku. On a Lilith setup
-	// backed only by DeepSeek/Qwen/etc. there is no equivalent alias; inheriting
-	// the parent is more useful than making an otherwise portable agent fail.
-	if needle == "sonnet" || needle == "opus" || needle == "haiku" || needle == "fable" {
-		if p := cfg.FindProvider(parentProvider); p != nil {
-			return *p, parentModel, nil
-		}
-	}
-	return providers.Provider{}, "", fmt.Errorf("subagent model %q is not configured; use inherit or provider/model", want)
+	return providers.Provider{}, "", false
 }
 func findModel(p providers.Provider, want string) string {
 	for _, m := range p.Models {

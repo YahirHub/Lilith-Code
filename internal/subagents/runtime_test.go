@@ -53,6 +53,28 @@ func TestRunStartsFreshIsolatedContext(t *testing.T) {
 	}
 }
 
+func TestRunDefaultAgentModelUsesParentTurnModel(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "")
+	fake := &fakeStreamer{}
+	cfg := Config{
+		Client: fake, ConfigDir: t.TempDir(), Root: t.TempDir(), ParentProviderID: "commandcode", ParentModelID: "gpt-5.4",
+		Providers: providers.Config{Providers: []providers.Provider{{ID: "commandcode", Name: "CommandCode", Models: []providers.Model{{ID: "gpt-5.4"}, {ID: "claude-haiku-4-5-20251001"}}}}},
+	}
+	_, err := Run(context.Background(), cfg, tools.AgentRequest{
+		Agent:  agents.Agent{Name: "context7-docs", Description: "docs", Prompt: "Read docs.", Model: "default"},
+		Prompt: "Get Baileys WhatsApp library docs", Description: "Get docs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.requests) != 1 {
+		t.Fatalf("requests=%d", len(fake.requests))
+	}
+	if fake.requests[0].Provider.ID != "commandcode" || fake.requests[0].Model != "gpt-5.4" {
+		t.Fatalf("request used %s/%s, want commandcode/gpt-5.4", fake.requests[0].Provider.ID, fake.requests[0].Model)
+	}
+}
+
 func TestPlanParentForcesChildReadOnly(t *testing.T) {
 	a := agents.Agent{Name: "worker", Description: "writes"}
 	p := newToolPolicy(a, "plan", false)
@@ -134,6 +156,82 @@ func TestConfiguredMaxDepthDefaultsToClaudeValue(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH", "2")
 	if got := configuredMaxDepth(); got != 2 {
 		t.Fatalf("Claude-compatible max depth=%d, want 2", got)
+	}
+}
+
+func TestResolveModelDefaultUsesParentSelection(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "")
+	cfg := providers.Config{Providers: []providers.Provider{
+		{ID: "commandcode", Name: "CommandCode", Models: []providers.Model{{ID: "gpt-5.4"}, {ID: "claude-haiku-4-5-20251001"}}},
+	}}
+
+	provider, model, err := resolveModel(cfg, "commandcode", "gpt-5.4", "default", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.ID != "commandcode" || model != "gpt-5.4" {
+		t.Fatalf("resolved=%s/%s, want commandcode/gpt-5.4", provider.ID, model)
+	}
+}
+
+func TestResolveModelExplicitOverridesParentSelection(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "")
+	cfg := providers.Config{Providers: []providers.Provider{
+		{ID: "commandcode", Name: "CommandCode", Models: []providers.Model{{ID: "gpt-5.4"}, {ID: "claude-haiku-4-5-20251001"}}},
+	}}
+
+	provider, model, err := resolveModel(cfg, "commandcode", "gpt-5.4", "haiku", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.ID != "commandcode" || model != "claude-haiku-4-5-20251001" {
+		t.Fatalf("resolved=%s/%s, want commandcode/claude-haiku-4-5-20251001", provider.ID, model)
+	}
+}
+
+func TestResolveModelCommaListUsesFirstResolvableCandidate(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "")
+	cfg := providers.Config{Providers: []providers.Provider{
+		{ID: "commandcode", Name: "CommandCode", Models: []providers.Model{{ID: "gpt-5.4"}}},
+		{ID: "other", Name: "Other", Models: []providers.Model{{ID: "claude-sonnet-4-5"}}},
+	}}
+
+	provider, model, err := resolveModel(cfg, "commandcode", "gpt-5.4", "missing-model, other/claude-sonnet-4-5, default", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.ID != "other" || model != "claude-sonnet-4-5" {
+		t.Fatalf("resolved=%s/%s, want other/claude-sonnet-4-5", provider.ID, model)
+	}
+}
+
+func TestResolveModelCommaListCanFallBackToDefault(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "")
+	cfg := providers.Config{Providers: []providers.Provider{
+		{ID: "commandcode", Name: "CommandCode", Models: []providers.Model{{ID: "gpt-5.4"}}},
+	}}
+
+	provider, model, err := resolveModel(cfg, "commandcode", "gpt-5.4", "missing-model, default", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.ID != "commandcode" || model != "gpt-5.4" {
+		t.Fatalf("resolved=%s/%s, want commandcode/gpt-5.4", provider.ID, model)
+	}
+}
+
+func TestResolveModelInvocationDefaultOverridesPinnedAgent(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "")
+	cfg := providers.Config{Providers: []providers.Provider{
+		{ID: "commandcode", Name: "CommandCode", Models: []providers.Model{{ID: "gpt-5.4"}, {ID: "claude-haiku-4-5-20251001"}}},
+	}}
+
+	provider, model, err := resolveModel(cfg, "commandcode", "gpt-5.4", "haiku", "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.ID != "commandcode" || model != "gpt-5.4" {
+		t.Fatalf("resolved=%s/%s, want commandcode/gpt-5.4", provider.ID, model)
 	}
 }
 

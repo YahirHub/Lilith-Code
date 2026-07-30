@@ -49,7 +49,7 @@ func init() {
 				"prompt":            map[string]any{"type": "string", "description": "Complete task and all context the isolated subagent needs."},
 				"subagent_type":     map[string]any{"type": "string", "description": "Name from <available_agents>."},
 				"task_id":           map[string]any{"type": "string", "description": "Optional prior task id to resume instead of creating a fresh child session."},
-				"model":             map[string]any{"type": "string", "description": "Optional per-invocation model override. Prefer inherit unless a specific configured model is required."},
+				"model":             map[string]any{"type": "string", "description": "Optional per-invocation model override. Use default/inherit for the model selected in /models, one configured model, or a comma-separated preference list."},
 				"run_in_background": map[string]any{"type": "boolean", "description": "Run concurrently and return a task id immediately instead of blocking for the final result."},
 			},
 			"required": []string{"description", "prompt", "subagent_type"},

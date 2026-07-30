@@ -118,9 +118,17 @@ Orden práctico:
 2. `model:` del archivo;
 3. modelo del padre.
 
-`inherit` hereda el padre. `provider/model` selecciona un modelo configurado de
-ese provider. IDs exactos se buscan entre providers configurados. Los aliases
+`default` e `inherit` heredan el proveedor/modelo seleccionado por el usuario en
+`/models` para el turno padre. `provider/model` selecciona un modelo configurado
+de ese provider. IDs exactos se buscan entre providers configurados. Los aliases
 Claude `sonnet`, `opus`, `haiku` se resuelven cuando existe un modelo compatible.
+
+Como extensión de Lilith, `model` también acepta una lista ordenada separada por
+comas, por ejemplo `model: claude-sonnet-4-5, gpt-5.4, default`. Se usa el primer
+candidato que pueda resolverse contra los providers/modelos configurados. Si una
+lista termina en `default`, el modelo seleccionado en `/models` actúa como
+fallback explícito. La misma sintaxis se acepta en el override `model` de la tool
+`Agent`.
 
 ## Uso
 

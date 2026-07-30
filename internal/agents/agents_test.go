@@ -37,6 +37,18 @@ func TestClaudeAgentParsingAndPrecedence(t *testing.T) {
 	}
 }
 
+func TestClaudeAgentModelPreferenceListParsing(t *testing.T) {
+	dir := t.TempDir()
+	writeAgent(t, dir, "context7-docs.md", "---\nname: context7-docs\ndescription: docs\nmodel: default, claude-sonnet-4-5, gpt-5.4\n---\nRead docs.")
+	got := Load(LoadOptions{UserDirs: []string{dir}})
+	if len(got) != 1 {
+		t.Fatalf("len=%d", len(got))
+	}
+	if got[0].Model != "default, claude-sonnet-4-5, gpt-5.4" {
+		t.Fatalf("model=%q", got[0].Model)
+	}
+}
+
 func TestOpenCodeFilenameAndPermissions(t *testing.T) {
 	dir := t.TempDir()
 	writeAgent(t, dir, "security-auditor.md", "---\ndescription: audits security\nmode: subagent\npermission:\n  edit: deny\n  bash: ask\n---\nAudit only.")
