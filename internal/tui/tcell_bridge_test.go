@@ -53,6 +53,19 @@ func TestTcellKeyTranslation(t *testing.T) {
 		}
 	})
 
+	t.Run("space preserves rune", func(t *testing.T) {
+		msg, ok := tcellKeyMsg(tcell.NewEventKey(tcell.KeyRune, ' ', tcell.ModNone))
+		if !ok {
+			t.Fatal("el espacio debe traducirse")
+		}
+		if msg.Type != tea.KeySpace {
+			t.Fatalf("tipo inesperado: %v", msg.Type)
+		}
+		if got := string(msg.Runes); got != " " {
+			t.Fatalf("el espacio debe conservar su rune, obtuvo %q", got)
+		}
+	})
+
 	t.Run("alt direction", func(t *testing.T) {
 		msg, ok := tcellKeyMsg(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModAlt))
 		if !ok {

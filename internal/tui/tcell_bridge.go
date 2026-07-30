@@ -189,7 +189,10 @@ func tcellKeyMsg(event *tcell.EventKey) (tea.KeyMsg, bool) {
 			}
 		}
 		if r == ' ' {
-			return tea.KeyMsg{Type: tea.KeySpace, Alt: alt}, true
+			// Bubble Tea's own parser reports a space as KeySpace while still
+			// preserving the rune. Bubbles textarea inserts msg.Runes, so a
+			// KeySpace without Runes is displayed as a no-op.
+			return tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}, Alt: alt}, true
 		}
 		if r == 0 {
 			return tea.KeyMsg{}, false
