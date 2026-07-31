@@ -147,3 +147,116 @@ func TestSetupSearchCommandWasRemoved(t *testing.T) {
 		t.Fatal("help must not advertise /setup-search")
 	}
 }
+
+func TestConfigViewportFollowsFocusAndReturnsToHeader(t *testing.T) {
+	ctx := testConfigContext(t)
+	ctx.Height = 12
+	m := NewConfigScreen(ctx)
+
+	top := stripANSI(m.View())
+	for _, want := range []string{"Configuración", "General", "Búsqueda", "Seguridad"} {
+		if !strings.Contains(top, want) {
+			t.Fatalf("initial config viewport missing %q:\n%s", want, top)
+		}
+	}
+	if m.viewportOffset != 0 {
+		t.Fatalf("initial viewport offset = %d, want 0", m.viewportOffset)
+	}
+
+	// Move to the final control. The viewport must follow the focused card
+	// instead of leaving it below the physical terminal.
+	for range 6 {
+		next, _ := m.Update(uikit.KeyMsg{Type: uikit.KeyDown})
+		m = next.(*ConfigScreen)
+		_ = m.View()
+	}
+	if m.focus != "back" {
+		t.Fatalf("focus = %q, want back", m.focus)
+	}
+	bottom := stripANSI(m.View())
+	if !strings.Contains(bottom, "Volver al chat") {
+		t.Fatalf("bottom focused control is outside viewport:\n%s", bottom)
+	}
+	if m.viewportOffset == 0 {
+		t.Fatal("viewport did not move while navigating to the final control")
+	}
+
+	// Walk back to the section navigation. The last Up must restore the real
+	// beginning of /config, not only change the logical focus off-screen.
+	for range 6 {
+		next, _ := m.Update(uikit.KeyMsg{Type: uikit.KeyUp})
+		m = next.(*ConfigScreen)
+		_ = m.View()
+	}
+	if m.focus != configSectionNavFocus {
+		t.Fatalf("focus = %q, want section navigation", m.focus)
+	}
+	returned := stripANSI(m.View())
+	for _, want := range []string{"Configuración", "General", "Búsqueda", "Seguridad"} {
+		if !strings.Contains(returned, want) {
+			t.Fatalf("returned config viewport missing %q:\n%s", want, returned)
+		}
+	}
+	if m.viewportOffset != 0 {
+		t.Fatalf("returned viewport offset = %d, want 0", m.viewportOffset)
+	}
+}
+
+func TestConfigSearchViewportKeepsProviderVisibleAndCanReturnToTop(t *testing.T) {
+	ctx := testConfigContext(t)
+	ctx.Height = 10
+	m := NewConfigScreen(ctx)
+	m.setSection(configSectionSearch)
+
+	next, _ := m.Update(uikit.KeyMsg{Type: uikit.KeyDown})
+	m = next.(*ConfigScreen)
+	if m.focus != "search-content" {
+		t.Fatalf("focus = %q, want search-content", m.focus)
+	}
+
+	for i, provider := range websearch.ProviderIDs {
+		if i > 0 {
+			next, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyDown})
+			m = next.(*ConfigScreen)
+		}
+		view := stripANSI(m.View())
+		label := websearch.Labels[provider]
+		if !strings.Contains(view, label) {
+			t.Fatalf("selected provider %q is outside viewport:\n%s", label, view)
+		}
+	}
+	if m.viewportOffset == 0 {
+		t.Fatal("search viewport did not move while navigating to the final provider")
+	}
+
+	for i := len(websearch.ProviderIDs) - 1; i > 0; i-- {
+		next, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyUp})
+		m = next.(*ConfigScreen)
+		_ = m.View()
+	}
+	// Up once more from the first provider returns to the section picker.
+	next, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyUp})
+	m = next.(*ConfigScreen)
+	returned := stripANSI(m.View())
+	if m.focus != configSectionNavFocus {
+		t.Fatalf("focus = %q, want section navigation", m.focus)
+	}
+	if m.viewportOffset != 0 {
+		t.Fatalf("returned search viewport offset = %d, want 0", m.viewportOffset)
+	}
+	if !strings.Contains(returned, "Configuración") || !strings.Contains(returned, "Búsqueda") {
+		t.Fatalf("search viewport did not return to top:\n%s", returned)
+	}
+}
+
+func TestConfigSecurityDownFocusesFirstControl(t *testing.T) {
+	ctx := testConfigContext(t)
+	m := NewConfigScreen(ctx)
+	m.setSection(configSectionSecurity)
+
+	next, _ := m.Update(uikit.KeyMsg{Type: uikit.KeyDown})
+	m = next.(*ConfigScreen)
+	if m.focus != "trusted-project" {
+		t.Fatalf("security first focus = %q, want trusted-project", m.focus)
+	}
+}

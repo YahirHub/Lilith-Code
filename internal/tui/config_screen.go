@@ -32,14 +32,15 @@ var configSections = []configSection{
 // owns focus. Once focus moves into a section, the section can use left/right
 // for its own controls without accidentally switching pages.
 type ConfigScreen struct {
-	ctx      *AppContext
-	settings config.Settings
-	section  configSection
-	focus    string
-	message  string
-	danger   string
-	loaded   []skills.Skill
-	search   *searchConfigState
+	ctx            *AppContext
+	settings       config.Settings
+	section        configSection
+	focus          string
+	message        string
+	danger         string
+	loaded         []skills.Skill
+	search         *searchConfigState
+	viewportOffset int
 }
 
 func NewConfigScreen(ctx *AppContext) *ConfigScreen {
@@ -216,7 +217,7 @@ func (c *ConfigScreen) focusFirstContent() {
 		c.focus = "search-content"
 		c.search.ensureSelectedProvider()
 	case configSectionSecurity:
-		c.focus = "back"
+		c.focus = "trusted-project"
 	}
 }
 
@@ -265,6 +266,11 @@ func (c *ConfigScreen) toggleSkills() (uikit.Model, uikit.Cmd) {
 }
 
 func (c *ConfigScreen) layout() (string, []settingsHit) {
+	view, hits := c.fullLayout()
+	return c.visibleLayout(view, hits)
+}
+
+func (c *ConfigScreen) fullLayout() (string, []settingsHit) {
 	s := c.ctx.Styles
 	w := settingsContentWidth(c.ctx.Width)
 	canvas := newSettingsCanvas(w)
@@ -326,6 +332,91 @@ func (c *ConfigScreen) layout() (string, []settingsHit) {
 		canvas.block(settingsFooter(s, c.footerText()))
 	}
 	return canvas.render(c.ctx.Width)
+}
+
+// visibleLayout constrains /config to the physical terminal height and keeps
+// the currently focused control inside that window. The full settings layout
+// remains intact; only viewportOffset changes while the user navigates.
+func (c *ConfigScreen) visibleLayout(view string, hits []settingsHit) (string, []settingsHit) {
+	lines := strings.Split(view, "\n")
+	height := c.ctx.Height
+	if height <= 0 || len(lines) <= height {
+		c.viewportOffset = 0
+		return view, hits
+	}
+
+	maxOffset := len(lines) - height
+	focusID, forceTop := c.focusedHitID()
+	if forceTop {
+		c.viewportOffset = 0
+	} else if focusID != "" {
+		for _, hit := range hits {
+			if hit.id != focusID {
+				continue
+			}
+			if hit.rect.y < c.viewportOffset {
+				c.viewportOffset = hit.rect.y
+			}
+			if bottom := hit.rect.y + hit.rect.h; bottom > c.viewportOffset+height {
+				c.viewportOffset = bottom - height
+			}
+			break
+		}
+	}
+	if c.viewportOffset < 0 {
+		c.viewportOffset = 0
+	}
+	if c.viewportOffset > maxOffset {
+		c.viewportOffset = maxOffset
+	}
+
+	start := c.viewportOffset
+	end := start + height
+	visibleHits := make([]settingsHit, 0, len(hits))
+	for _, hit := range hits {
+		top := hit.rect.y
+		bottom := hit.rect.y + hit.rect.h
+		if bottom <= start || top >= end {
+			continue
+		}
+		if top < start {
+			top = start
+		}
+		if bottom > end {
+			bottom = end
+		}
+		hit.rect.y = top - start
+		hit.rect.h = bottom - top
+		visibleHits = append(visibleHits, hit)
+	}
+	return strings.Join(lines[start:end], "\n"), visibleHits
+}
+
+// focusedHitID maps the logical focus used by /config to the concrete block
+// that must remain visible. Returning forceTop for the section navigation also
+// guarantees that repeated Up really returns to the header instead of leaving
+// the viewport anchored to a lower card.
+func (c *ConfigScreen) focusedHitID() (id string, forceTop bool) {
+	if c.focus == configSectionNavFocus {
+		return "section:" + string(c.section), true
+	}
+	if c.section != configSectionSearch || c.focus != "search-content" || c.search == nil {
+		return c.focus, false
+	}
+
+	switch c.search.view {
+	case searchViewProvider:
+		return c.search.focus, false
+	case searchViewKey:
+		return "search-key-input", false
+	case searchViewOrder:
+		if c.search.orderAt >= 0 && c.search.orderAt < len(c.search.order) {
+			return "search-order:" + string(c.search.order[c.search.orderAt]), false
+		}
+	case searchViewList:
+		return "search-provider:" + string(c.search.selected), false
+	}
+	return "", false
 }
 
 func (c *ConfigScreen) sectionPicker(width int) settingsBlock {
