@@ -52,7 +52,9 @@ Reglas críticas:
 - el pegado se entrega como bloque atómico;
 - la última columna se reserva para la scrollbar;
 - `Style.Width` es ancho de contenido: bordes y padding se suman aparte;
-- el input tiene límite de caracteres independiente de sus ocho filas visibles.
+- el input tiene límite de caracteres independiente de sus ocho filas visibles;
+- el loop que consume mensajes, SSE y timers no espera el dibujo físico de `tview`; publica el frame más reciente en una cola independiente con cadencia limitada;
+- el transcript conserva el historial estable como segmentos de líneas y sólo vuelve a procesar la cola mutable, evitando trabajo proporcional a toda la conversación por cada token.
 
 ## 5. Proveedores, autenticación y catálogos
 
@@ -148,3 +150,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `083-modelos-conectados-catalogos-modos-y-layout.md`
 - `084-catalogos-manuales-sin-endpoint-models.md`
 - `085-timeout-shell-solo-explicito.md`
+- `086-rendimiento-streaming-y-render-tview.md`

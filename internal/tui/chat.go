@@ -253,14 +253,14 @@ type ChatModel struct {
 	// la cola a partir del último mensaje del usuario; mantener renderizado el
 	// historial anterior evita volver a pasar cientos de mensajes por el render Markdown
 	// en cada delta SSE.
-	transcriptPrefix      string
+	transcriptPrefixLines []string
 	transcriptPrefixCount int
 	transcriptPrefixWidth int
 	transcriptPrefixValid bool
 
 	// Los deltas de streaming pueden llegar mucho más rápido de lo que una
 	// terminal puede pintar. Agrupamos refrescos del viewport para no ejecutar
-	// SetContent por cada token, sin perder ningún texto acumulado.
+	// reconstruir el transcript por cada token, sin perder ningún texto acumulado.
 	lastTranscriptRefresh       time.Time
 	transcriptRefreshPending    bool
 	transcriptRefreshAutoBottom bool
@@ -1755,51 +1755,64 @@ func wrapTranscriptChunk(content string, width int) string {
 	return tuistyle.NewStyle().Width(width).Render(content)
 }
 
+func splitTranscriptLines(content string) []string {
+	if content == "" {
+		return nil
+	}
+	return strings.Split(content, "\n")
+}
+
+func appendTranscriptLines(base []string, chunk string) []string {
+	lines := splitTranscriptLines(chunk)
+	if len(lines) == 0 {
+		return base
+	}
+	if len(base) > 0 {
+		base = append(base, "")
+	}
+	return append(base, lines...)
+}
+
 func (m *ChatModel) refreshTranscript(scrollBottom bool) {
 	prefixCount := m.stableTranscriptPrefixCount()
 	width := m.viewport.Width
 	if !m.transcriptPrefixValid || m.transcriptPrefixWidth != width || prefixCount < m.transcriptPrefixCount {
-		m.transcriptPrefix = wrapTranscriptChunk(
+		m.transcriptPrefixLines = splitTranscriptLines(wrapTranscriptChunk(
 			m.renderTranscriptRange(0, prefixCount, true),
 			width,
-		)
+		))
 		m.transcriptPrefixCount = prefixCount
 		m.transcriptPrefixWidth = width
 		m.transcriptPrefixValid = true
 	} else if prefixCount > m.transcriptPrefixCount {
 		// El historial estable sólo crece en condiciones normales. Renderiza
-		// exclusivamente los mensajes nuevos y añádelos al prefijo ya pintado;
-		// así una conversación de cientos de mensajes no vuelve a pasar completa
-		// por el render Markdown al terminar un turno y comenzar el siguiente.
+		// exclusivamente los mensajes nuevos y conserva sus filas ya procesadas;
+		// así una conversación de cientos de mensajes no vuelve a concatenarse ni
+		// dividirse completa durante cada delta del turno siguiente.
 		chunk := wrapTranscriptChunk(
 			m.renderTranscriptRange(m.transcriptPrefixCount, prefixCount, false),
 			width,
 		)
-		if chunk != "" {
-			if m.transcriptPrefix != "" {
-				m.transcriptPrefix += "\n\n"
-			}
-			m.transcriptPrefix += chunk
-		}
+		m.transcriptPrefixLines = appendTranscriptLines(m.transcriptPrefixLines, chunk)
 		m.transcriptPrefixCount = prefixCount
 		m.transcriptPrefixWidth = width
 	}
 
-	content := m.transcriptPrefix
+	var tailLines []string
 	if prefixCount < len(m.messages) {
 		tail := wrapTranscriptChunk(
 			m.renderTranscriptRange(prefixCount, len(m.messages), false),
 			width,
 		)
-		if tail != "" {
-			if content != "" {
-				content += "\n\n"
-			}
-			content += tail
+		tailLines = splitTranscriptLines(tail)
+		if len(m.transcriptPrefixLines) > 0 && len(tailLines) > 0 {
+			// Equivale a unir prefijo y cola con dos saltos: queda una fila vacía entre
+			// ambos bloques, sin reconstruir un string del transcript completo.
+			tailLines = append([]string{""}, tailLines...)
 		}
 	}
 
-	m.viewport.SetContent(content)
+	m.viewport.SetLineSegments(m.transcriptPrefixLines, tailLines)
 	m.lastTranscriptRefresh = time.Now()
 	m.transcriptRefreshPending = false
 	m.transcriptRefreshAutoBottom = false
@@ -1814,7 +1827,7 @@ func (m *ChatModel) refreshTranscript(scrollBottom bool) {
 // refreshTranscriptStreaming limita el número de reconstrucciones del
 // viewport durante SSE. Los mensajes y streamBuf se actualizan siempre; sólo
 // agrupamos la pintura. Esto conserva el historial completo y evita que
-// SetContent procese miles de líneas por cada token recibido.
+// se reconstruyan miles de líneas por cada token recibido.
 func (m *ChatModel) refreshTranscriptStreaming(scrollBottom bool) uikit.Cmd {
 	if scrollBottom {
 		m.transcriptRefreshAutoBottom = true
@@ -2238,9 +2251,14 @@ func (m *ChatModel) buildPalette(query string) []SlashCommand {
 
 func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 	// Los componentes inferiores son dinámicos (TodoWrite, actividad, cola,
-	// paleta e input autoajustable). Sincroniza su geometría antes de que una
-	// tecla de scroll use una altura heredada del frame anterior.
-	m.syncViewportGeometry()
+	// paleta e input autoajustable). Sólo los eventos interactivos necesitan que
+	// el viewport persistido coincida con el frame visible antes de navegar. Los
+	// deltas SSE y timers no usan esa geometría; recalcular todo el chrome por
+	// token era trabajo innecesario y podía frenar el stream.
+	switch msg.(type) {
+	case uikit.KeyMsg, uikit.MouseMsg:
+		m.syncViewportGeometry()
+	}
 	switch v := msg.(type) {
 	case uikit.WindowSizeMsg:
 		m.Resize(v.Width, v.Height)

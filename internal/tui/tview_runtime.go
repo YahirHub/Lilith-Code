@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/lilith/li/internal/tui/uikit"
@@ -20,8 +21,69 @@ type tviewRuntime struct {
 	root    RootModel
 
 	messages *tviewMessageQueue
+	frames   *tviewFrameQueue
 	stopped  chan struct{}
 	stopOnce sync.Once
+}
+
+const tviewFrameInterval = time.Second / 30
+
+type tviewFrame struct {
+	view         string
+	captureMouse bool
+}
+
+// tviewFrameQueue keeps at most one frame waiting for the physical terminal.
+// Rendering through tview.QueueUpdateDraw is synchronous: if the terminal is
+// slow, waiting for it in modelLoop would also pause SSE reads, timers and key
+// handling. Replacing an obsolete pending frame with the newest one keeps the
+// state loop independent from terminal throughput.
+type tviewFrameQueue struct {
+	mu         sync.Mutex
+	pending    tviewFrame
+	hasPending bool
+	ready      chan struct{}
+}
+
+func newTViewFrameQueue() *tviewFrameQueue {
+	return &tviewFrameQueue{ready: make(chan struct{}, 1)}
+}
+
+func (q *tviewFrameQueue) publish(frame tviewFrame) {
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	q.pending = frame
+	q.hasPending = true
+	q.mu.Unlock()
+	select {
+	case q.ready <- struct{}{}:
+	default:
+	}
+}
+
+func (q *tviewFrameQueue) pop(stopped <-chan struct{}) (tviewFrame, bool) {
+	if q == nil {
+		return tviewFrame{}, false
+	}
+	for {
+		q.mu.Lock()
+		if q.hasPending {
+			frame := q.pending
+			q.pending = tviewFrame{}
+			q.hasPending = false
+			q.mu.Unlock()
+			return frame, true
+		}
+		q.mu.Unlock()
+
+		select {
+		case <-q.ready:
+		case <-stopped:
+			return tviewFrame{}, false
+		}
+	}
 }
 
 func newTViewRuntime(root RootModel, screen tcell.Screen) *tviewRuntime {
@@ -39,6 +101,7 @@ func newTViewRuntime(root RootModel, screen tcell.Screen) *tviewRuntime {
 		app:      app,
 		root:     root,
 		messages: newTViewMessageQueue(),
+		frames:   newTViewFrameQueue(),
 		stopped:  make(chan struct{}),
 	}
 	runtime.surface = newTViewModelSurface(runtime.send)
@@ -51,6 +114,7 @@ func runRootTView(root RootModel, screen tcell.Screen) error {
 	runtime.surface.setView(root.View())
 	runtime.app.EnableMouse(root.wantsMouseCapture())
 
+	go runtime.renderLoop()
 	go runtime.modelLoop()
 	runtime.dispatch(root.Init())
 
@@ -103,24 +167,32 @@ func (q *tviewMessageQueue) push(msg uikit.Msg) {
 	}
 }
 
+func (q *tviewMessageQueue) tryPop() (uikit.Msg, bool) {
+	if q == nil {
+		return nil, false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.items) == 0 {
+		return nil, false
+	}
+	msg := q.items[0]
+	q.items[0] = nil
+	q.items = q.items[1:]
+	if len(q.items) == 0 {
+		q.items = nil
+	}
+	return msg, true
+}
+
 func (q *tviewMessageQueue) pop(stopped <-chan struct{}) (uikit.Msg, bool) {
 	if q == nil {
 		return nil, false
 	}
 	for {
-		q.mu.Lock()
-		if len(q.items) > 0 {
-			msg := q.items[0]
-			q.items[0] = nil
-			q.items = q.items[1:]
-			if len(q.items) == 0 {
-				q.items = nil
-			}
-			q.mu.Unlock()
+		if msg, ok := q.tryPop(); ok {
 			return msg, true
 		}
-		q.mu.Unlock()
-
 		select {
 		case <-q.ready:
 		case <-stopped:
@@ -152,37 +224,109 @@ func forwardTViewCtrlC(event *tcell.EventKey) *tcell.EventKey {
 }
 
 func (r *tviewRuntime) modelLoop() {
+	lastFrame := time.Now()
+	dirty := false
+	frameTimer := time.NewTimer(time.Hour)
+	defer frameTimer.Stop()
+	if !frameTimer.Stop() {
+		<-frameTimer.C
+	}
+	var frameDeadline <-chan time.Time
+
+	publishFrame := func() {
+		if !dirty {
+			return
+		}
+		r.frames.publish(tviewFrame{
+			view:         r.root.View(),
+			captureMouse: r.root.wantsMouseCapture(),
+		})
+		dirty = false
+		lastFrame = time.Now()
+		frameDeadline = nil
+	}
+
+	requestFrame := func() {
+		dirty = true
+		if frameDeadline != nil {
+			return
+		}
+		wait := tviewFrameInterval - time.Since(lastFrame)
+		if wait <= 0 {
+			publishFrame()
+			return
+		}
+		frameTimer.Reset(wait)
+		frameDeadline = frameTimer.C
+	}
+
 	for {
-		msg, ok := r.messages.pop(r.stopped)
+		// Never starve a due frame behind a burst of provider chunks. The frame
+		// itself is latest-only, so publishing it cannot block the state loop.
+		if frameDeadline != nil {
+			select {
+			case <-frameDeadline:
+				publishFrame()
+				continue
+			default:
+			}
+		}
+
+		if msg, ok := r.messages.tryPop(); ok {
+			if _, quitting := msg.(uikit.QuitMsg); quitting {
+				r.stop()
+				return
+			}
+
+			next, cmd := r.root.Update(msg)
+			switch nextRoot := next.(type) {
+			case RootModel:
+				r.root = nextRoot
+			case *RootModel:
+				if nextRoot != nil {
+					r.root = *nextRoot
+				}
+			default:
+				// RootModel is the router and should always remain the top-level
+				// model. Ignore an unexpected replacement rather than losing the
+				// persistent chat state.
+			}
+
+			// Start the next stream read/tool/timer before preparing a frame. A slow
+			// terminal must never become backpressure for the provider connection.
+			r.dispatch(cmd)
+			// Runtime messages for the persistent chat keep flowing while /config,
+			// /models or another screen is visible. They do not change that screen,
+			// so repainting it for every hidden token would only waste terminal time.
+			if r.root.chatVisible() || !chatRuntimeMsg(msg) {
+				requestFrame()
+			}
+			continue
+		}
+
+		select {
+		case <-r.messages.ready:
+		case <-frameDeadline:
+			publishFrame()
+		case <-r.stopped:
+			return
+		}
+	}
+}
+
+func (r *tviewRuntime) renderLoop() {
+	for {
+		frame, ok := r.frames.pop(r.stopped)
 		if !ok {
 			return
 		}
-		if _, quitting := msg.(uikit.QuitMsg); quitting {
-			r.stop()
-			return
-		}
-
-		next, cmd := r.root.Update(msg)
-		switch nextRoot := next.(type) {
-		case RootModel:
-			r.root = nextRoot
-		case *RootModel:
-			if nextRoot != nil {
-				r.root = *nextRoot
-			}
-		default:
-			// RootModel is the router and should always remain the top-level
-			// model. Ignore an unexpected replacement rather than losing the
-			// persistent chat state.
-		}
-
-		view := r.root.View()
-		captureMouse := r.root.wantsMouseCapture()
+		// QueueUpdateDraw intentionally lives only in this goroutine because it
+		// waits for tview's event loop and the physical terminal to complete the
+		// draw. While that happens modelLoop continues consuming SSE and timers.
 		r.app.QueueUpdateDraw(func() {
-			r.app.EnableMouse(captureMouse)
-			r.surface.setView(view)
+			r.app.EnableMouse(frame.captureMouse)
+			r.surface.setView(frame.view)
 		})
-		r.dispatch(cmd)
 	}
 }
 

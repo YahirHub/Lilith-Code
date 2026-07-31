@@ -32,6 +32,8 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - Go objetivo: 1.24 o superior.
 - `tview` controla el runtime físico; la UI visible se construye con los componentes internos de Lilith.
 - No bloquear el bucle de render con llamadas de red o procesos largos: usar `uikit.Cmd`.
+- El bucle de estado/streaming nunca debe esperar a `tview.QueueUpdateDraw`: el render físico corre en una cola latest-only independiente y limitada por frecuencia.
+- No concatenar ni dividir el transcript completo por cada delta. Mantener el historial estable en segmentos de líneas y reconstruir únicamente la cola mutable del turno.
 
 ### Proveedores y modelos
 

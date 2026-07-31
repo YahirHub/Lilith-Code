@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -186,5 +187,94 @@ func TestTranslateViewForTViewEscapesLiteralStyleTags(t *testing.T) {
 	}
 	if !strings.Contains(got, "[red[]") {
 		t.Fatalf("el tag literal no quedó escapado para tview: %q", got)
+	}
+}
+
+func TestTViewFrameQueueKeepsOnlyLatestFrameWithoutBlocking(t *testing.T) {
+	queue := newTViewFrameQueue()
+	const total = 10000
+
+	done := make(chan struct{})
+	go func() {
+		for index := 0; index < total; index++ {
+			queue.publish(tviewFrame{view: fmt.Sprintf("frame-%05d", index)})
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("publicar frames quedó bloqueado por un consumidor lento")
+	}
+
+	stopped := make(chan struct{})
+	defer close(stopped)
+	frame, ok := queue.pop(stopped)
+	if !ok {
+		t.Fatal("la cola terminó antes de entregar el frame")
+	}
+	if want := fmt.Sprintf("frame-%05d", total-1); frame.view != want {
+		t.Fatalf("se conservó un frame obsoleto: got=%q want=%q", frame.view, want)
+	}
+}
+
+type runtimeThroughputMsg struct{}
+
+type runtimeThroughputScreen struct {
+	seen atomic.Int64
+}
+
+func (m *runtimeThroughputScreen) Init() uikit.Cmd { return nil }
+
+func (m *runtimeThroughputScreen) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
+	if _, ok := msg.(runtimeThroughputMsg); ok {
+		m.seen.Add(1)
+	}
+	return m, nil
+}
+
+func (m *runtimeThroughputScreen) View() string {
+	return fmt.Sprintf("seen=%d", m.seen.Load())
+}
+
+func TestTViewModelLoopDoesNotWaitForFrameConsumer(t *testing.T) {
+	screen := &runtimeThroughputScreen{}
+	runtime := &tviewRuntime{
+		root:     RootModel{current: screen},
+		messages: newTViewMessageQueue(),
+		frames:   newTViewFrameQueue(),
+		stopped:  make(chan struct{}),
+	}
+	loopDone := make(chan struct{})
+	go func() {
+		defer close(loopDone)
+		runtime.modelLoop()
+	}()
+
+	const total = 5000
+	for index := 0; index < total; index++ {
+		runtime.messages.push(runtimeThroughputMsg{})
+	}
+
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
+	for screen.seen.Load() < total {
+		select {
+		case <-poll.C:
+		case <-deadline.C:
+			close(runtime.stopped)
+			<-loopDone
+			t.Fatalf("el model loop quedó bloqueado sin consumidor de frames: procesó %d/%d", screen.seen.Load(), total)
+		}
+	}
+
+	close(runtime.stopped)
+	select {
+	case <-loopDone:
+	case <-time.After(time.Second):
+		t.Fatal("el model loop no terminó al cerrar el runtime")
 	}
 }
