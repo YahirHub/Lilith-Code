@@ -40,3 +40,18 @@ func TestFetchModelsUsesOpenAICompatibleModelsEndpoint(t *testing.T) {
 		t.Fatalf("los modelos descubiertos deben quedar con contexto resoluble: %+v", models)
 	}
 }
+
+func TestFetchModelsTreatsMissingEndpointAsUnsupportedCatalog(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	models, err := FetchModels(server.URL+"/v1", "")
+	if models != nil {
+		t.Fatalf("models = %+v, want nil", models)
+	}
+	if !IsModelCatalogUnavailable(err) {
+		t.Fatalf("error = %v, want unsupported catalog", err)
+	}
+}

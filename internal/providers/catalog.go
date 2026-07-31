@@ -85,6 +85,9 @@ func FetchModels(baseURL, apiKeyInput string) ([]Model, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if modelCatalogUnavailableStatus(resp.StatusCode) {
+			return nil, newModelCatalogUnavailableError(base+"/models", resp.StatusCode)
+		}
 		return nil, fmt.Errorf("El endpoint respondió HTTP %d al listar modelos.", resp.StatusCode)
 	}
 

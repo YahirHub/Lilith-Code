@@ -197,13 +197,18 @@ func (m ModelSelectorModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 func summarizeCatalogRefresh(report providers.RefreshReport) string {
 	updated := report.UpdatedCount()
 	errorsCount := len(report.Errors)
+	manualCount := report.UnsupportedCount()
 	switch {
 	case updated > 0 && errorsCount > 0:
 		return fmt.Sprintf("Catálogos actualizados: %d · %d proveedor(es) no respondieron", updated, errorsCount)
-	case updated > 0:
-		return fmt.Sprintf("Catálogos actualizados: %d", updated)
 	case errorsCount > 0:
 		return fmt.Sprintf("No se pudieron actualizar %d catálogo(s); se conserva la caché disponible", errorsCount)
+	case updated > 0 && manualCount > 0:
+		return fmt.Sprintf("Catálogos actualizados: %d · %d proveedor(es) usan modelos manuales", updated, manualCount)
+	case updated > 0:
+		return fmt.Sprintf("Catálogos actualizados: %d", updated)
+	case manualCount > 0:
+		return fmt.Sprintf("Catálogos al día · %d proveedor(es) usan modelos manuales", manualCount)
 	default:
 		return "Catálogos al día"
 	}

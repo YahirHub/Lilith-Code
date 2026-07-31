@@ -47,6 +47,7 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - Los catálogos bundled se guardan en `provider-model-cache.json`; así los modelos descubiertos sobreviven a reinicios y trabajo sin red.
 - Si el modelo activo desaparece del catálogo, seleccionar el primer modelo válido de un proveedor conectado.
 - Un fallo de un proveedor no debe impedir actualizar los demás ni borrar su última caché válida.
+- Si `GET {baseURL}/models` responde 404, 405 o 501, tratar el catálogo como no soportado: conservar modelos manuales/caché y no mostrarlo como error.
 
 ### Agentes primarios
 

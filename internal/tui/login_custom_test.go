@@ -108,3 +108,42 @@ func TestCustomLoginManualModelsKeepsOptionalContextSyntax(t *testing.T) {
 		t.Fatalf("el contexto omitido debe resolverse automáticamente: %+v", p.Models[1])
 	}
 }
+
+func TestCustomLoginMissingModelsEndpointRequestsManualModelsWithoutError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	ctx := &AppContext{
+		ConfigDir: t.TempDir(),
+		Styles:    NewStyles(DefaultTheme()),
+	}
+	m := NewCustomLogin(ctx)
+	m.step = stepModels
+	m.name = "Manual fallback"
+	m.url = server.URL + "/v1"
+	m.updateInputForStep()
+
+	next, cmd := m.advance()
+	fetching := next.(CustomLoginModel)
+	msg := cmd().(modelsFetchedMsg)
+	if !providers.IsModelCatalogUnavailable(msg.err) {
+		t.Fatalf("fetch error = %v", msg.err)
+	}
+
+	next, doneCmd := fetching.Update(msg)
+	got := next.(CustomLoginModel)
+	if doneCmd != nil {
+		t.Fatal("un catálogo no soportado debe mantener abierto el formulario")
+	}
+	if got.err != "" {
+		t.Fatalf("se mostró como error: %q", got.err)
+	}
+	if got.notice == "" {
+		t.Fatal("debe explicar que se introduzcan modelos manualmente")
+	}
+	if got.fetching {
+		t.Fatal("el formulario quedó bloqueado")
+	}
+}

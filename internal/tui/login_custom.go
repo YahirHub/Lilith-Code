@@ -30,6 +30,7 @@ type CustomLoginModel struct {
 	url         string
 	key         string
 	err         string
+	notice      string
 	// fetching indica que se está consultando {baseUrl}/models.
 	fetching bool
 }
@@ -67,9 +68,16 @@ func (m CustomLoginModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 	case modelsFetchedMsg:
 		m.fetching = false
 		if v.err != nil {
+			if providers.IsModelCatalogUnavailable(v.err) {
+				m.err = ""
+				m.notice = "Este proveedor no expone /models. Escribe sus modelos manualmente; Lilith los conservará sin tratarlo como error."
+				return m, nil
+			}
+			m.notice = ""
 			m.err = v.err.Error()
 			return m, nil
 		}
+		m.notice = ""
 		return m.finish(v.models)
 
 	case uikit.MouseMsg:
@@ -138,6 +146,7 @@ func (m CustomLoginModel) back() (uikit.Model, uikit.Cmd) {
 	if m.step > stepName {
 		m.step--
 		m.err = ""
+		m.notice = ""
 		m.updateInputForStep()
 		return m, nil
 	}
@@ -176,6 +185,7 @@ func (m CustomLoginModel) advance() (uikit.Model, uikit.Cmd) {
 	val := m.currentValue()
 	switch m.step {
 	case stepName:
+		m.notice = ""
 		if val == "" {
 			m.err = "Escribe un nombre."
 			return m, nil
@@ -185,6 +195,7 @@ func (m CustomLoginModel) advance() (uikit.Model, uikit.Cmd) {
 		m.err = ""
 		m.updateInputForStep()
 	case stepURL:
+		m.notice = ""
 		if _, err := providers.NormalizeBaseURL(val); err != nil {
 			m.err = err.Error()
 			return m, nil
@@ -194,6 +205,7 @@ func (m CustomLoginModel) advance() (uikit.Model, uikit.Cmd) {
 		m.err = ""
 		m.updateInputForStep()
 	case stepKey:
+		m.notice = ""
 		m.key = val
 		m.step = stepModels
 		m.err = ""
@@ -201,6 +213,7 @@ func (m CustomLoginModel) advance() (uikit.Model, uikit.Cmd) {
 	case stepModels:
 		if val == "" {
 			m.err = ""
+			m.notice = ""
 			m.fetching = true
 			return m, fetchModelsCmd(m.url, m.key)
 		}
@@ -287,6 +300,10 @@ func (m CustomLoginModel) layout() (string, []settingsHit) {
 		}))
 	} else {
 		c.block(settingsInput(s, settingsInputSpec{ID: "input", Content: m.input.View(), Width: w, Focused: true}))
+	}
+	if m.notice != "" {
+		c.blank()
+		c.line(s.Muted.Render("• " + settingsWrapPlain(m.notice, w)))
 	}
 	if m.err != "" {
 		c.blank()

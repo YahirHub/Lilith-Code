@@ -74,6 +74,7 @@ Tipos de autenticación:
 `/providers` muestra todas las conexiones para poder configurarlas. `/models` muestra exclusivamente modelos de proveedores conectados. Un proveedor desconectado no puede quedar activo ni ser seleccionado.
 
 Al abrir `/models`, Lilith consulta en segundo plano el catálogo de cada proveedor conectado. `Ctrl+R` repite la consulta sin bloquear la escritura de la letra `r` en el filtro. Los endpoints OpenAI-compatible usan `GET {baseURL}/models`; Codex usa su catálogo autenticado de cuenta. Los proveedores se actualizan en paralelo y un fallo conserva la caché anterior sin impedir los demás.
+Si el endpoint de catálogo responde 404, 405 o 501, el proveedor se considera compatible sólo con catálogo manual: no se presenta un error, no se eliminan modelos configurados y futuras aperturas de `/models` pueden volver a intentar el descubrimiento. Los fallos reales de red, autenticación o respuestas inválidas sí se reportan de forma no bloqueante.
 
 Los modelos nuevos de proveedores custom se guardan en `providers.json`. Los de proveedores bundled se guardan en `provider-model-cache.json`, por lo que permanecen disponibles tras cambiar de pantalla, reiniciar o perder temporalmente la conexión.
 

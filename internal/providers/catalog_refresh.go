@@ -33,11 +33,13 @@ type RefreshOptions struct {
 // provider so one unavailable endpoint never prevents other catalogs from
 // updating.
 type RefreshReport struct {
-	Updated map[string]int
-	Errors  map[string]error
+	Updated     map[string]int
+	Errors      map[string]error
+	Unsupported map[string]bool
 }
 
-func (r RefreshReport) UpdatedCount() int { return len(r.Updated) }
+func (r RefreshReport) UpdatedCount() int     { return len(r.Updated) }
+func (r RefreshReport) UnsupportedCount() int { return len(r.Unsupported) }
 
 // RefreshConnectedModels refreshes every connected provider in parallel. The
 // endpoint catalog is authoritative: newly advertised models are added and
@@ -45,7 +47,11 @@ func (r RefreshReport) UpdatedCount() int { return len(r.Updated) }
 // when the remote payload omits it. Custom providers are persisted; bundled
 // providers remain runtime-owned and are refreshed again on next startup.
 func RefreshConnectedModels(ctx context.Context, dir string, cfg Config, opts RefreshOptions) (Config, RefreshReport) {
-	report := RefreshReport{Updated: map[string]int{}, Errors: map[string]error{}}
+	report := RefreshReport{
+		Updated:     map[string]int{},
+		Errors:      map[string]error{},
+		Unsupported: map[string]bool{},
+	}
 	states, err := ConnectionStates(dir, cfg)
 	if err != nil {
 		report.Errors["credentials"] = err
@@ -96,6 +102,10 @@ func RefreshConnectedModels(ctx context.Context, dir string, cfg Config, opts Re
 	for item := range results {
 		provider := &cfg.Providers[item.index]
 		if item.err != nil {
+			if IsModelCatalogUnavailable(item.err) {
+				report.Unsupported[provider.ID] = true
+				continue
+			}
 			report.Errors[provider.ID] = item.err
 			continue
 		}
@@ -156,6 +166,9 @@ func FetchProviderModels(ctx context.Context, dir string, provider Provider, cli
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if modelCatalogUnavailableStatus(resp.StatusCode) {
+			return nil, newModelCatalogUnavailableError(endpoint, resp.StatusCode)
+		}
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return nil, fmt.Errorf("%s respondió HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
@@ -267,6 +280,9 @@ func fetchCodexModels(ctx context.Context, dir string, provider Provider, client
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if modelCatalogUnavailableStatus(resp.StatusCode) {
+			return nil, newModelCatalogUnavailableError(endpoint, resp.StatusCode)
+		}
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return nil, fmt.Errorf("catálogo Codex respondió HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}

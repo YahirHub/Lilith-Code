@@ -154,3 +154,45 @@ func TestLoadWithBundledAppliesLiveCatalogCache(t *testing.T) {
 		t.Fatalf("cache no aplicado = %#v", codex)
 	}
 }
+
+func TestRefreshConnectedModelsKeepsManualCatalogWhenEndpointIsUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	cfg := Config{
+		Version:          CurrentVersion,
+		ActiveProviderID: "manual",
+		ActiveModelID:    "modelo-manual",
+		Providers: []Provider{{
+			ID:      "manual",
+			Name:    "Manual",
+			BaseURL: server.URL + "/v1",
+			Auth:    AuthNone,
+			Models:  []Model{{ID: "modelo-manual", MaxContextTokens: 123456}},
+		}},
+	}
+	if err := Save(dir, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	got, report := RefreshConnectedModels(context.Background(), dir, cfg, RefreshOptions{HTTPClient: server.Client()})
+	if len(report.Errors) != 0 {
+		t.Fatalf("un /models ausente no debe registrarse como error: %#v", report.Errors)
+	}
+	if !report.Unsupported["manual"] || report.UnsupportedCount() != 1 {
+		t.Fatalf("unsupported = %#v", report.Unsupported)
+	}
+	provider := got.FindProvider("manual")
+	if provider == nil || len(provider.Models) != 1 || provider.Models[0].ID != "modelo-manual" {
+		t.Fatalf("se perdió el catálogo manual: %#v", provider)
+	}
+	if provider.Models[0].MaxContextTokens != 123456 {
+		t.Fatalf("se perdió metadata manual: %#v", provider.Models[0])
+	}
+	if got.ActiveProviderID != "manual" || got.ActiveModelID != "modelo-manual" {
+		t.Fatalf("active = %s/%s", got.ActiveProviderID, got.ActiveModelID)
+	}
+}
