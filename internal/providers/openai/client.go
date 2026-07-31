@@ -72,6 +72,9 @@ type chatChoice struct {
 		Content          string            `json:"content"`
 		ReasoningContent string            `json:"reasoning_content"`
 		Reasoning        string            `json:"reasoning"`
+		Thinking         string            `json:"thinking"`
+		Analysis         string            `json:"analysis"`
+		Thought          string            `json:"thought"`
 		ReasoningDetails []reasoningDetail `json:"reasoning_details"`
 		Role             string            `json:"role"`
 		ToolCalls        []deltaToolCall   `json:"tool_calls"`
@@ -80,6 +83,9 @@ type chatChoice struct {
 		Content          string            `json:"content"`
 		ReasoningContent string            `json:"reasoning_content"`
 		Reasoning        string            `json:"reasoning"`
+		Thinking         string            `json:"thinking"`
+		Analysis         string            `json:"analysis"`
+		Thought          string            `json:"thought"`
 		ReasoningDetails []reasoningDetail `json:"reasoning_details"`
 		Role             string            `json:"role"`
 		ToolCalls        []ToolCall        `json:"tool_calls"`
@@ -91,23 +97,28 @@ type reasoningDetail struct {
 	Type    string `json:"type"`
 	Text    string `json:"text"`
 	Summary string `json:"summary"`
+	Content string `json:"content"`
+	// Data may contain encrypted/carry-forward reasoning. It must never be
+	// rendered as readable thought text.
+	Data string `json:"data"`
 }
 
-func visibleReasoning(content, reasoning string, details []reasoningDetail) string {
-	// DeepSeek and several OpenAI-compatible gateways use reasoning_content.
-	// OpenRouter also exposes `reasoning`; prefer one scalar field to avoid
-	// showing the same tokens twice when a gateway supplies aliases together.
-	if content != "" {
-		return content
-	}
-	if reasoning != "" {
-		return reasoning
+func visibleReasoning(content, reasoning, thinking, analysis, thought string, details []reasoningDetail) string {
+	// OpenAI-compatible gateways use several scalar aliases. Prefer exactly one
+	// to avoid duplicating tokens when a gateway supplies aliases together.
+	for _, candidate := range []string{content, reasoning, thinking, analysis, thought} {
+		if candidate != "" {
+			return candidate
+		}
 	}
 	var b strings.Builder
 	for _, detail := range details {
 		part := detail.Text
 		if part == "" {
 			part = detail.Summary
+		}
+		if part == "" {
+			part = detail.Content
 		}
 		if part == "" {
 			continue
@@ -336,16 +347,25 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 		}
 		if len(raw.Choices) > 0 {
 			choice := raw.Choices[0]
-			reasoning := visibleReasoning(choice.Message.ReasoningContent, choice.Message.Reasoning, choice.Message.ReasoningDetails)
-			if reasoning != "" {
+			reasoning := visibleReasoning(choice.Message.ReasoningContent, choice.Message.Reasoning, choice.Message.Thinking, choice.Message.Analysis, choice.Message.Thought, choice.Message.ReasoningDetails)
+			thinkingActive := false
+			structuredSeen := reasoning != ""
+			if structuredSeen {
 				out.send(Chunk{Thinking: reasoning})
-				out.send(Chunk{ThinkingDone: true})
+				thinkingActive = true
 			}
-			if choice.Message.Content != "" || len(choice.Message.ToolCalls) > 0 {
-				out.send(Chunk{
-					Delta:     choice.Message.Content,
-					ToolCalls: choice.Message.ToolCalls,
-				})
+
+			var parser reasoningStreamParser
+			pieces := append(parser.Feed(choice.Message.Content), parser.Flush()...)
+			if err := emitReasoningPieces(ctx, out, pieces, structuredSeen, &thinkingActive); err != nil {
+				return err
+			}
+			if thinkingActive {
+				out.send(Chunk{ThinkingDone: true})
+				thinkingActive = false
+			}
+			if len(choice.Message.ToolCalls) > 0 {
+				out.send(Chunk{ToolCalls: choice.Message.ToolCalls})
 			}
 		}
 		return nil
@@ -355,6 +375,9 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	pending := map[int]*ToolCall{}
 	var pendingOrder []int
+	var parser reasoningStreamParser
+	thinkingActive := false
+	structuredSeen := false
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 || !bytes.HasPrefix(line, []byte("data:")) {
@@ -378,13 +401,15 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 			continue
 		}
 		choice := raw.Choices[0]
-		reasoning := visibleReasoning(choice.Delta.ReasoningContent, choice.Delta.Reasoning, choice.Delta.ReasoningDetails)
+		reasoning := visibleReasoning(choice.Delta.ReasoningContent, choice.Delta.Reasoning, choice.Delta.Thinking, choice.Delta.Analysis, choice.Delta.Thought, choice.Delta.ReasoningDetails)
 		if reasoning != "" {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			default:
 				out.send(Chunk{Thinking: reasoning})
+				thinkingActive = true
+				structuredSeen = true
 			}
 		}
 		for _, tc := range choice.Delta.ToolCalls {
@@ -403,6 +428,10 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 			acc.Function.Arguments += tc.Function.Arguments
 		}
 		if len(choice.Delta.ToolCalls) > 0 {
+			if thinkingActive {
+				out.send(Chunk{ThinkingDone: true})
+				thinkingActive = false
+			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -411,19 +440,49 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 			}
 		}
 		if choice.Delta.Content != "" {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-				out.send(Chunk{Delta: choice.Delta.Content})
+			if err := emitReasoningPieces(ctx, out, parser.Feed(choice.Delta.Content), structuredSeen, &thinkingActive); err != nil {
+				return err
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return err
 	}
+	if err := emitReasoningPieces(ctx, out, parser.Flush(), structuredSeen, &thinkingActive); err != nil {
+		return err
+	}
+	if thinkingActive {
+		out.send(Chunk{ThinkingDone: true})
+	}
 	if len(pendingOrder) > 0 {
 		out.send(Chunk{ToolCalls: snapshotCalls(pending, pendingOrder)})
+	}
+	return nil
+}
+
+func emitReasoningPieces(ctx context.Context, out *countingSink, pieces []reasoningPiece, suppressInlineThinking bool, thinkingActive *bool) error {
+	for _, piece := range pieces {
+		if piece.Text == "" {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if piece.Thinking {
+			if suppressInlineThinking {
+				continue
+			}
+			out.send(Chunk{Thinking: piece.Text})
+			*thinkingActive = true
+			continue
+		}
+		if *thinkingActive {
+			out.send(Chunk{ThinkingDone: true})
+			*thinkingActive = false
+		}
+		out.send(Chunk{Delta: piece.Text})
 	}
 	return nil
 }

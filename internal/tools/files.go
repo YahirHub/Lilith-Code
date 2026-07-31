@@ -166,7 +166,7 @@ func init() {
 					continue
 				}
 				if kind := imageKind(full); kind != "" {
-					fmt.Fprintf(&b, "== %s ==\n[image %s, %d bytes — binary content not inlined; open in an external viewer if you need to see it]\n\n", p, kind, len(data))
+					fmt.Fprintf(&b, "== %s ==\n[image %s, %d bytes — binary content not inlined; use extract_image_text to obtain OCR, spatial layout and coordinates]\n\n", p, kind, len(data))
 					continue
 				}
 				if isBinary(data) {
@@ -872,6 +872,8 @@ func imageKind(path string) string {
 		return "webp"
 	case ".bmp":
 		return "bmp"
+	case ".tif", ".tiff":
+		return "tiff"
 	case ".svg":
 		// SVG is text/XML — return "" so it gets inlined as text.
 		return ""

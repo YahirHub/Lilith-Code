@@ -256,6 +256,7 @@ var directChatPattern = regexp.MustCompile(`(?i)^\s*(hola|hello|hi|hey|buenas( (
 var (
 	projectScopePattern = regexp.MustCompile(`(?i)\b(project|proyecto|repo|repositor(y|io)|codebase|c(o|ó)digo|file|archivo|files|archivos|src|carpeta|directorio|package\.json|go\.mod|cargo\.toml|pyproject\.toml)\b`)
 	filePathPattern     = regexp.MustCompile(`(?i)[\w.-]+\.(ts|tsx|js|jsx|mjs|cjs|go|rs|py|java|kt|php|json|ya?ml|toml|md|css|scss|html|vue|svelte|txt|sh)\b`)
+	imagePathPattern    = regexp.MustCompile(`(?i)([\w .()\-]+\.(png|jpe?g|gif|bmp|tiff?|webp)\b|\b(imagen|image|captura|screenshot|ocr|mockup|maqueta|interfaz|ui)\b)`)
 	createFilePattern   = regexp.MustCompile(`(?i)\b(crea|crear|create|genera|generar|generate)\b\s+(?:(un|una|a|the)\s+)?(?:(nuevo|nueva|new)\s+)?(archivo|file|fichero)\b`)
 	newFilePattern      = regexp.MustCompile(`(?i)(\b(nuevo|nueva|new)\s+(archivo|file|fichero)\b|\b(agrega|añade|add)\b.{0,24}\b(archivo|file|fichero)\b)`)
 	writePattern        = regexp.MustCompile(`(?i)\b(escribe|write|implementa|implement|agrega|añade|add|modifica|modify|edita|edit|corrige|fix|refactoriza|refactor|renombra|rename|elimina|borra|delete|remove|guarda|save|haz|hazme|dame)\b`)
@@ -272,6 +273,7 @@ var promptHints = []struct {
 }{
 	{projectScopePattern, []string{"list_directory", "glob", "read_files"}},
 	{filePathPattern, []string{"read_files", "str_replace", "apply_diff"}},
+	{imagePathPattern, []string{"extract_image_text", "read_files"}},
 	{writePattern, []string{"str_replace", "apply_diff", "read_files"}},
 	{searchPattern, []string{"code_search", "glob", "read_files"}},
 	{shellPattern, []string{"run_terminal_command"}},
