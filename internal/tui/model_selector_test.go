@@ -7,6 +7,7 @@ import (
 	"github.com/lilith/li/internal/tui/uikit"
 
 	"github.com/lilith/li/internal/providers"
+	"github.com/lilith/li/internal/secrets"
 )
 
 func TestSubsequenceMatch(t *testing.T) {
@@ -91,5 +92,70 @@ func TestModelSelectorRendersProviderModelAndContextOnOneLine(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, "Opencode · deepseek-v4-flash · 1M ctx") {
 		t.Fatalf("model row missing compact provider/model/context line: %q", view)
+	}
+}
+
+func TestModelSelectorOcultaCodexHastaCompletarOAuth(t *testing.T) {
+	dir := t.TempDir()
+	cfg := providers.Config{
+		ActiveProviderID: providers.OpenCodeFreeID,
+		ActiveModelID:    "free",
+		Providers: []providers.Provider{
+			{ID: providers.OpenCodeFreeID, Name: providers.OpenCodeFreeName, Auth: providers.AuthBundled, Models: []providers.Model{{ID: "free"}}},
+			{ID: providers.ChatGPTCodexID, Name: providers.ChatGPTCodexName, Auth: providers.AuthOAuth, Models: []providers.Model{{ID: "codex-model"}}},
+		},
+	}
+	ctx := &AppContext{ConfigDir: dir, Providers: cfg, Styles: NewStyles(DefaultTheme()), Width: 100, Height: 30}
+	m := NewModelSelector(ctx)
+	for _, row := range m.all {
+		if row.providerID == providers.ChatGPTCodexID {
+			t.Fatal("Codex no debe aparecer antes de iniciar OAuth")
+		}
+	}
+
+	store, err := secrets.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.OAuth[providers.ChatGPTCodexID] = secrets.OAuthTokens{AccessToken: "token"}
+	if err := secrets.Save(dir, store); err != nil {
+		t.Fatal(err)
+	}
+	m.rebuild()
+	found := false
+	for _, row := range m.all {
+		found = found || row.providerID == providers.ChatGPTCodexID
+	}
+	if !found {
+		t.Fatal("Codex debe aparecer después de iniciar OAuth")
+	}
+}
+
+func TestModelSelectorPermiteFiltrarConRYReservaCtrlRParaActualizar(t *testing.T) {
+	dir := t.TempDir()
+	cfg := providers.Config{Providers: []providers.Provider{{
+		ID: "local", Name: "Proveedor", BaseURL: "http://127.0.0.1:11434/v1", Auth: providers.AuthNone,
+		Models: []providers.Model{{ID: "reasoner"}},
+	}}}
+	ctx := &AppContext{ConfigDir: dir, Providers: cfg, Styles: NewStyles(DefaultTheme()), Width: 100, Height: 30}
+	m := NewModelSelector(ctx)
+	m.refreshing = false
+
+	next, cmd := m.Update(uikit.KeyMsg{Type: uikit.KeyRunes, Runes: []rune{'r'}})
+	m = next.(ModelSelectorModel)
+	if cmd != nil {
+		t.Fatal("escribir r en el filtro no debe iniciar una actualización")
+	}
+	if got := m.filter.Value(); got != "r" {
+		t.Fatalf("filtro después de escribir r = %q", got)
+	}
+
+	next, cmd = m.Update(uikit.KeyMsg{Type: uikit.KeyCtrlR})
+	m = next.(ModelSelectorModel)
+	if cmd == nil || !m.refreshing {
+		t.Fatal("Ctrl+R debe iniciar la actualización manual del catálogo")
+	}
+	if got := m.filter.Value(); got != "r" {
+		t.Fatalf("Ctrl+R no debe modificar el filtro: %q", got)
 	}
 }

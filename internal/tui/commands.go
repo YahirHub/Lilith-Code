@@ -55,7 +55,7 @@ func Commands() []SlashCommand {
 					}
 					return nil
 				case "status":
-					chat.AddSystem("Agente seleccionado: " + strings.ToUpper(string(chat.selectedAgentMode())) + ". Tab alterna Build / Plan para el siguiente turno.")
+					chat.AddSystem("Agente seleccionado: " + strings.ToUpper(string(chat.selectedAgentMode())) + ". Tab recorre Build / Plan / Goal para el siguiente turno.")
 					return nil
 				case "exit", "off", "build":
 					chat.setAgentMode(planstate.Build)

@@ -174,10 +174,7 @@ func (m *ChatModel) todoWidgetView(w int) string {
 	if len(state.Tasks) == 0 {
 		return ""
 	}
-	boxWidth := w - 2
-	if boxWidth < 12 {
-		boxWidth = w
-	}
+	boxWidth := chatPaddedContentWidth(w)
 	contentWidth := boxWidth - 2
 	if contentWidth < 10 {
 		contentWidth = boxWidth

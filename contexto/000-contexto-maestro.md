@@ -1,267 +1,147 @@
-# Contexto del proyecto Lilith
+# Contexto maestro de Lilith Code
 
-> Este documento reúne el estado, decisiones y arquitectura de Lilith
-> para que otra IA (o desarrollador humano) pueda continuar el trabajo
-> sin necesidad de leer el historial anterior. Escrito el 2026-07-27 y actualizado el 2026-07-31.
+> Estado consolidado para retomar el proyecto sin depender del historial del chat. Antes de trabajar, leer también `AGENTS.md`, el documento numerado más reciente de `contexto/`, `git status` y los últimos commits.
 
-## 1. Qué es Lilith
+## 1. Producto
 
-Lilith (`li`) es un **CLI agéntico estilo Claude/Codex en 100% Go**,
-inspirado visual y funcionalmente en `codewolf` (TypeScript + React +
-OpenTUI) — el código fuente de referencia vive en `lilith/original/` y
-**no se toca**, solo se usa para consultar comportamiento/diseño.
+Lilith (`li`) es un agente de programación interactivo para terminal, implementado en Go. Incluye chat con streaming, tool calls, edición de archivos, shell, skills, subagentes, MCP, plugins compatibles con Claude, historial persistente, modos Build/Plan/Goal, tareas, goals durables, búsqueda web y OCR estructural local.
 
-Objetivos:
-- Chat interactivo en terminal con Markdown y streaming SSE.
-- Múltiples proveedores compatibles con la API de OpenAI
-  (OpenAI, Groq, Ollama, LM Studio, OpenRouter, endpoints custom).
-- Un proveedor "bundled" gratis (OpenCode Free) que expone modelos
-  `-free` obtenidos dinámicamente desde `https://opencode.ai/zen/v1/models`.
-- Configuración persistente en `~/.li/` con separación
-  ajustes/proveedores/secretos y permisos POSIX estrictos (0700 dir, 0600
-  archivos con API keys).
-- Onboarding TUI en primera ejecución (3 opciones: Suscripción,
-  Proveedor personalizado, OpenCode Free).
+El proyecto conserva un diseño inspirado en agentes de terminal modernos, pero su implementación actual es propia.
 
-## 2. Stack técnico
+## 2. Stack vigente
 
-- Go **1.24+** (`go.mod` declara 1.24).
-- Runtime TUI: **tview v0.42.0** sobre **Tcell v2.13.10**.
-- Componentes de estado y widgets propios en `internal/tui/uikit`:
-  - mensajes, comandos y máquina de estado;
-  - textarea, textinput y viewport;
-  - estilos, layouts y helpers ANSI;
-  - renderer Markdown interno.
+- Go 1.24+.
+- `tview v0.42.0` como runtime interactivo.
+- Tcell como backend de pantalla, teclado, ratón y pegado.
+- Widgets y ciclo lógico propios en `internal/tui/uikit`.
 - `rivo/uniseg` para ancho Unicode.
-- CLI framework: `spf13/cobra`.
-- No quedan dependencias Bubble Tea, Bubbles, Lip Gloss, Glamour ni otros
-  módulos Charmbracelet. Véase `080-migracion-completa-tview-sin-charm.md`.
+- Cobra para la CLI.
+- Binario objetivo con `CGO_ENABLED=0`.
 
-## 3. Estructura de directorios
+No quedan dependencias de Bubble Tea, Bubbles, Lip Gloss, Glamour ni otros módulos Charmbracelet. No deben reintroducirse.
 
-```
-lilith/
-├── cmd/li/main.go             # entrypoint cobra; enruta onboarding vs chat
-├── internal/
-│   ├── config/                # ~/.li/settings.json (ajustes UI, modelo activo)
-│   ├── secrets/               # ~/.li/provider-auth.json (API keys, 0600)
-│   ├── logx/                  # logger con enmascaramiento de secretos
-│   ├── providers/
-│   │   ├── types.go           # Provider, ProviderModel, ActiveSelection
-│   │   ├── store.go           # carga/guardado ~/.li/providers.json + activo
-│   │   ├── upsert.go          # normalización (base URL, IDs, dedupe)
-│   │   ├── bundled.go         # OpenCode Free + fetch modelos "-free"
-│   │   └── openai/client.go   # cliente OpenAI-compatible con SSE streaming
-│   └── tui/
-│       ├── app.go             # AppContext (config, providers, cliente, styles)
-│       ├── theme.go           # paleta oscura estilo Codewolf (purple)
-│       ├── styles.go          # estilos ANSI internos derivados del theme
-│       ├── logo.go            # logo ASCII "LILITH"
-│       ├── onboarding.go      # pantalla primera ejecución (3 tarjetas)
-│       ├── login_custom.go    # form multi-paso proveedor custom
-│       ├── login_codex.go     # login OAuth (placeholder para suscripción)
-│       ├── model_selector.go  # selector con fuzzy search y highlight
-│       ├── suggestion_menu.go # popup para /comandos
-│       ├── status_bar.go      # barra inferior (proveedor · modelo · modo)
-│       ├── commands.go        # slash commands: /help /login /models /clear /quit
-│       ├── markdown.go        # RenderMarkdown() interno, sin Glamour
-│       ├── thinking.go        # animación shimmer "Pensando..." (spinner + colores)
-│       └── chat.go            # ChatModel: transcript + input + streaming
-├── original/                  # código fuente de Codewolf (referencia, no editar)
-├── Makefile                   # build / test / install
-├── go.mod / go.sum
-├── contexto/                  # decisiones numeradas (000, 001, ...)
+## 3. Estructura principal
+
+```text
+cmd/li/                       entrada CLI
+internal/config/              ajustes persistentes
+internal/secrets/             API keys y OAuth
+internal/providers/           proveedores, conexión y catálogos
+internal/providers/openai/    chat completions, Responses/Codex, reasoning
+internal/tui/                 chat y pantallas interactivas
+internal/tui/uikit/           componentes TUI propios
+internal/tools/               herramientas del agente
+internal/plan/                estado y políticas Plan
+internal/goal/                objetivos persistentes
+internal/todo/                TodoWrite persistente
+internal/subagents/           ejecución de subagentes
+internal/imageocr/            OCR nativo Windows y modelo estructural
+contexto/                     decisiones técnicas numeradas
+AGENTS.md                     instrucciones resumidas para Codex/agentes
 ```
 
-## 4. Persistencia (`~/.li/`)
+## 4. Runtime TUI
 
-| Archivo              | Permisos | Contenido                                              |
-|----------------------|----------|--------------------------------------------------------|
-| `settings.json`      | 0600     | `{ activeProviderId, activeModelId, theme, ... }`      |
-| `providers.json`     | 0600     | Lista de proveedores custom (id, nombre, baseURL, modelos) |
-| `provider-auth.json` | 0600     | `{ [providerId]: apiKey }` — nunca fusionado con providers |
+`tview.Application` es el único propietario de la terminal. La aplicación conserva su apariencia mediante un `tview.TextView` que recibe el frame ANSI generado por los componentes internos. Tcell entrega teclado, mouse y pegado.
 
-- Directorio creado con `0700`.
-- Los proveedores **bundled** (OpenCode Free) no se persisten; se
-  reconstruyen en memoria al arrancar y se fusionan con los custom.
-- URLs con `http://` solo se aceptan si el host es `localhost` o
-  `127.0.0.1` (validación en `providers.NormalizeBaseURL`).
+Reglas críticas:
 
-## 5. Proveedores
+- el chat sigue funcionando aunque `/config`, `/models` u otra pantalla esté abierta;
+- los mensajes de streaming se enrutan siempre al `ChatModel` persistente;
+- el ratón se captura sólo cuando hay controles clicables, para mantener selección de texto nativa;
+- el pegado se entrega como bloque atómico;
+- la última columna se reserva para la scrollbar;
+- `Style.Width` es ancho de contenido: bordes y padding se suman aparte;
+- el input tiene límite de caracteres independiente de sus ocho filas visibles.
 
-### 5.1 Interfaz común (`internal/providers/types.go`)
-```go
-type Provider struct {
-    ID       string
-    Name     string
-    BaseURL  string           // termina en /v1 ya normalizado
-    Models   []ProviderModel
-    Bundled  bool             // true = catálogo dinámico, sin auth
-}
-type ProviderModel struct { ID, Name string }
-type ActiveSelection struct { ProviderID, ModelID string }
-```
+## 5. Proveedores, autenticación y catálogos
 
-### 5.2 OpenCode Free (`internal/providers/bundled.go`)
-- `BundledProviders()` intenta `GET https://opencode.ai/zen/v1/models`
-  con timeout 3s.
-- Filtra los `data[]` cuyo `id` termina en `-free`.
-- Si falla la red, cae a una lista hardcodeada (fallback) — a la fecha:
-  `deepseek-v4-flash-free`, `mimo-v2.5-free`, `ling-3.0-flash-free`,
-  `nemotron-3-ultra-free`, `north-mini-code-free`, `laguna-s-2.1-free`.
-- BaseURL fijo: `https://opencode.ai/zen/v1`. No requiere API key.
+Persistencia bajo el directorio de configuración:
 
-### 5.3 Cliente OpenAI-compatible (`internal/providers/openai/client.go`)
-- Un solo tipo `Client` con método `Stream(ctx, Request) <-chan Chunk`.
-- Envía `POST {baseURL}/chat/completions` con `stream: true`.
-- Parsea SSE (líneas `data: {...}` + `data: [DONE]`).
-- Cierra el canal en `Done` o error. Respeta cancelación de `ctx`.
-- `Authorization: Bearer <apiKey>` solo si hay key.
+| Archivo | Contenido |
+|---|---|
+| `providers.json` | proveedores personalizados, selección activa y catálogos custom |
+| `provider-auth.json` | API keys y tokens OAuth |
+| `provider-model-cache.json` | última respuesta válida de catálogos bundled |
 
-## 6. TUI — pantallas
+Tipos de autenticación:
 
-### 6.1 Flujo global (`cmd/li/main.go`)
-```
-li → carga config/providers
-     ├── si settings.json NO existe → tui.RunFirstRun (onboarding)
-     └── si existe                    → tui.RunChat
-```
+- `bundled` y `none`: disponibles sin secreto;
+- `api_key`: requiere clave guardada;
+- `env`: requiere variable de entorno;
+- `oauth`: requiere sesión OAuth.
 
-### 6.2 Onboarding (`tui/onboarding.go`)
-Tres tarjetas navegables:
-1. **Suscripción** → `login_codex.go` (placeholder OAuth, no implementado).
-2. **Proveedor personalizado** → `login_custom.go`.
-3. **OpenCode Free** → activa bundled y va directo al chat.
+`/providers` muestra todas las conexiones para poder configurarlas. `/models` muestra exclusivamente modelos de proveedores conectados. Un proveedor desconectado no puede quedar activo ni ser seleccionado.
 
-### 6.3 Login custom (`tui/login_custom.go`)
-Multi-paso: Nombre → Base URL → API Key → descubrir modelos
-(`GET /models`) → seleccionar modelo por defecto → guardar y saltar al chat.
+Al abrir `/models`, Lilith consulta en segundo plano el catálogo de cada proveedor conectado. `Ctrl+R` repite la consulta sin bloquear la escritura de la letra `r` en el filtro. Los endpoints OpenAI-compatible usan `GET {baseURL}/models`; Codex usa su catálogo autenticado de cuenta. Los proveedores se actualizan en paralelo y un fallo conserva la caché anterior sin impedir los demás.
 
-### 6.4 Chat (`tui/chat.go`) — pieza principal
-- **Header fijo** (`renderHeader`): logo ASCII + tagline + `Directorio ~/ruta`.
-- **Transcript** en `viewport.Model`. Cada mensaje:
-  - `[HH:MM] tú` / `[HH:MM] ✦ lilith`
-  - Contenido indentado 2 espacios.
-  - **Asistente**: se pasa por `RenderMarkdown(content, width-2)`, renderer
-    Markdown interno con ANSI, wrap por ancho y estilos del tema.
-  - **Mensaje asistente vacío + `thinking`**: se muestra shimmer animado
-    en lugar del texto.
-- **Input** (`textarea`, 3 filas, `❯ ` prompt), soporte multilínea con
-  Shift+Enter, `Enter` envía.
-- **Paleta `/comandos`**: se abre cuando el buffer empieza con `/`
-  y no tiene espacios ni saltos de línea. Tab autocompleta, Enter ejecuta.
-- **Modos**: `default` y `bash` (con prefijo `!`) — bash aún es
-  placeholder ("llegará en la próxima fase").
-- **Streaming**:
-  - `submit()` añade mensaje user + placeholder asistente vacío,
-    activa `streaming=true`, `thinking=true`, y despacha
-    `uikit.Batch(streamPump(ch), thinkingTick(0))`.
-  - `chatStreamMsg` con `delta` desactiva `thinking` en el primer chunk
-    y agrega texto al `streamBuf`.
-  - `chatStreamMsg{done:true}` finaliza y resetea flags.
-  - `Esc` cancela el turno activo y restaura la cola al editor. `Ctrl+C` y `Ctrl+Z` no cierran ni suspenden el proceso; la salida explícita es `/exit`.
+Los modelos nuevos de proveedores custom se guardan en `providers.json`. Los de proveedores bundled se guardan en `provider-model-cache.json`, por lo que permanecen disponibles tras cambiar de pantalla, reiniciar o perder temporalmente la conexión.
 
-### 6.5 Animación "Pensando..." (`tui/thinking.go`)
-- `thinkingTickMsg` disparado cada **90ms** vía `uikit.Tick`.
-- `RenderThinking(frame)` produce:
-  - Spinner braille (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) con color rotativo.
-  - Palabra "Pensando" con **shimmer**: cada letra toma un color de
-    la paleta `thinkingPalette` desplazado por `(i+frame)`.
-  - Puntos suspensivos que crecen 0→3→0.
-- Se muestra únicamente cuando `m.thinking && streamBuf vacío && mensaje
-  asistente es el último`.
+## 6. Modos Build, Plan y Goal
 
-### 6.6 Markdown (`tui/markdown.go`)
-- Renderer interno sin Glamour ni Goldmark.
-- Cubre encabezados, listas, citas, bloques de código, énfasis y código en línea.
-- Conserva ANSI durante el wrap y respeta anchos Unicode con `rivo/uniseg`.
-- Recorta saltos de línea sobrantes para no romper el viewport.
+`Tab` recorre Build → Plan → Goal; `Shift+Tab` recorre al revés. El modo elegido aplica al próximo mensaje, mientras un turno en ejecución conserva su snapshot.
 
-### 6.7 Slash commands (`tui/commands.go`)
-Registrados: `/help`, `/login`, `/providers`, `/models`, `/model`,
-`/clear`, `/history`, `/config`, `/exit`.
-- `/models` abre el `model_selector` con búsqueda fuzzy por modelo/proveedor y
-  selector compacto compartido basado en `uikit/viewport`.
-- `/login` reinicia el form custom.
-- `/clear` vacía el transcript.
+- **Build:** implementación normal y herramientas mutantes.
+- **Plan:** sólo lectura; puede investigar, preguntar decisiones y entregar un plan. El cambio Plan → Build puede consumir una vez el plan aprobado.
+- **Goal:** el texto introducido se convierte en objetivo persistente, igual que `/goal <objetivo>`, y arranca o reorienta una ejecución autónoma.
 
-## 7. Convenciones / reglas del proyecto
+Los estados se persisten en la sesión. Goal comparte las capacidades de implementación de Build; Plan conserva su política restrictiva.
 
-Metodología "Ponytail" acordada con el usuario:
-- **Simplicidad agresiva**: no añadir capas innecesarias.
-- **Contexto persistente**: guardar decisiones en `contexto/` cuando el
-  proyecto crezca (o en este `contexto.md` mientras sea pequeño).
-- **Seguridad primero**: nunca loguear API keys; `logx` enmascara.
-- **Sin referencias a IA/marcas** en UI ni commits.
-- **Mensajes en español**, sin emojis en commits.
-- **Dependencias mínimas**: solo lo estrictamente necesario.
+## 7. Chat y ejecución
 
-## 8. Estado actual (fase 1 completada)
+- Streaming SSE/Responses con normalización por proveedor.
+- Reasoning separado del mensaje final, incluidos campos estructurados y etiquetas inline como `<think>`.
+- Tool calls con paneles en vivo y persistentes.
+- Cola de steering y follow-up sin abrir turnos paralelos.
+- Cancelación con Esc; `/exit` es la salida explícita.
+- TodoWrite, planes y goals se guardan en la sesión.
+- Skills y agentes pueden usar modelo heredado, explícito o lista de preferencias.
+- MCP y plugins siguen ejecutándose aunque una pantalla auxiliar esté abierta.
 
-Funciona:
-- [x] Onboarding TUI con 3 opciones.
-- [x] Alta de proveedor custom con descubrimiento de modelos.
-- [x] OpenCode Free con catálogo dinámico + fallback.
-- [x] Chat streaming SSE contra cualquier endpoint OpenAI-compat.
-- [x] Slash commands + paleta interactiva.
-- [x] **Markdown renderizado en respuestas del asistente** (renderer interno).
-- [x] **Animación shimmer "Pensando..."** mientras espera el primer chunk.
-- [x] Cancelación con Esc durante streaming y salida explícita únicamente con `/exit`.
-- [x] Tests: `internal/providers` (store, normalización) e
-      `internal/tui` (model selector fuzzy).
+## 8. OCR estructural
 
-Pendiente (siguientes fases sugeridas):
-- [ ] Ejecución real del modo bash `!comando` (sandbox + captura salida).
-- [ ] **Tool calls / function calling** OpenAI (leer archivo, ejecutar
-      bash, escribir archivo) con UI colapsable de resultados.
-- [ ] Persistencia de sesiones/historial y comando `/sessions`.
-- [ ] OAuth real para "Suscripción" (`login_codex.go`).
-- [ ] Barra de estado avanzada (tokens usados, latencia, modelo activo
-      con tooltip).
-- [ ] Manejo de imágenes en el prompt (multipart / data URLs).
-- [ ] Empaquetado release (`goreleaser` para linux/mac/win).
+`extract_image_text` permite a modelos sin visión procesar capturas y documentos sin subir la imagen:
 
-## 9. Cómo compilar y probar
+- Windows: `Windows.Media.Ocr` mediante WinRT en Go puro.
+- Otros sistemas/fallback: Tesseract externo opcional.
+- Salidas: texto, layout monoespaciado, regiones, separadores, coordenadas y JSON.
+- Mantiene `CGO_ENABLED=0` porque no enlaza una biblioteca OCR al binario.
+
+## 9. Persistencia y seguridad
+
+- Directorios y archivos sensibles usan permisos restrictivos.
+- Secretos nunca deben aparecer en logs ni documentos.
+- Los catálogos de modelos no contienen credenciales.
+- En Plan se bloquean mutaciones y shell no seguro.
+- El OCR marca el texto de imágenes como contenido no confiable.
+
+## 10. Flujo de trabajo
+
+1. Leer `AGENTS.md`, este documento y el último MD de `contexto/`.
+2. Revisar `git status` y preservar cambios ajenos a la tarea.
+3. Implementar en componentes existentes, sin duplicar runtimes ni estados.
+4. Añadir pruebas de regresión.
+5. Ejecutar formato, tests, race, vet y builds estáticos/multiplataforma cuando el entorno lo permita.
+6. Documentar el cambio en un MD numerado.
+7. Commit en español con el autor Git del usuario.
+
+## 11. Validación objetivo
 
 ```bash
-cd lilith
-# requiere Go 1.24+:
-go build -o bin/li ./cmd/li
-./bin/li            # primera vez: onboarding
-./bin/li            # siguientes: chat
-```
-
-Tests:
-```bash
+gofmt -w <archivos>
+git diff --check
 go test ./...
+go test -race ./...
+go vet ./...
+CGO_ENABLED=0 go build ./cmd/li
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/li
 ```
 
-## 10. Referencias clave del código de Codewolf
+El entorno de entrega puede usar stubs locales sólo para comprobar la arquitectura cuando no tenga acceso a módulos o Go 1.24; nunca presentar esa comprobación como sustituto de una prueba final con las dependencias oficiales en Windows/Linux.
 
-Los archivos más consultados en `lilith/original/cli/src/` para replicar
-comportamiento son:
-- `components/first-run-onboarding-screen.tsx` — layout onboarding.
-- `components/model-selector-screen.tsx` — fuzzy search agrupado.
-- `components/provider-login-screen.tsx` — flujo multi-paso.
-- `components/shimmer-text.tsx` — animación shimmer (referencia visual;
-  Lilith usa una versión simplificada por letra).
-- `components/thinking.tsx` — "Pensando" / spinner.
-- `utils/markdown-renderer.tsx` — referencia visual para el renderer Markdown
-  interno de Lilith.
-- `providers/opencode-catalog.ts` — endpoint `opencode.ai/zen/v1/models`.
+## 12. Documentos recientes clave
 
-## 11. Cambios recientes (2026-07-31)
-
-1. `tview.Application` pasó a ser el único ciclo físico de terminal.
-2. Se retiraron Bubble Tea, Bubbles, Lip Gloss, Glamour, `x/ansi` y
-   `x/cellbuf` de código, `go.mod` y `go.sum`.
-3. Se añadió `internal/tui/uikit` con mensajes, comandos, textarea, textinput,
-   viewport, estilos y helpers ANSI propios.
-4. El root visual es un `tview.TextView`; `tview.TranslateANSI` traduce el
-   diseño preservado a estilos Tcell.
-5. Se preservaron pegado atómico, espacio, textos largos, streaming, colas,
-   navegación, Ctrl+C y selección nativa de terminal.
-6. La suite completa pasó en la copia de compilación con stubs de API locales;
-   la validación final con módulos oficiales requiere Go 1.24.
-
-Véase `080-migracion-completa-tview-sin-charm.md`.
+- `080-migracion-completa-tview-sin-charm.md`
+- `081-fix-viewport-config-tview.md`
+- `082-compatibilidad-reasoning-inline-y-ocr-estructural.md`
+- `083-modelos-conectados-catalogos-modos-y-layout.md`

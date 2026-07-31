@@ -132,3 +132,21 @@ func containsAll(text string, values ...string) bool {
 	}
 	return true
 }
+
+func TestGoalModeCanBePersistedAndRestored(t *testing.T) {
+	m := NewManager(nil)
+	state, changed, err := m.SetMode(Goal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || state.Mode != Goal || m.Mode() != Goal {
+		t.Fatalf("goal no quedó seleccionado: %#v", state)
+	}
+	restored := NewManager(&state)
+	if restored.Mode() != Goal {
+		t.Fatalf("goal restaurado = %q", restored.Mode())
+	}
+	if _, _, err := restored.SetMode(Mode("desconocido")); err == nil {
+		t.Fatal("un modo desconocido debe seguir siendo rechazado")
+	}
+}

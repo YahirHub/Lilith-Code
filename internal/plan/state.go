@@ -14,6 +14,7 @@ type Mode string
 const (
 	Build Mode = "build"
 	Plan  Mode = "plan"
+	Goal  Mode = "goal"
 )
 
 type Option struct {
@@ -73,7 +74,7 @@ func normalize(in State) (State, error) {
 	if in.Mode == "" {
 		in.Mode = Build
 	}
-	if in.Mode != Build && in.Mode != Plan {
+	if in.Mode != Build && in.Mode != Plan && in.Mode != Goal {
 		return State{}, fmt.Errorf("unsupported agent mode: %q", in.Mode)
 	}
 	in.LatestPlan = strings.TrimSpace(in.LatestPlan)
@@ -81,7 +82,7 @@ func normalize(in State) (State, error) {
 		in.Ready = false
 		in.HandoffPending = false
 	}
-	if in.Mode == Plan {
+	if in.Mode != Build {
 		// A handoff only makes sense once Build has been selected.
 		in.HandoffPending = false
 	}
@@ -193,7 +194,7 @@ func (m *Manager) IsPlan() bool { return m.Mode() == Plan }
 // Plan to Build schedules a one-shot handoff of the approved plan. Switching
 // back to Plan keeps the previous plan as reference but marks it as revisable.
 func (m *Manager) SetMode(mode Mode) (State, bool, error) {
-	if mode != Build && mode != Plan {
+	if mode != Build && mode != Plan && mode != Goal {
 		return State{}, false, fmt.Errorf("unsupported agent mode: %q", mode)
 	}
 	m.mu.Lock()
@@ -209,11 +210,11 @@ func (m *Manager) SetMode(mode Mode) (State, bool, error) {
 	if previous == Plan && mode == Build && m.state.Ready && m.state.LatestPlan != "" {
 		m.state.HandoffPending = true
 	}
-	if mode == Plan {
+	if mode != Build {
 		m.state.HandoffPending = false
-		if m.state.LatestPlan != "" {
-			m.state.Ready = false
-		}
+	}
+	if mode == Plan && m.state.LatestPlan != "" {
+		m.state.Ready = false
 	}
 	m.state.Revision++
 	m.state.SchemaVersion = SchemaVersion

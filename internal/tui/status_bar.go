@@ -44,13 +44,14 @@ func RenderStatusBar(ctx *AppContext, _ string, usedTokens, maxTokens int) strin
 	if w <= 0 {
 		w = 80
 	}
-	availableCWD := w - tuistyle.Width(fixed) - 2
+	contentWidth := chatPaddedContentWidth(w)
+	availableCWD := contentWidth - tuistyle.Width(fixed)
 	if availableCWD < 4 {
 		availableCWD = 4
 	}
 	cwd = truncateStatusPath(cwd, availableCWD)
 	line := s.Muted.Render(cwd) + fixed
-	return s.StatusBar.Width(w).Render(line)
+	return s.StatusBar.Width(contentWidth).Render(line)
 }
 
 func truncateStatusPath(path string, maxWidth int) string {

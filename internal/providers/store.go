@@ -64,12 +64,24 @@ func LoadWithBundled(dir string) (Config, error) {
 		}
 	}
 	cfg.Providers = merged
+	// Bundled providers are not written to providers.json. Overlay their last
+	// successful live catalog so newly released models survive screen changes and
+	// process restarts while the network is unavailable.
+	if err := applyCatalogCache(dir, &cfg); err != nil {
+		return cfg, err
+	}
 	// If nothing active but user has never configured, default to OpenCode Free.
-	if cfg.ActiveProviderID == "" && !fileExists(Path(dir)) && len(bundled) > 0 {
-		cfg.ActiveProviderID = bundled[0].ID
-		if len(bundled[0].Models) > 0 {
-			cfg.ActiveModelID = bundled[0].Models[0].ID
+	if cfg.ActiveProviderID == "" && !fileExists(Path(dir)) && len(cfg.Providers) > 0 {
+		cfg.ActiveProviderID = cfg.Providers[0].ID
+		if len(cfg.Providers[0].Models) > 0 {
+			cfg.ActiveModelID = cfg.Providers[0].Models[0].ID
 		}
+	}
+	// An OAuth/API-key provider may remain in providers.json after its secret is
+	// removed or before its first login. Never expose it as the active runtime
+	// provider until its connection can actually be verified.
+	if err := ReconcileActive(dir, &cfg); err != nil {
+		return cfg, err
 	}
 	return cfg, nil
 }

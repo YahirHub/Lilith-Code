@@ -167,7 +167,7 @@ type ChatModel struct {
 	// terminals; Ctrl+T or clicking the visible Todo block toggles the full list.
 	todoExpanded bool
 
-	// plans owns the selected primary agent mode (Build/Plan) and any approved
+	// plans owns the selected primary agent mode (Build/Plan/Goal) and any approved
 	// plan/questions for this session. The selected mode applies to the NEXT
 	// turn; turnAgentMode snapshots it when a request starts, like OpenCode.
 	plans *planstate.Manager
@@ -1011,7 +1011,7 @@ func (m *ChatModel) forceLivePersist() {
 		historyStart = len(m.history)
 	}
 	// Even when transcript/history have no new entries, a lightweight sidecar
-	// may still be required to persist session state such as the Build/Plan
+	// may still be required to persist session state such as the Build/Plan/Goal
 	// selection changed with Tab during a running turn.
 	m.persistRevision++
 	checkpoint := &session.LiveCheckpoint{
@@ -1364,11 +1364,40 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 	}
 }
 
+// chatUsableWidth reserves the final terminal column for the transcript
+// scrollbar. Every bottom-chrome component must fit inside this exact total
+// width; Style.Width configures CONTENT width and therefore must subtract its
+// own border and padding separately.
+func chatUsableWidth(w int) int {
+	if w > 1 {
+		return w - 1
+	}
+	if w < 1 {
+		return 1
+	}
+	return w
+}
+
+func chatBorderedContentWidth(w int) int {
+	width := chatUsableWidth(w) - 4 // 2 borders + horizontal padding 1+1
+	if width < 1 {
+		return 1
+	}
+	return width
+}
+
+func chatPaddedContentWidth(w int) int {
+	width := chatUsableWidth(w) - 2 // horizontal padding 1+1
+	if width < 1 {
+		return 1
+	}
+	return width
+}
+
 func (m *ChatModel) Resize(w, h int) {
 	m.ctx.Width, m.ctx.Height = w, h
-	if w > 10 {
-		// ancho útil = terminal − 2 bordes − 2 padding
-		m.textarea.SetWidth(w - 4)
+	if w > 5 {
+		m.textarea.SetWidth(chatBorderedContentWidth(w))
 	}
 	m.setInputHeightForContent()
 	used, maxCtx := m.contextUsage()
@@ -1858,7 +1887,11 @@ func (m *ChatModel) setInputHeightForContent() bool {
 	// lo aplica al contenido y descartaría todas las líneas posteriores.
 	maxHeight := chatInputVisibleMaxHeight
 	value := m.textarea.Value()
-	totalLines := visualInputLineCount(value, m.textarea.Width(), 1_000_000)
+	textWidth := m.textarea.Width() - tuistyle.Width(m.textarea.Prompt)
+	if textWidth < 1 {
+		textWidth = 1
+	}
+	totalLines := visualInputLineCount(value, textWidth, 1_000_000)
 	lines := totalLines
 	if lines > maxHeight {
 		lines = maxHeight
@@ -1897,7 +1930,7 @@ func (m *ChatModel) paletteView(w int) string {
 	return SuggestionMenu{
 		Items:    m.paletteRows,
 		Selected: m.paletteIdx,
-		Width:    w - 2,
+		Width:    chatBorderedContentWidth(w),
 		Theme:    m.ctx.Styles.Theme,
 		Query:    m.textarea.Value(),
 	}.View()
@@ -1905,15 +1938,15 @@ func (m *ChatModel) paletteView(w int) string {
 
 func (m *ChatModel) inputBoxView(w int) string {
 	s := m.ctx.Styles
-	boxWidth := w - 2
-	if boxWidth < 1 {
-		boxWidth = 1
-	}
+	contentWidth := chatBorderedContentWidth(w)
 	style := s.InputBoxFocused
-	if m.selectedAgentMode() == planstate.Plan {
+	switch m.selectedAgentMode() {
+	case planstate.Plan:
 		style = style.BorderForeground(s.Theme.Secondary)
+	case planstate.Goal:
+		style = style.BorderForeground(s.Theme.Success)
 	}
-	box := style.Width(boxWidth).Render(m.textarea.View())
+	box := style.Width(contentWidth).Render(m.textarea.View())
 	if m.mode == ModeBash {
 		box = s.Badge.Render(" BASH ") + "\n" + box
 	}
@@ -1928,10 +1961,7 @@ func (m *ChatModel) queuePanelView(w int) string {
 		return ""
 	}
 	s := m.ctx.Styles
-	boxWidth := w - 2
-	if boxWidth < 10 {
-		boxWidth = w
-	}
+	boxWidth := chatBorderedContentWidth(w)
 	steer, follow := 0, 0
 	for _, item := range m.queue {
 		if item.Mode == queueFollowUp {
@@ -2004,10 +2034,7 @@ func (m *ChatModel) pinnedActivityView(w int) string {
 	} else {
 		body = RenderThinking(m.thinkingFrame)
 	}
-	boxWidth := w - 2
-	if boxWidth < 10 {
-		boxWidth = w
-	}
+	boxWidth := chatPaddedContentWidth(w)
 	return tuistyle.NewStyle().Width(boxWidth).Padding(0, 1).Render(body)
 }
 
@@ -2844,11 +2871,14 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 				return m, nil
 			}
 		}
-		// OpenCode cycles primary agents with Tab. Lilith has two primary
-		// operational agents: Build and Plan. The running turn keeps its snapshot;
-		// this only changes the agent selected for the next user message.
+		// Tab cycles the primary agents for the NEXT user message. A running turn
+		// keeps its Build/Plan/Goal snapshot; Shift+Tab traverses in reverse.
 		if key == "tab" || key == "shift+tab" {
-			m.toggleAgentMode()
+			delta := 1
+			if key == "shift+tab" {
+				delta = -1
+			}
+			m.cycleAgentMode(delta)
 			return m, m.chatMouseModeCmd()
 		}
 		switch key {
@@ -3131,6 +3161,17 @@ func (m *ChatModel) submit(val string) (uikit.Model, uikit.Cmd) {
 		return m, m.runGoalCommand(args)
 	}
 
+	// Goal is a first-class primary agent. Plain text entered while selected is
+	// treated exactly like `/goal <objetivo>` while still appearing as a normal
+	// user message in the transcript. During a running task this safely steers
+	// the active parent instead of opening a parallel turn.
+	if m.selectedAgentMode() == planstate.Goal && trimmedVal != "" &&
+		!strings.HasPrefix(trimmedVal, "/") && !strings.HasPrefix(trimmedVal, "!") && !strings.HasPrefix(trimmedVal, "@") {
+		m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: val, Time: time.Now()})
+		m.refreshTranscript(true)
+		return m, m.runGoalCommand(trimmedVal)
+	}
+
 	// Enter durante una tarea es steering: no abre un turno paralelo. Se
 	// entrega en la siguiente frontera segura (después de las tools actuales)
 	// para que pueda reorientar el trabajo en curso, igual que en Pi.
@@ -3201,7 +3242,7 @@ func (m *ChatModel) submit(val string) (uikit.Model, uikit.Cmd) {
 	}
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: val, Time: time.Now()})
 	m.appendHistory(openai.Message{Role: "user", Content: modelPrompt})
-	// OpenCode treats Build/Plan as primary agents. Capture the currently
+	// Build/Plan/Goal are primary agents. Capture the currently
 	// selected agent for lazy tool selection; beginTurn snapshots the same mode
 	// so a Tab press during execution only affects the NEXT user turn.
 	selectedMode := m.selectedAgentMode()

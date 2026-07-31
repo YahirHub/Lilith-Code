@@ -187,6 +187,20 @@ func (m RootModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 	case errMsg:
 		m.chat.AddError(v.err.Error())
 		return m, nil
+	case modelCatalogRefreshedMsg:
+		// The refresh command may finish after the user leaves /models. Its cache
+		// and custom-provider updates are already persisted; reload instead of
+		// installing the command's potentially stale config snapshot.
+		if _, visible := m.current.(ModelSelectorModel); !visible {
+			_ = m.ctx.ReloadProviders()
+			m.chat.invalidateContextUsage()
+			return m, nil
+		}
+		m.ctx.Providers = v.config
+		m.chat.invalidateContextUsage()
+		next, cmd := m.current.Update(v)
+		m.current = next
+		return m, cmd
 	case resumeSessionMsg:
 		m.chat.LoadSession(v.sess)
 		m.current = m.chat

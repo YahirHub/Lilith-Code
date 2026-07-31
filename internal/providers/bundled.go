@@ -1,12 +1,6 @@
 package providers
 
-import (
-	"encoding/json"
-	"net/http"
-	"strings"
-	"sync"
-	"time"
-)
+import "strings"
 
 // Bundled provider identifiers.
 const (
@@ -23,11 +17,6 @@ const (
 // fallbackFreeModels mirrors los IDs actualmente publicados en
 // https://opencode.ai/zen/v1/models con sufijo `-free`. Se usan como fallback
 // cuando la API no está accesible.
-
-var (
-	freeModelsOnce  sync.Once
-	freeModelsCache []Model
-)
 
 var fallbackFreeModels = []Model{
 	{ID: "deepseek-v4-flash-free", Name: "DeepSeek V4 Flash (Free)", MaxContextTokens: 1_000_000},
@@ -49,9 +38,10 @@ var codexModels = []Model{
 	{ID: "gpt-5.3-codex-spark", Name: "GPT-5.3 Codex Spark"},
 }
 
-// BundledProviders returns the always-available catalog (OpenCode Free +
-// ChatGPT Codex). El proveedor Codex requiere completar `/login` para tener
-// tokens OAuth válidos.
+// BundledProviders returns offline fallback catalogs. Live model discovery is
+// centralized in RefreshConnectedModels so every provider follows the same
+// connection checks, cache and `/models` refresh path. Codex still requires
+// completing `/login` before its models become selectable.
 func BundledProviders() []Provider {
 	return []Provider{
 		{
@@ -60,7 +50,7 @@ func BundledProviders() []Provider {
 			BaseURL: OpenCodeFreeBaseURL,
 			Auth:    AuthBundled,
 			Bundled: true,
-			Models:  fetchOpenCodeFreeModels(),
+			Models:  cloneModels(fallbackFreeModels),
 		},
 		{
 			ID:      ChatGPTCodexID,
@@ -71,61 +61,6 @@ func BundledProviders() []Provider {
 			Models:  cloneModels(codexModels),
 		},
 	}
-}
-
-// fetchOpenCodeFreeModels consulta {BaseURL}/models con timeout corto. Devuelve
-// solo los modelos cuyo id termina en `-free`. Cualquier error devuelve el
-// fallback local.
-func fetchOpenCodeFreeModels() []Model {
-	freeModelsOnce.Do(func() {
-		freeModelsCache = fetchOpenCodeFreeModelsRemote()
-	})
-	return cloneModels(freeModelsCache)
-}
-
-func fetchOpenCodeFreeModelsRemote() []Model {
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(OpenCodeFreeBaseURL + "/models")
-	if err != nil || resp.StatusCode != 200 {
-		if resp != nil {
-			resp.Body.Close()
-		}
-		return cloneModels(fallbackFreeModels)
-	}
-	defer resp.Body.Close()
-
-	var payload struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return cloneModels(fallbackFreeModels)
-	}
-
-	metaByID := map[string]Model{}
-	for _, m := range fallbackFreeModels {
-		metaByID[m.ID] = m
-	}
-
-	var out []Model
-	seen := map[string]bool{}
-	for _, m := range payload.Data {
-		id := strings.TrimSpace(m.ID)
-		if !strings.HasSuffix(strings.ToLower(id), "-free") || seen[id] {
-			continue
-		}
-		seen[id] = true
-		if known, ok := metaByID[id]; ok {
-			out = append(out, known)
-			continue
-		}
-		out = append(out, Model{ID: id, Name: titleFromID(id)})
-	}
-	if len(out) == 0 {
-		return cloneModels(fallbackFreeModels)
-	}
-	return Enrich(out)
 }
 
 func cloneModels(in []Model) []Model {

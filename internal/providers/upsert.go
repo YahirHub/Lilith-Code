@@ -125,6 +125,13 @@ func SetActive(dir, providerID, modelID string) error {
 	if p == nil {
 		return fmt.Errorf("No existe el proveedor %q.", providerID)
 	}
+	state, err := ConnectionStateFor(dir, *p)
+	if err != nil {
+		return err
+	}
+	if !state.Connected {
+		return fmt.Errorf("El proveedor %s no está conectado: %s.", p.Name, state.Reason)
+	}
 	if modelID == "" && len(p.Models) > 0 {
 		modelID = p.Models[0].ID
 	}

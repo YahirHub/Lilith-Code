@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	ligoal "github.com/lilith/li/internal/goal"
+	planstate "github.com/lilith/li/internal/plan"
 )
 
 func TestCompletedGoalDoesNotStopLaterUserTurn(t *testing.T) {
@@ -71,6 +72,49 @@ func TestGoalCreatedDuringRunningTurnBindsThatTurn(t *testing.T) {
 	_ = m.runGoalCommand("terminar la corrección")
 	if !m.turnGoalManaged {
 		t.Fatal("crear un goal durante un turno debe convertir ese turno en su ejecución administrada")
+	}
+	m.endTurn()
+}
+
+func TestTabCyclesBuildPlanGoalAndShiftTabReverses(t *testing.T) {
+	m := newInputTestChat(t)
+	if got := m.selectedAgentMode(); got != planstate.Build {
+		t.Fatalf("modo inicial = %q", got)
+	}
+	m.cycleAgentMode(1)
+	if got := m.selectedAgentMode(); got != planstate.Plan || m.textarea.Prompt != "plan ❯ " {
+		t.Fatalf("primer Tab = %q prompt=%q", got, m.textarea.Prompt)
+	}
+	m.cycleAgentMode(1)
+	if got := m.selectedAgentMode(); got != planstate.Goal || m.textarea.Prompt != "goal ❯ " {
+		t.Fatalf("segundo Tab = %q prompt=%q", got, m.textarea.Prompt)
+	}
+	m.cycleAgentMode(1)
+	if got := m.selectedAgentMode(); got != planstate.Build || m.textarea.Prompt != "build ❯ " {
+		t.Fatalf("tercer Tab = %q prompt=%q", got, m.textarea.Prompt)
+	}
+	m.cycleAgentMode(-1)
+	if got := m.selectedAgentMode(); got != planstate.Goal {
+		t.Fatalf("Shift+Tab = %q", got)
+	}
+}
+
+func TestGoalModeTurnsPlainInputIntoDurableGoal(t *testing.T) {
+	m := newInputTestChat(t)
+	m.setAgentMode(planstate.Goal)
+	_, cmd := m.submit("terminar la migración y verificarla")
+	if cmd == nil {
+		t.Fatal("goal mode debe iniciar la continuación autónoma")
+	}
+	state := m.goals.Snapshot()
+	if state == nil || state.Objective != "terminar la migración y verificarla" {
+		t.Fatalf("goal = %#v", state)
+	}
+	if m.activeTurnID == 0 || m.turnAgentMode != planstate.Goal {
+		t.Fatalf("turno goal no iniciado: id=%d mode=%q", m.activeTurnID, m.turnAgentMode)
+	}
+	if len(m.messages) == 0 || m.messages[0].Kind != MsgUser {
+		t.Fatalf("la instrucción goal debe permanecer visible en el transcript: %#v", m.messages)
 	}
 	m.endTurn()
 }

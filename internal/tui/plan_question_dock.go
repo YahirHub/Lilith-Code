@@ -188,7 +188,7 @@ func (m *ChatModel) planQuestionLauncherView(w int) string {
 	}
 	accent := tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Secondary).Bold(true)
 	muted := m.ctx.Styles.Muted
-	detailWidth := w - 2
+	detailWidth := chatUsableWidth(w) - 2
 	if detailWidth < 8 {
 		detailWidth = 8
 	}

@@ -276,3 +276,30 @@ func TestContextUsageSeCacheaYSeInvalidaConHistorial(t *testing.T) {
 		t.Fatalf("tras invalidar debía reflejar el historial nuevo: antes=%d después=%d", used1, used2)
 	}
 }
+
+func TestInputYStatusRespetanLaColumnaReservadaParaScrollbar(t *testing.T) {
+	for _, width := range []int{40, 80, 191} {
+		ctx := &AppContext{Styles: NewStyles(DefaultTheme()), Width: width, Height: 24}
+		m := NewChat(ctx)
+		m.Resize(width, 24)
+		m.textarea.SetValue(strings.Repeat("contenido ", 12))
+		m.syncInputHeight()
+
+		assertFits := func(label, view string) {
+			t.Helper()
+			for index, line := range strings.Split(view, "\n") {
+				if got, max := tuistyle.Width(line), width-1; got > max {
+					t.Fatalf("%s width=%d fila=%d ocupa %d, máximo %d: %q", label, width, index, got, max, stripANSI(line))
+				}
+			}
+		}
+		input := m.inputBoxView(width)
+		assertFits("input", input)
+		for index, line := range strings.Split(input, "\n") {
+			if got := tuistyle.Width(line); got != width-1 {
+				t.Fatalf("input width=%d fila=%d ocupa %d, debe cerrar exactamente en %d", width, index, got, width-1)
+			}
+		}
+		assertFits("status", RenderStatusBar(ctx, "", 20503, 1_000_000))
+	}
+}

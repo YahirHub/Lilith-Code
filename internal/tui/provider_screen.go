@@ -118,7 +118,12 @@ func (m *ProviderScreen) focusOrder() []string {
 	if p := m.selectedProvider(); p != nil && !p.Bundled {
 		order = append(order, "streaming")
 	}
-	order = append(order, "activate", "models", "add")
+	if p := m.selectedProvider(); p != nil {
+		if state, err := providers.ConnectionStateFor(m.ctx.ConfigDir, *p); err == nil && state.Connected {
+			order = append(order, "activate")
+		}
+	}
+	order = append(order, "models", "add")
 	if p := m.selectedProvider(); p != nil && !p.Bundled {
 		order = append(order, "delete")
 	}
@@ -198,7 +203,20 @@ func (m *ProviderScreen) selectedProvider() *providers.Provider {
 
 func (m *ProviderScreen) activateSelected() (uikit.Model, uikit.Cmd) {
 	p := m.selectedProvider()
-	if p == nil || len(p.Models) == 0 {
+	if p == nil {
+		m.danger = "No hay un proveedor seleccionado."
+		return m, nil
+	}
+	state, err := providers.ConnectionStateFor(m.ctx.ConfigDir, *p)
+	if err != nil {
+		m.danger = err.Error()
+		return m, nil
+	}
+	if !state.Connected {
+		m.danger = "Conecta " + p.Name + " desde /login antes de activarlo: " + state.Reason + "."
+		return m, nil
+	}
+	if len(p.Models) == 0 {
 		m.danger = "El proveedor no tiene modelos configurados."
 		return m, nil
 	}
@@ -287,7 +305,14 @@ func (m *ProviderScreen) deleteSelected() (uikit.Model, uikit.Cmd) {
 
 func (m *ProviderScreen) providerCard(index, width int) settingsBlock {
 	p := m.ctx.Providers.Providers[index]
-	meta := fmt.Sprintf("%d modelos · %s", len(p.Models), authLabel(p.Auth))
+	state, stateErr := providers.ConnectionStateFor(m.ctx.ConfigDir, p)
+	connectionLabel := "conectado"
+	if stateErr != nil {
+		connectionLabel = "estado desconocido"
+	} else if !state.Connected {
+		connectionLabel = "no conectado"
+	}
+	meta := fmt.Sprintf("%d modelos · %s · %s", len(p.Models), authLabel(p.Auth), connectionLabel)
 	if p.BaseURL != "" {
 		meta += " · " + p.BaseURL
 	}
@@ -295,10 +320,17 @@ func (m *ProviderScreen) providerCard(index, width int) settingsBlock {
 	if p.Bundled {
 		badge = "INCLUIDO"
 	}
+	description := providerDescription(p, m.ctx.Providers)
+	if stateErr != nil {
+		description = "No se pudo comprobar la conexión: " + stateErr.Error()
+	} else if !state.Connected {
+		description = "Conecta este proveedor desde /login · " + state.Reason
+		badge = "SIN CONEXIÓN"
+	}
 	return settingsCard(m.ctx.Styles, settingsCardSpec{
 		ID:          "provider:" + p.ID,
 		Title:       p.Name,
-		Description: providerDescription(p, m.ctx.Providers),
+		Description: description,
 		Meta:        meta,
 		Badge:       badge,
 		Selected:    index == m.selected,
@@ -369,9 +401,14 @@ func (m *ProviderScreen) layout() (string, []settingsHit) {
 	if m.confirmDelete {
 		deleteLabel = "Confirmar eliminar"
 	}
+	canActivate := false
+	if p != nil {
+		state, err := providers.ConnectionStateFor(m.ctx.ConfigDir, *p)
+		canActivate = err == nil && state.Connected && len(p.Models) > 0
+	}
 	buttons := []settingsButtonSpec{
-		{ID: "activate", Label: "Activar", Focused: m.focus == "activate", Disabled: p == nil},
-		{ID: "models", Label: "Modelos", Focused: m.focus == "models", Disabled: p == nil},
+		{ID: "activate", Label: "Activar", Focused: m.focus == "activate", Disabled: !canActivate},
+		{ID: "models", Label: "Modelos conectados", Focused: m.focus == "models", Disabled: p == nil},
 		{ID: "add", Label: "Agregar proveedor", Focused: m.focus == "add"},
 	}
 	if p != nil && !p.Bundled {

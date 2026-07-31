@@ -1,13 +1,17 @@
 package tui
 
 import (
+	"context"
+	"fmt"
 	"strings"
-
-	"github.com/lilith/li/internal/tui/uikit"
-	"github.com/lilith/li/internal/tui/uikit/textinput"
+	"time"
 
 	"github.com/lilith/li/internal/providers"
+	"github.com/lilith/li/internal/tui/uikit"
+	"github.com/lilith/li/internal/tui/uikit/textinput"
 )
+
+const modelCatalogRefreshTimeout = 15 * time.Second
 
 // modelRow is one selectable model. Provider information stays on the card so
 // the list no longer needs separate provider header rows.
@@ -19,13 +23,21 @@ type modelRow struct {
 	desc       string
 }
 
+type modelCatalogRefreshedMsg struct {
+	config providers.Config
+	report providers.RefreshReport
+}
+
 // ModelSelectorModel implements the /models screen.
 type ModelSelectorModel struct {
-	ctx      *AppContext
-	filter   textinput.Model
-	all      []modelRow
-	filtered []modelRow
-	cursor   int
+	ctx            *AppContext
+	filter         textinput.Model
+	all            []modelRow
+	filtered       []modelRow
+	cursor         int
+	refreshing     bool
+	refreshMessage string
+	loadError      string
 }
 
 func NewModelSelector(ctx *AppContext) ModelSelectorModel {
@@ -37,37 +49,68 @@ func NewModelSelector(ctx *AppContext) ModelSelectorModel {
 	if ctx.Width > 12 {
 		ti.Width = ctx.Width - 12
 	}
-	m := ModelSelectorModel{ctx: ctx, filter: ti}
+	m := ModelSelectorModel{ctx: ctx, filter: ti, refreshing: true}
 	m.rebuild()
-	active := ctx.Providers.Active()
-	for i, r := range m.filtered {
-		if r.providerID == active.ProviderID && r.modelID == active.ModelID {
-			m.cursor = i
-			break
-		}
-	}
+	m.selectActive()
 	return m
 }
 
+func refreshModelCatalogCmd(ctx *AppContext) uikit.Cmd {
+	if ctx == nil {
+		return nil
+	}
+	cfg := ctx.Providers
+	dir := ctx.ConfigDir
+	return func() uikit.Msg {
+		refreshCtx, cancel := context.WithTimeout(context.Background(), modelCatalogRefreshTimeout)
+		defer cancel()
+		updated, report := providers.RefreshConnectedModels(refreshCtx, dir, cfg, providers.RefreshOptions{})
+		return modelCatalogRefreshedMsg{config: updated, report: report}
+	}
+}
+
 func (m *ModelSelectorModel) rebuild() {
+	connected, err := providers.ConnectedProviders(m.ctx.ConfigDir, m.ctx.Providers)
+	if err != nil {
+		m.all = nil
+		m.filtered = nil
+		m.loadError = err.Error()
+		return
+	}
+	m.loadError = ""
 	rows := []modelRow{}
-	for _, p := range m.ctx.Providers.Providers {
+	for _, p := range connected {
 		for _, mod := range p.Models {
-			context := "sin contexto definido"
+			contextWindow := "sin contexto definido"
 			if mod.MaxContextTokens > 0 {
-				context = humanTokens(mod.MaxContextTokens)
+				contextWindow = humanTokens(mod.MaxContextTokens)
 			}
 			rows = append(rows, modelRow{
 				providerID: p.ID,
 				provName:   p.Name,
 				modelID:    mod.ID,
 				label:      mod.ID,
-				desc:       context,
+				desc:       contextWindow,
 			})
 		}
 	}
 	m.all = rows
 	m.applyFilter()
+}
+
+func (m *ModelSelectorModel) selectActive() {
+	active := m.ctx.Providers.Active()
+	for i, row := range m.filtered {
+		if row.providerID == active.ProviderID && row.modelID == active.ModelID {
+			m.cursor = i
+			return
+		}
+	}
+	if len(m.filtered) > 0 {
+		m.cursor = clampInt(m.cursor, 0, len(m.filtered)-1)
+	} else {
+		m.cursor = 0
+	}
 }
 
 func (m *ModelSelectorModel) applyFilter() {
@@ -93,10 +136,19 @@ func (m *ModelSelectorModel) applyFilter() {
 	}
 }
 
-func (m ModelSelectorModel) Init() uikit.Cmd { return textinput.Blink }
+func (m ModelSelectorModel) Init() uikit.Cmd {
+	return uikit.Batch(textinput.Blink, refreshModelCatalogCmd(m.ctx))
+}
 
 func (m ModelSelectorModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 	switch msg := msg.(type) {
+	case modelCatalogRefreshedMsg:
+		m.ctx.Providers = msg.config
+		m.refreshing = false
+		m.refreshMessage = summarizeCatalogRefresh(msg.report)
+		m.rebuild()
+		m.selectActive()
+		return m, nil
 	case uikit.KeyMsg:
 		switch msg.String() {
 		case "esc":
@@ -111,19 +163,24 @@ func (m ModelSelectorModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 				m.cursor++
 			}
 			return m, nil
+		case "ctrl+r":
+			if m.refreshing {
+				return m, nil
+			}
+			m.refreshing = true
+			m.refreshMessage = ""
+			return m, refreshModelCatalogCmd(m.ctx)
 		case "enter":
 			if len(m.filtered) == 0 {
 				return m, nil
 			}
 			row := m.filtered[m.cursor]
-			cfg := m.ctx.Providers
-			cfg.ActiveProviderID = row.providerID
-			cfg.ActiveModelID = row.modelID
-			if err := providers.Save(m.ctx.ConfigDir, cfg); err != nil {
+			if err := providers.SetActive(m.ctx.ConfigDir, row.providerID, row.modelID); err != nil {
 				return m, showError(err)
 			}
-			m.ctx.Providers.ActiveProviderID = row.providerID
-			m.ctx.Providers.ActiveModelID = row.modelID
+			if err := m.ctx.ReloadProviders(); err != nil {
+				return m, showError(err)
+			}
 			return m, switchToChatWithSystem("Modelo activo: " + row.provName + " / " + row.modelID)
 		}
 	}
@@ -135,6 +192,21 @@ func (m ModelSelectorModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 		m.applyFilter()
 	}
 	return m, cmd
+}
+
+func summarizeCatalogRefresh(report providers.RefreshReport) string {
+	updated := report.UpdatedCount()
+	errorsCount := len(report.Errors)
+	switch {
+	case updated > 0 && errorsCount > 0:
+		return fmt.Sprintf("Catálogos actualizados: %d · %d proveedor(es) no respondieron", updated, errorsCount)
+	case updated > 0:
+		return fmt.Sprintf("Catálogos actualizados: %d", updated)
+	case errorsCount > 0:
+		return fmt.Sprintf("No se pudieron actualizar %d catálogo(s); se conserva la caché disponible", errorsCount)
+	default:
+		return "Catálogos al día"
+	}
 }
 
 func (m ModelSelectorModel) View() string {
@@ -150,14 +222,27 @@ func (m ModelSelectorModel) View() string {
 			Active:  row.providerID == active.ProviderID && row.modelID == active.ModelID,
 		})
 	}
+	subtitle := "Sólo proveedores conectados · proveedor · modelo · contexto"
+	if m.refreshing {
+		subtitle = "Actualizando catálogos conectados…"
+	} else if m.refreshMessage != "" {
+		subtitle = m.refreshMessage
+	}
+	empty := "No hay modelos disponibles en proveedores conectados. Usa /login para conectar uno."
+	if strings.TrimSpace(m.filter.Value()) != "" && len(m.all) > 0 {
+		empty = "Sin resultados para este filtro."
+	}
+	if m.loadError != "" {
+		empty = "No se pudo comprobar qué proveedores están conectados: " + m.loadError
+	}
 	return renderViewportSelector(m.ctx.Styles, viewportSelectorSpec{
 		Title:         "Selecciona un modelo",
-		Subtitle:      "Proveedor · modelo · contexto",
+		Subtitle:      subtitle,
 		SearchContent: "Buscar  " + filter.View(),
 		Items:         items,
 		Selected:      m.cursor,
-		EmptyText:     "Sin resultados.",
-		Footer:        "↑↓ navegar · Enter elegir · Esc cancelar",
+		EmptyText:     empty,
+		Footer:        "↑↓ navegar · Enter elegir · Ctrl+R actualizar · Esc cancelar",
 		ScreenWidth:   m.ctx.Width,
 		ScreenHeight:  m.ctx.Height,
 	})

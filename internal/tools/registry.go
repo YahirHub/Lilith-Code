@@ -39,7 +39,7 @@ type Env struct {
 	RunAgent func(ctx context.Context, req AgentRequest) (AgentResult, error)
 	// Todos is the session-local authoritative task plan used by todo_write.
 	Todos *litodo.Manager
-	// Plan is the session-local Build/Plan state used by plan-specific tools.
+	// Plan is the session-local Build/Plan/Goal mode state used by plan-specific tools.
 	Plan *planstate.Manager
 	// Goal is the durable Codex-style objective bound to this chat thread.
 	Goal *ligoal.Manager

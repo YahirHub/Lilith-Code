@@ -53,23 +53,39 @@ func (m *ChatModel) setAgentMode(mode planstate.Mode) bool {
 	return true
 }
 
-func (m *ChatModel) toggleAgentMode() bool {
-	if m.selectedAgentMode() == planstate.Plan {
-		return m.setAgentMode(planstate.Build)
+var primaryAgentModes = []planstate.Mode{planstate.Build, planstate.Plan, planstate.Goal}
+
+func (m *ChatModel) cycleAgentMode(delta int) bool {
+	current := m.selectedAgentMode()
+	index := 0
+	for i, mode := range primaryAgentModes {
+		if mode == current {
+			index = i
+			break
+		}
 	}
-	return m.setAgentMode(planstate.Plan)
+	index = (index + delta) % len(primaryAgentModes)
+	if index < 0 {
+		index += len(primaryAgentModes)
+	}
+	return m.setAgentMode(primaryAgentModes[index])
 }
 
 func (m *ChatModel) syncAgentModePresentation() {
-	if m.selectedAgentMode() == planstate.Plan {
+	switch m.selectedAgentMode() {
+	case planstate.Plan:
 		m.textarea.Prompt = "plan ❯ "
-		m.textarea.Placeholder = "Describe qué quieres planificar…  Tab: Build"
+		m.textarea.Placeholder = "Describe qué quieres planificar…  Tab: Goal"
 		m.textarea.FocusedStyle.Prompt = tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Secondary).Bold(true)
-		return
+	case planstate.Goal:
+		m.textarea.Prompt = "goal ❯ "
+		m.textarea.Placeholder = "Define el objetivo persistente…  Tab: Build"
+		m.textarea.FocusedStyle.Prompt = tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Success).Bold(true)
+	default:
+		m.textarea.Prompt = "build ❯ "
+		m.textarea.Placeholder = "Escribe un mensaje…  Tab: Plan"
+		m.textarea.FocusedStyle.Prompt = tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Primary).Bold(true)
 	}
-	m.textarea.Prompt = "❯ "
-	m.textarea.Placeholder = "Escribe un mensaje…  /help"
-	m.textarea.FocusedStyle.Prompt = tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Primary)
 }
 
 func (m *ChatModel) planStatePointer() *planstate.State {
@@ -217,7 +233,7 @@ func (m *ChatModel) planWidgetView(_ int) string {
 	}
 	accent := tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Secondary).Bold(true)
 	muted := m.ctx.Styles.Muted
-	return accent.Render("PLAN LISTO") + muted.Render(" · Tab: Build · /plan show")
+	return accent.Render("PLAN LISTO") + muted.Render(" · Shift+Tab: Build · Tab: Goal · /plan show")
 }
 
 func isPlanQuestionToolName(name string) bool { return name == "plan_question" }
