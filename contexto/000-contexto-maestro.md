@@ -93,6 +93,7 @@ Los estados se persisten en la sesión. Goal comparte las capacidades de impleme
 - Streaming SSE/Responses con normalización por proveedor.
 - Reasoning separado del mensaje final, incluidos campos estructurados y etiquetas inline como `<think>`.
 - Tool calls con paneles en vivo y persistentes.
+- `run_terminal_command` no impone límite de ejecución cuando `timeout_seconds` no está presente. Los builds, instalaciones y pruebas largas siguen ejecutándose hasta completar o hasta una cancelación explícita; un timeout positivo conserva el corte y la limpieza del árbol de procesos.
 - Cola de steering y follow-up sin abrir turnos paralelos.
 - Cancelación con Esc; `/exit` es la salida explícita.
 - TodoWrite, planes y goals se guardan en la sesión.
@@ -142,7 +143,8 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 
 ## 12. Documentos recientes clave
 
-- `080-migracion-completa-tview-sin-charm.md`
 - `081-fix-viewport-config-tview.md`
 - `082-compatibilidad-reasoning-inline-y-ocr-estructural.md`
 - `083-modelos-conectados-catalogos-modos-y-layout.md`
+- `084-catalogos-manuales-sin-endpoint-models.md`
+- `085-timeout-shell-solo-explicito.md`

@@ -29,27 +29,27 @@ func init() {
 		Name: "run_terminal_command",
 		Description: fmt.Sprintf(
 			"Run a shell command in the project directory (bash, or busybox sh on Windows) and return stdout, "+
-				"stderr and the exit code. Prefer non-interactive flags and set `timeout_seconds` explicitly (default 30, "+
-				"use larger values for installs/builds/tests). Output is tail-truncated to the last %d lines / %dKB per "+
+				"stderr and the exit code. `timeout_seconds` is optional: when omitted the command runs until it finishes or "+
+				"the user cancels it. Set a positive value only when a hard deadline is actually required. Output is tail-truncated to the last %d lines / %dKB per "+
 				"stream; when truncated the full stream is saved to a temp file whose path is reported so you can inspect "+
 				"it with read_files.",
 			bashOutputMaxLines, bashOutputMaxBytes/1024,
 		),
 		PromptSnippet: "Execute shell commands in the project directory",
 		PromptGuidelines: []string{
-			"Use run_terminal_command for builds, tests, git and shell inspection; prefer non-interactive commands and set an appropriate timeout_seconds.",
+			"Use run_terminal_command for builds, tests, git and shell inspection; prefer non-interactive commands. Omit timeout_seconds for long builds, installs and test suites unless a hard deadline is explicitly needed.",
 		},
 		Mutating: true,
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"command":         map[string]any{"type": "string", "description": "Full command line to run."},
-				"timeout_seconds": map[string]any{"type": "integer", "description": "Max seconds (default 30). Use larger values (120, 300…) for installs, builds and test suites."},
+				"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "description": "Optional hard deadline in seconds. When omitted, the command has no execution timeout and runs until completion or user cancellation."},
 			},
 			"required": []string{"command"},
 		},
 		Run: func(ctx context.Context, args map[string]any, env Env) (string, error) {
-			timeout := time.Duration(intArg(args, "timeout_seconds", 30)) * time.Second
+			timeout := terminalCommandTimeout(args)
 			res, err := shell.Run(ctx, shell.Request{
 				Command: str(args, "command"),
 				Dir:     env.Root,
@@ -155,6 +155,14 @@ func init() {
 			return text, nil
 		},
 	})
+}
+
+func terminalCommandTimeout(args map[string]any) time.Duration {
+	seconds := intArg(args, "timeout_seconds", 0)
+	if seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // boolArg extracts an optional boolean tool argument.

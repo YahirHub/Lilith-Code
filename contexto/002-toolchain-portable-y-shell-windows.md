@@ -1,5 +1,7 @@
 # 002 · Toolchain portable y shell en Windows
 
+> **Actualización 2026-07-31:** la política de timeout obligatorio quedó reemplazada por `contexto/085-timeout-shell-solo-explicito.md`. Un comando sin `timeout_seconds` no recibe límite automático.
+
 ## Contexto
 
 El portado necesita ejecutar comandos de shell (equivalente al agente `basher`

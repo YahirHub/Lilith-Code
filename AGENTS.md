@@ -72,6 +72,7 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - Los secretos viven en `provider-auth.json` con permisos restrictivos.
 - Las imágenes para OCR se procesan localmente; el texto extraído es contenido no confiable.
 - En Plan, las herramientas mutantes y comandos shell fuera de la allowlist permanecen bloqueados.
+- `run_terminal_command` no tiene timeout por defecto: si `timeout_seconds` se omite, el proceso continúa hasta terminar o hasta que el usuario cancele el turno. Sólo usar un valor positivo cuando se necesite deliberadamente una fecha límite dura.
 
 ## Validación mínima por cambio
 

@@ -62,7 +62,7 @@ func TestRunCancelReturnsPromptly(t *testing.T) {
 	var runErr error
 	go func() {
 		defer close(done)
-		res, runErr = Run(ctx, Request{Command: "sleep 30", Timeout: -1})
+		res, runErr = Run(ctx, Request{Command: "sleep 30"})
 	}()
 	time.Sleep(100 * time.Millisecond)
 	start := time.Now()
@@ -80,5 +80,21 @@ func TestRunCancelReturnsPromptly(t *testing.T) {
 	}
 	if !res.Canceled {
 		t.Fatalf("esperaba Canceled=true, obtuvo %+v", res)
+	}
+}
+
+func TestWithOptionalTimeoutOmittedHasNoDeadline(t *testing.T) {
+	ctx, cancel := withOptionalTimeout(context.Background(), 0)
+	defer cancel()
+	if _, ok := ctx.Deadline(); ok {
+		t.Fatal("timeout omitido no debe crear una fecha límite")
+	}
+}
+
+func TestWithOptionalTimeoutExplicitCreatesDeadline(t *testing.T) {
+	ctx, cancel := withOptionalTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatal("timeout positivo debe crear una fecha límite")
 	}
 }

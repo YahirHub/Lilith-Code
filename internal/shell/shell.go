@@ -1,5 +1,5 @@
 // Package shell runs shell commands portably: bash where it exists and the
-// managed busybox shell on Windows, always with a timeout and bounded output.
+// managed busybox shell on Windows, with optional timeouts and bounded output.
 package shell
 
 import (
@@ -15,9 +15,6 @@ import (
 	"github.com/lilith/li/internal/toolchain"
 )
 
-// DefaultTimeout applies when Request.Timeout is zero.
-const DefaultTimeout = 30 * time.Second
-
 // MaxOutputBytes caps each stream so a runaway command cannot exhaust memory.
 const MaxOutputBytes = 256 << 10
 
@@ -29,7 +26,8 @@ type Request struct {
 	Command string
 	// Dir is the working directory; empty means the current process directory.
 	Dir string
-	// Timeout zero means DefaultTimeout; negative means no timeout.
+	// Timeout applies only when positive. Zero or a negative value means no
+	// deadline; the command still stops when the parent context is canceled.
 	Timeout time.Duration
 }
 
@@ -72,16 +70,8 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, fmt.Errorf("directorio de trabajo inválido: %s", dir)
 	}
 
-	timeout := req.Timeout
-	if timeout == 0 {
-		timeout = DefaultTimeout
-	}
-	runCtx := ctx
-	var cancel context.CancelFunc
-	if timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
+	runCtx, cancel := withOptionalTimeout(ctx, req.Timeout)
+	defer cancel()
 
 	args := append(append([]string{}, prefix...), command)
 	cmd := exec.CommandContext(runCtx, shellPath, args...)
@@ -136,6 +126,13 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		return res, err
 	}
 	return res, nil
+}
+
+func withOptionalTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, timeout)
 }
 
 func clip(b []byte) (string, bool) {

@@ -3,6 +3,8 @@
 **Fecha**: 2026-07-27
 **Estado**: aplicado
 
+> **Política vigente desde 085:** `timeout_seconds` es opcional y ya no existe un timeout predeterminado. Si se omite, el comando corre hasta completar o ser cancelado por el usuario. Este documento conserva el historial de la implementación original.
+
 ## Contexto
 
 Tras el fix del box roto (027) el usuario reportó cuatro problemas encadenados
