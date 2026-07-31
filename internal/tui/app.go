@@ -135,8 +135,9 @@ func (m RootModel) mouseModeCmd() tea.Cmd {
 	return tea.DisableMouse
 }
 
-// NewRootModel builds the root Bubble Tea model. If firstRun is true, the
-// onboarding screen is shown; otherwise the chat opens directly.
+// NewRootModel builds the persistent screen router consumed by the tview
+// runtime adapter. If firstRun is true, onboarding is shown; otherwise chat
+// opens directly.
 func NewRootModel(ctx *AppContext) RootModel {
 	chat := NewChat(ctx)
 	m := RootModel{ctx: ctx, chat: &chat}

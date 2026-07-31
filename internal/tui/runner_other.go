@@ -2,16 +2,8 @@
 
 package tui
 
-import tea "github.com/charmbracelet/bubbletea"
-
-// RunRoot starts Lilith with Bubble Tea's native terminal runtime on
-// non-Windows systems.
+// RunRoot starts Lilith with tview's native application runtime. tview creates
+// and owns the platform Tcell screen, input loop, paste mode, and frame redraws.
 func RunRoot(root RootModel) error {
-	program := tea.NewProgram(
-		root,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-	)
-	_, err := program.Run()
-	return err
+	return runRootTView(root, nil)
 }

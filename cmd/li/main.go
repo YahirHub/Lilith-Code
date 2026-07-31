@@ -102,9 +102,10 @@ func runTUI(_ *cobra.Command, _ []string) error {
 
 	root := tui.NewRootModel(ctx)
 
-	// The terminal backend is selected per platform. Windows uses Tcell for
-	// input/rendering while Bubble Tea remains the headless model runtime;
-	// other systems keep Bubble Tea's native terminal renderer.
+	// tview owns the interactive terminal runtime on every platform. Windows
+	// supplies an explicit Tcell VT screen; other systems let tview create it.
+	// Existing screen models remain behind the compatibility adapter while the
+	// visual layer is migrated incrementally.
 	if err := tui.RunRoot(root); err != nil {
 		return err
 	}

@@ -2,7 +2,7 @@
 
 Lilith (`li`) es una CLI agéntica escrita en Go que corre en tu terminal.
 Habla con proveedores compatibles con la API de OpenAI, ejecuta herramientas
-sobre tu repositorio y ofrece una TUI cuidada construida con Bubble Tea.
+sobre tu repositorio y ofrece una TUI interactiva ejecutada sobre tview.
 
 ## Características
 

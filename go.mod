@@ -10,6 +10,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.10.2
 	github.com/charmbracelet/x/cellbuf v0.0.13
 	github.com/gdamore/tcell/v2 v2.13.10
+	github.com/rivo/tview v0.42.0
 	github.com/spf13/cobra v1.8.1
 	golang.org/x/text v0.31.0
 )
