@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lilith/li/internal/tui/uikit"
 
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/providers/openai"
@@ -18,7 +18,7 @@ import (
 // runInit mirrors the purpose of Claude/Codex /init while keeping Lilith's
 // native instructions separate: analyze the real repository, then create or
 // improve a concise root LILITH.md instead of blindly generating a template.
-func (m *ChatModel) runInit() tea.Cmd {
+func (m *ChatModel) runInit() uikit.Cmd {
 	if m.activeTurnID != 0 {
 		m.AddError("/init sólo puede ejecutarse cuando el agente está inactivo.")
 		return nil
@@ -63,5 +63,5 @@ The resulting LILITH.md must be concise, durable context for future coding-agent
 	}
 	m.cleanupCompletedTodos()
 	m.persistTurnStart()
-	return tea.Batch(m.runTurn(), m.chatMouseModeCmd())
+	return uikit.Batch(m.runTurn(), m.chatMouseModeCmd())
 }

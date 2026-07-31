@@ -6,13 +6,13 @@ import (
 	"sort"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lilith/li/internal/tui/uikit"
 
 	"github.com/lilith/li/internal/agents"
 	"github.com/lilith/li/internal/config"
 )
 
-func (m *ChatModel) runMemoryCommand(args string) tea.Cmd {
+func (m *ChatModel) runMemoryCommand(args string) uikit.Cmd {
 	args = strings.ToLower(strings.TrimSpace(args))
 	settings, _ := config.Load(m.ctx.ConfigDir)
 	switch args {
@@ -61,7 +61,7 @@ func (m *ChatModel) memorySummary() string {
 	return b.String()
 }
 
-func (m *ChatModel) runMCPCommand(args string) tea.Cmd {
+func (m *ChatModel) runMCPCommand(args string) uikit.Cmd {
 	args = strings.ToLower(strings.TrimSpace(args))
 	if args == "reload" || args == "reconnect" {
 		m.mcpSignature = ""
@@ -103,7 +103,7 @@ func (m *ChatModel) runMCPCommand(args string) tea.Cmd {
 	return nil
 }
 
-func (m *ChatModel) runTasksCommand() tea.Cmd {
+func (m *ChatModel) runTasksCommand() uikit.Cmd {
 	if len(m.agentPanels) == 0 {
 		m.AddSystem("No hay tareas de subagentes registradas en esta sesión.")
 		return nil
@@ -132,7 +132,7 @@ func (m *ChatModel) runTasksCommand() tea.Cmd {
 	return nil
 }
 
-func (m *ChatModel) runForkCommand(args string) tea.Cmd {
+func (m *ChatModel) runForkCommand(args string) uikit.Cmd {
 	if strings.TrimSpace(os.Getenv("CLAUDE_CODE_FORK_SUBAGENT")) == "0" {
 		m.AddSystem("Los forks están desactivados por CLAUDE_CODE_FORK_SUBAGENT=0.")
 		return nil

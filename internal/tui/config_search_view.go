@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 
 	"github.com/lilith/li/internal/websearch"
 )
@@ -69,13 +69,13 @@ func (s *searchConfigState) providerListBlock(width int, contentFocused bool) se
 		}
 		status := s.providerListStatus(provider)
 		statusRaw := "[" + status + "]"
-		labelWidth := width - lipgloss.Width(prefix) - lipgloss.Width(statusRaw) - 2
+		labelWidth := width - tuistyle.Width(prefix) - tuistyle.Width(statusRaw) - 2
 		if labelWidth < 1 {
 			labelWidth = 1
 		}
 		label := labelStyle.Render(settingsFitSingleLine(websearch.Labels[provider], labelWidth))
 		statusStyled := s.providerStatusStyle(state).Render(statusRaw)
-		gap := width - lipgloss.Width(prefix) - lipgloss.Width(label) - lipgloss.Width(statusStyled)
+		gap := width - tuistyle.Width(prefix) - tuistyle.Width(label) - tuistyle.Width(statusStyled)
 		if gap < 1 {
 			gap = 1
 		}
@@ -89,7 +89,7 @@ func (s *searchConfigState) providerListBlock(width int, contentFocused bool) se
 		second = styles.Muted.Render(second)
 
 		if selected {
-			rowStyle := lipgloss.NewStyle().Width(width).Background(styles.Theme.Surface)
+			rowStyle := tuistyle.NewStyle().Width(width).Background(styles.Theme.Surface)
 			first = rowStyle.Render(first)
 			second = rowStyle.Render(second)
 		}
@@ -103,7 +103,7 @@ func (s *searchConfigState) providerListBlock(width int, contentFocused bool) se
 	return settingsBlock{text: strings.Join(lines, "\n"), hits: hits}
 }
 
-func (s *searchConfigState) providerStatusStyle(state websearch.State) lipgloss.Style {
+func (s *searchConfigState) providerStatusStyle(state websearch.State) tuistyle.Style {
 	styles := s.ctx.Styles
 	switch {
 	case state.Available:

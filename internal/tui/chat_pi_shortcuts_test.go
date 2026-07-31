@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/lilith/li/internal/providers/openai"
+	"github.com/lilith/li/internal/tui/uikit"
 )
 
 func TestCtrlCAndCtrlZAreIgnoredAndNeverExit(t *testing.T) {
@@ -17,8 +17,8 @@ func TestCtrlCAndCtrlZAreIgnoredAndNeverExit(t *testing.T) {
 	m.enqueue("sigue con esta corrección", queueSteer)
 	m.textarea.SetValue("borrador")
 
-	for _, key := range []tea.KeyType{tea.KeyCtrlC, tea.KeyCtrlZ} {
-		_, cmd := m.Update(tea.KeyMsg{Type: key})
+	for _, key := range []uikit.KeyType{uikit.KeyCtrlC, uikit.KeyCtrlZ} {
+		_, cmd := m.Update(uikit.KeyMsg{Type: key})
 		if cmd != nil {
 			t.Fatalf("%v no debe ejecutar salida ni suspensión", key)
 		}
@@ -66,7 +66,7 @@ func TestEscapeCancelsAndRestoresQueuedMessages(t *testing.T) {
 	m.enqueue("primera corrección", queueSteer)
 	m.enqueue("después revisa pruebas", queueFollowUp)
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_, cmd := m.Update(uikit.KeyMsg{Type: uikit.KeyEsc})
 	if cmd != nil {
 		t.Fatal("Escape debe cancelar sin programar un nuevo turno")
 	}
@@ -95,7 +95,7 @@ func TestAltUpRestoresQueueWithoutCancelingTurn(t *testing.T) {
 	done := m.turnCtx.Done()
 	m.enqueue("editar antes de enviar", queueSteer)
 
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp, Alt: true})
+	_, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyUp, Alt: true})
 	select {
 	case <-done:
 		t.Fatal("Alt+Up sólo debe recuperar la cola, no cancelar la tarea")
@@ -113,7 +113,7 @@ func TestAltEnterQueuesFollowUpWhileStreaming(t *testing.T) {
 	}
 	m.textarea.SetValue("haz esto cuando termines")
 
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	_, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyEnter, Alt: true})
 	if len(m.queue) != 1 {
 		t.Fatalf("Alt+Enter debe crear un follow-up: %#v", m.queue)
 	}

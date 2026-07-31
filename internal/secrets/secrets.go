@@ -31,7 +31,6 @@ type OAuthTokens struct {
 	AccountID string `json:"accountId,omitempty"`
 }
 
-
 func path(dir string) string { return filepath.Join(dir, AuthFile) }
 
 // Load reads provider-auth.json.

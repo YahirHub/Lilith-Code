@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 )
 
 // asciiLogo is a compact 6-row Lilith wordmark.
@@ -19,11 +19,11 @@ const asciiLogo = `
 // art; narrow ones fall back to a coloured wordmark.
 func RenderLogo(width, height int, t Theme) string {
 	if width < 44 || height < 10 {
-		return lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render("✦ LILITH")
+		return tuistyle.NewStyle().Foreground(t.Primary).Bold(true).Render("✦ LILITH")
 	}
 	lines := strings.Split(strings.TrimPrefix(asciiLogo, "\n"), "\n")
-	style := lipgloss.NewStyle().Foreground(t.LogoBlock).Bold(true)
-	accent := lipgloss.NewStyle().Foreground(t.LogoAccent).Bold(true)
+	style := tuistyle.NewStyle().Foreground(t.LogoBlock).Bold(true)
+	accent := tuistyle.NewStyle().Foreground(t.LogoAccent).Bold(true)
 	// Colour a diagonal sheen across the middle row for interest.
 	out := make([]string, len(lines))
 	mid := len(lines) / 2

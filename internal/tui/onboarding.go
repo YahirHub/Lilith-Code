@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lilith/li/internal/tui/uikit"
 )
 
 // OnboardingOption identifies a first-run choice.
@@ -51,11 +51,11 @@ func NewOnboarding(ctx *AppContext, firstRun bool) OnboardingModel {
 	return m
 }
 
-func (m OnboardingModel) Init() tea.Cmd { return nil }
+func (m OnboardingModel) Init() uikit.Cmd { return nil }
 
-func (m OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m OnboardingModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 	switch v := msg.(type) {
-	case tea.MouseMsg:
+	case uikit.MouseMsg:
 		e, ok := mouseLeftPress(v)
 		if !ok {
 			return m, nil
@@ -77,7 +77,7 @@ func (m OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, switchToChat()
 		}
 
-	case tea.KeyMsg:
+	case uikit.KeyMsg:
 		switch v.String() {
 		case "esc":
 			if !m.firstRun {
@@ -107,7 +107,7 @@ func (m OnboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m OnboardingModel) choose() (tea.Model, tea.Cmd) {
+func (m OnboardingModel) choose() (uikit.Model, uikit.Cmd) {
 	switch onboardingCards[m.selected].option {
 	case OptionCodex:
 		return m, switchTo(NewCodexLogin(m.ctx))

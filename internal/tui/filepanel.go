@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 )
 
 // FilePanel es la ventana plegable que muestra en vivo lo que una herramienta
@@ -81,7 +81,14 @@ func (p *FilePanel) Update(rawArgs string) {
 func parsePanelEdits(rawArgs string) []filePanelEdit {
 	var args map[string]any
 	if json.Unmarshal([]byte(rawArgs), &args) != nil {
-		return nil
+		// Some compatible providers double-escape the JSON stored in edits and
+		// therefore produce an outer object that is not strict JSON. Preserve the
+		// historical tolerant behavior by recovering that one string field.
+		if value, ok := recoverStringifiedEdits(rawArgs); ok {
+			args = map[string]any{"edits": value}
+		} else {
+			return nil
+		}
 	}
 	var raw []any
 	if value, ok := args["edits"]; ok {
@@ -106,6 +113,31 @@ func parsePanelEdits(rawArgs string) []filePanelEdit {
 		out = append(out, filePanelEdit{Old: old, New: newText})
 	}
 	return out
+}
+
+func recoverStringifiedEdits(rawArgs string) (string, bool) {
+	idx := strings.Index(rawArgs, `"edits"`)
+	if idx < 0 {
+		return "", false
+	}
+	rest := rawArgs[idx+len(`"edits"`):]
+	colon := strings.IndexByte(rest, ':')
+	if colon < 0 {
+		return "", false
+	}
+	rest = strings.TrimSpace(rest[colon+1:])
+	if len(rest) < 2 || rest[0] != '"' {
+		return "", false
+	}
+	end := strings.LastIndexByte(rest[1:], '"')
+	if end < 0 {
+		return "", false
+	}
+	value := rest[1 : end+1]
+	value = strings.ReplaceAll(value, `\\"`, `"`)
+	value = strings.ReplaceAll(value, `\"`, `"`)
+	value = strings.ReplaceAll(value, `\\`, `\`)
+	return value, value != ""
 }
 
 func panelStringField(values map[string]any, names ...string) (string, bool) {
@@ -220,11 +252,11 @@ func (p *FilePanel) View(s Styles, width int, selected bool) string {
 		arrow = "▾"
 	}
 	add, del := p.stats()
-	counts := lipgloss.NewStyle().Foreground(t.Success).Render(fmt.Sprintf("+%d", add))
+	counts := tuistyle.NewStyle().Foreground(t.Success).Render(fmt.Sprintf("+%d", add))
 	if del > 0 {
-		counts += " " + lipgloss.NewStyle().Foreground(t.Danger).Render(fmt.Sprintf("-%d", del))
+		counts += " " + tuistyle.NewStyle().Foreground(t.Danger).Render(fmt.Sprintf("-%d", del))
 	}
-	head := lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render(arrow+" "+p.title()) + "  " + counts
+	head := tuistyle.NewStyle().Foreground(t.Primary).Bold(true).Render(arrow+" "+p.title()) + "  " + counts
 	if !p.Done {
 		// Terminal-style "running…" cue instead of an emoji spinner.
 		head += "  " + s.Muted.Render("• running")
@@ -257,8 +289,8 @@ func (p *FilePanel) View(s Styles, width int, selected bool) string {
 	if selected {
 		border = t.Primary
 	}
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+	return tuistyle.NewStyle().
+		Border(tuistyle.RoundedBorder()).
 		BorderForeground(border).
 		Padding(0, 1).
 		Width(width - 2).
@@ -267,9 +299,9 @@ func (p *FilePanel) View(s Styles, width int, selected bool) string {
 
 func (p *FilePanel) renderBody(s Styles, inner int) string {
 	t := s.Theme
-	green := lipgloss.NewStyle().Foreground(t.Success)
-	red := lipgloss.NewStyle().Foreground(t.Danger)
-	ctx := lipgloss.NewStyle().Foreground(t.Muted)
+	green := tuistyle.NewStyle().Foreground(t.Success)
+	red := tuistyle.NewStyle().Foreground(t.Danger)
+	ctx := tuistyle.NewStyle().Foreground(t.Muted)
 
 	var out []string
 	if isCreateFileTool(p.Tool) {

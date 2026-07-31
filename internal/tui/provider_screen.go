@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/lilith/li/internal/tui/uikit"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 
 	"github.com/lilith/li/internal/providers"
 )
@@ -34,19 +34,19 @@ func NewProviderScreen(ctx *AppContext) *ProviderScreen {
 	return m
 }
 
-func (m *ProviderScreen) Init() tea.Cmd { return nil }
+func (m *ProviderScreen) Init() uikit.Cmd { return nil }
 
-func (m *ProviderScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *ProviderScreen) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 	switch v := msg.(type) {
-	case tea.MouseMsg:
-		e := tea.MouseEvent(v)
+	case uikit.MouseMsg:
+		e := uikit.MouseEvent(v)
 		if e.IsWheel() {
 			switch e.Button {
-			case tea.MouseButtonWheelUp:
+			case uikit.MouseButtonWheelUp:
 				if m.selected > 0 {
 					m.selected--
 				}
-			case tea.MouseButtonWheelDown:
+			case uikit.MouseButtonWheelDown:
 				if m.selected < len(m.ctx.Providers.Providers)-1 {
 					m.selected++
 				}
@@ -66,7 +66,7 @@ func (m *ProviderScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.handleHit(hit)
 
-	case tea.KeyMsg:
+	case uikit.KeyMsg:
 		key := v.String()
 		if m.confirmDelete && key == "esc" {
 			m.confirmDelete = false
@@ -139,7 +139,7 @@ func (m *ProviderScreen) moveFocus(delta int) {
 	m.focus = order[idx]
 }
 
-func (m *ProviderScreen) activateFocus() (tea.Model, tea.Cmd) {
+func (m *ProviderScreen) activateFocus() (uikit.Model, uikit.Cmd) {
 	switch m.focus {
 	case "providers", "activate":
 		return m.activateSelected()
@@ -157,7 +157,7 @@ func (m *ProviderScreen) activateFocus() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *ProviderScreen) handleHit(hit settingsHit) (tea.Model, tea.Cmd) {
+func (m *ProviderScreen) handleHit(hit settingsHit) (uikit.Model, uikit.Cmd) {
 	if strings.HasPrefix(hit.id, "provider:") {
 		id := strings.TrimPrefix(hit.id, "provider:")
 		for i := range m.ctx.Providers.Providers {
@@ -196,7 +196,7 @@ func (m *ProviderScreen) selectedProvider() *providers.Provider {
 	return &m.ctx.Providers.Providers[m.selected]
 }
 
-func (m *ProviderScreen) activateSelected() (tea.Model, tea.Cmd) {
+func (m *ProviderScreen) activateSelected() (uikit.Model, uikit.Cmd) {
 	p := m.selectedProvider()
 	if p == nil || len(p.Models) == 0 {
 		m.danger = "El proveedor no tiene modelos configurados."
@@ -220,7 +220,7 @@ func (m *ProviderScreen) activateSelected() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *ProviderScreen) toggleStreaming() (tea.Model, tea.Cmd) {
+func (m *ProviderScreen) toggleStreaming() (uikit.Model, uikit.Cmd) {
 	p := m.selectedProvider()
 	if p == nil || p.Bundled {
 		return m, nil
@@ -242,7 +242,7 @@ func (m *ProviderScreen) toggleStreaming() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *ProviderScreen) deleteSelected() (tea.Model, tea.Cmd) {
+func (m *ProviderScreen) deleteSelected() (uikit.Model, uikit.Cmd) {
 	p := m.selectedProvider()
 	if p == nil || p.Bundled {
 		return m, nil
@@ -318,9 +318,9 @@ func providerVisibleRange(cards []settingsBlock, selected, budget int) (int, int
 	// Start with the selected card and fill backwards first. This guarantees
 	// that keyboard navigation never moves selection outside the visible area.
 	start := selected
-	used := lipgloss.Height(cards[selected].text) + 1
+	used := tuistyle.Height(cards[selected].text) + 1
 	for start > 0 {
-		h := lipgloss.Height(cards[start-1].text) + 1
+		h := tuistyle.Height(cards[start-1].text) + 1
 		if used+h > budget {
 			break
 		}
@@ -329,7 +329,7 @@ func providerVisibleRange(cards []settingsBlock, selected, budget int) (int, int
 	}
 	end := selected + 1
 	for end < len(cards) {
-		h := lipgloss.Height(cards[end].text) + 1
+		h := tuistyle.Height(cards[end].text) + 1
 		if used+h > budget {
 			break
 		}
@@ -391,15 +391,15 @@ func (m *ProviderScreen) layout() (string, []settingsHit) {
 		}
 		// Reserve rows for the controls below the catalog. Unlike a fixed card
 		// count, this remains usable when wrapped URLs make a card taller.
-		reserved := 10 + lipgloss.Height(buttonBlock.text)
+		reserved := 10 + tuistyle.Height(buttonBlock.text)
 		if streamBlock.text != "" {
-			reserved += lipgloss.Height(streamBlock.text) + 1
+			reserved += tuistyle.Height(streamBlock.text) + 1
 		}
 		if m.message != "" {
-			reserved += lipgloss.Height(settingsWrapPlain(m.message, w)) + 1
+			reserved += tuistyle.Height(settingsWrapPlain(m.message, w)) + 1
 		}
 		if m.danger != "" {
-			reserved += lipgloss.Height(settingsWrapPlain(m.danger, w)) + 1
+			reserved += tuistyle.Height(settingsWrapPlain(m.danger, w)) + 1
 		}
 		budget := m.ctx.Height - reserved
 		start, end := providerVisibleRange(cards, m.selected, budget)
@@ -464,4 +464,4 @@ func authLabel(kind providers.AuthKind) string {
 	}
 }
 
-var _ tea.Model = (*ProviderScreen)(nil)
+var _ uikit.Model = (*ProviderScreen)(nil)

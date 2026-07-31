@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	litodo "github.com/lilith/li/internal/todo"
+	"github.com/lilith/li/internal/tui/uikit"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 )
 
 const todoWidgetTaskLimit = 3
@@ -130,16 +130,16 @@ func collapsedTodoWindow(tasks []todoDisplayTask) []todoDisplayTask {
 
 func renderTodoTask(task todoDisplayTask, width int, s Styles) string {
 	marker := "[ ]"
-	markerStyle := lipgloss.NewStyle().Foreground(s.Theme.Muted)
-	subjectStyle := lipgloss.NewStyle().Foreground(s.Theme.Foreground)
+	markerStyle := tuistyle.NewStyle().Foreground(s.Theme.Muted)
+	subjectStyle := tuistyle.NewStyle().Foreground(s.Theme.Foreground)
 	switch task.Task.Status {
 	case litodo.InProgress:
 		marker = "[>]"
-		markerStyle = lipgloss.NewStyle().Foreground(s.Theme.Warning).Bold(true)
+		markerStyle = tuistyle.NewStyle().Foreground(s.Theme.Warning).Bold(true)
 	case litodo.Completed:
 		marker = "[x]"
-		markerStyle = lipgloss.NewStyle().Foreground(s.Theme.Success)
-		subjectStyle = lipgloss.NewStyle().Foreground(s.Theme.Muted).Strikethrough(true)
+		markerStyle = tuistyle.NewStyle().Foreground(s.Theme.Success)
+		subjectStyle = tuistyle.NewStyle().Foreground(s.Theme.Muted).Strikethrough(true)
 	}
 	relation := ""
 	if task.Number > 0 {
@@ -154,7 +154,7 @@ func renderTodoTask(task todoDisplayTask, width int, s Styles) string {
 	}
 	prefix := markerStyle.Render(marker) + " "
 	plainRelation := relation
-	available := width - lipgloss.Width(marker) - 1 - lipgloss.Width(plainRelation)
+	available := width - tuistyle.Width(marker) - 1 - tuistyle.Width(plainRelation)
 	if available < 8 {
 		available = 8
 	}
@@ -208,7 +208,7 @@ func (m *ChatModel) todoWidgetView(w int) string {
 	if !m.todoExpanded && len(display) > len(visible) {
 		lines = append(lines, m.ctx.Styles.Muted.Render(fmt.Sprintf("... %d tarea(s) más", len(display)-len(visible))))
 	}
-	return lipgloss.NewStyle().Width(boxWidth).Padding(0, 1).Render(strings.Join(lines, "\n"))
+	return tuistyle.NewStyle().Width(boxWidth).Padding(0, 1).Render(strings.Join(lines, "\n"))
 }
 
 func (m *ChatModel) todoExpandable() bool {
@@ -242,19 +242,19 @@ func (m *ChatModel) todoChromeBounds(w, h int) (int, int, bool) {
 	used, maxCtx := m.contextUsage()
 	y := m.viewportHeightForFrame(w, h, used, maxCtx)
 	if launcher := m.planQuestionLauncherView(w); launcher != "" {
-		y += lipgloss.Height(launcher)
+		y += tuistyle.Height(launcher)
 	}
 	if plan := m.planWidgetView(w); plan != "" {
-		y += lipgloss.Height(plan)
+		y += tuistyle.Height(plan)
 	}
 	todo := m.todoWidgetView(w)
 	if todo == "" {
 		return 0, 0, false
 	}
-	return y, y + lipgloss.Height(todo) - 1, true
+	return y, y + tuistyle.Height(todo) - 1, true
 }
 
-func (m *ChatModel) handleTodoMouse(v tea.MouseMsg) (bool, tea.Cmd) {
+func (m *ChatModel) handleTodoMouse(v uikit.MouseMsg) (bool, uikit.Cmd) {
 	if !m.todoExpandable() || m.userScrolled {
 		return false, nil
 	}

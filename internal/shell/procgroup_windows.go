@@ -37,7 +37,7 @@ func killProcessGroup(cmd *exec.Cmd) error {
 		return cmd.Process.Kill()
 	}
 	// Reap taskkill asynchronously. The cancellation path must never block the
-	// Bubble Tea update loop or os/exec's context watcher.
+	// TUI state loop or os/exec's context watcher.
 	go func() { _ = killer.Wait() }()
 	return nil
 }

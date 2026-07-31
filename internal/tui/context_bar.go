@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 
 	"github.com/lilith/li/internal/providers/openai"
 )
@@ -67,10 +67,10 @@ func RenderContextBar(theme Theme, used, max, cells int) string {
 		usedColor = theme.Danger
 	}
 
-	bar := lipgloss.NewStyle().Foreground(usedColor).Render(strings.Repeat("▰", filled)) +
-		lipgloss.NewStyle().Foreground(theme.Muted).Render(strings.Repeat("▱", cells-filled))
+	bar := tuistyle.NewStyle().Foreground(usedColor).Render(strings.Repeat("▰", filled)) +
+		tuistyle.NewStyle().Foreground(theme.Muted).Render(strings.Repeat("▱", cells-filled))
 
-	label := lipgloss.NewStyle().Foreground(theme.Muted).
+	label := tuistyle.NewStyle().Foreground(theme.Muted).
 		Render(fmt.Sprintf(" %d/%d", used, max))
 
 	return bar + label

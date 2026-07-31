@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lilith/li/internal/tui/uikit"
 
 	"github.com/lilith/li/internal/providers"
 	openaiprov "github.com/lilith/li/internal/providers/openai"
@@ -58,26 +58,26 @@ type codexDeviceStartedMsg struct {
 }
 type codexClipboardMsg struct{ err error }
 
-func (m *CodexLoginModel) Init() tea.Cmd {
+func (m *CodexLoginModel) Init() uikit.Cmd {
 	return startBrowserFlowCmd()
 }
 
-func startBrowserFlowCmd() tea.Cmd {
-	return func() tea.Msg {
+func startBrowserFlowCmd() uikit.Cmd {
+	return func() uikit.Msg {
 		flow, err := openaiprov.StartBrowserFlow()
 		return codexBrowserStartedMsg{flow: flow, err: err}
 	}
 }
 
-func waitBrowserCallbackCmd(ctx context.Context, flow *openaiprov.OAuthFlow) tea.Cmd {
-	return func() tea.Msg {
+func waitBrowserCallbackCmd(ctx context.Context, flow *openaiprov.OAuthFlow) uikit.Cmd {
+	return func() uikit.Msg {
 		tok, err := flow.Wait(ctx)
 		return codexTokensMsg{tokens: tok, err: err}
 	}
 }
 
-func startDeviceFlowCmd() tea.Cmd {
-	return func() tea.Msg {
+func startDeviceFlowCmd() uikit.Cmd {
+	return func() uikit.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		info, err := openaiprov.RequestDeviceCode(ctx)
@@ -85,14 +85,14 @@ func startDeviceFlowCmd() tea.Cmd {
 	}
 }
 
-func pollDeviceCmd(ctx context.Context, info *openaiprov.DeviceCodeInfo) tea.Cmd {
-	return func() tea.Msg {
+func pollDeviceCmd(ctx context.Context, info *openaiprov.DeviceCodeInfo) uikit.Cmd {
+	return func() uikit.Msg {
 		tok, err := openaiprov.PollDeviceCode(ctx, info)
 		return codexTokensMsg{tokens: tok, err: err}
 	}
 }
 
-func (m *CodexLoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *CodexLoginModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 	switch v := msg.(type) {
 	case codexBrowserStartedMsg:
 		if v.err != nil {
@@ -133,7 +133,7 @@ func (m *CodexLoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.step = codexStepDone
 		m.msg = "Sesión ChatGPT conectada. Ya puedes elegir modelos Codex desde /models."
-		return m, tea.Tick(1200*time.Millisecond, func(time.Time) tea.Msg {
+		return m, uikit.Tick(1200*time.Millisecond, func(time.Time) uikit.Msg {
 			return switchScreenMsg{next: nil}
 		})
 
@@ -145,7 +145,7 @@ func (m *CodexLoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.MouseMsg:
+	case uikit.MouseMsg:
 		e, ok := mouseLeftPress(v)
 		if !ok {
 			return m, nil
@@ -185,7 +185,7 @@ func (m *CodexLoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyMsg:
+	case uikit.KeyMsg:
 		switch v.String() {
 		case "esc":
 			m.cleanup()
@@ -323,8 +323,8 @@ func (m *CodexLoginModel) View() string {
 	return view
 }
 
-func copyToClipboardCmd(text string) tea.Cmd {
-	return func() tea.Msg {
+func copyToClipboardCmd(text string) uikit.Cmd {
+	return func() uikit.Msg {
 		payload := base64.StdEncoding.EncodeToString([]byte(text))
 		_, err := fmt.Fprintf(os.Stdout, "\x1b]52;c;%s\x07", payload)
 		return codexClipboardMsg{err: err}

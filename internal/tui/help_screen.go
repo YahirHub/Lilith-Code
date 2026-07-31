@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/lilith/li/internal/tui/uikit"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
+	"github.com/lilith/li/internal/tui/uikit/viewport"
 )
 
 // HelpScreen is the compact in-terminal reference for commands and keyboard
@@ -32,15 +32,15 @@ func NewHelpScreen(ctx *AppContext) *HelpScreen {
 	return m
 }
 
-func (m *HelpScreen) Init() tea.Cmd { return tea.WindowSize() }
+func (m *HelpScreen) Init() uikit.Cmd { return uikit.WindowSize() }
 
-func (m *HelpScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *HelpScreen) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 	switch v := msg.(type) {
-	case tea.WindowSizeMsg:
+	case uikit.WindowSizeMsg:
 		m.width, m.height = v.Width, v.Height
 		m.sync()
 		return m, nil
-	case tea.KeyMsg:
+	case uikit.KeyMsg:
 		switch v.String() {
 		case "esc", "q":
 			return m, switchToChat()
@@ -52,7 +52,7 @@ func (m *HelpScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	var cmd tea.Cmd
+	var cmd uikit.Cmd
 	m.viewport, cmd = m.viewport.Update(msg)
 	return m, cmd
 }
@@ -73,8 +73,8 @@ func (m *HelpScreen) sync() {
 
 func (m *HelpScreen) content(width int) string {
 	s := m.ctx.Styles
-	section := lipgloss.NewStyle().Foreground(s.Theme.Primary).Bold(true)
-	key := lipgloss.NewStyle().Foreground(s.Theme.Secondary).Bold(true)
+	section := tuistyle.NewStyle().Foreground(s.Theme.Primary).Bold(true)
+	key := tuistyle.NewStyle().Foreground(s.Theme.Secondary).Bold(true)
 	muted := s.Muted
 	var b strings.Builder
 
@@ -140,7 +140,7 @@ func wrapHelpText(text string, width int) string {
 	var lines []string
 	line := words[0]
 	for _, word := range words[1:] {
-		if lipgloss.Width(line)+1+lipgloss.Width(word) > width {
+		if tuistyle.Width(line)+1+tuistyle.Width(word) > width {
 			lines = append(lines, line)
 			line = word
 		} else {
@@ -159,7 +159,7 @@ func (m *HelpScreen) View() string {
 	title := m.ctx.Styles.Title.Foreground(m.ctx.Styles.Theme.Primary).Render("Ayuda de Lilith")
 	subtitle := m.ctx.Styles.Muted.Render("Comandos y atajos disponibles")
 	footer := m.ctx.Styles.Muted.Render(fmt.Sprintf("↑↓/PgUp/PgDn navegar · Esc volver  %d%%", int(m.viewport.ScrollPercent()*100)))
-	return lipgloss.NewStyle().Padding(0, 1).Render(title + "\n" + subtitle + "\n\n" + m.viewport.View() + "\n" + footer)
+	return tuistyle.NewStyle().Padding(0, 1).Render(title + "\n" + subtitle + "\n\n" + m.viewport.View() + "\n" + footer)
 }
 
 func maxInt(a, b int) int {

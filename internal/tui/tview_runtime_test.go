@@ -6,22 +6,22 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gdamore/tcell/v2"
+	"github.com/lilith/li/internal/tui/uikit"
 	"github.com/rivo/tview"
 )
 
 func TestTViewSurfacePasteIsAtomic(t *testing.T) {
-	messages := make(chan tea.Msg, 1)
-	surface := newTViewModelSurface(func(msg tea.Msg) { messages <- msg })
+	messages := make(chan uikit.Msg, 1)
+	surface := newTViewModelSurface(func(msg uikit.Msg) { messages <- msg })
 
 	surface.PasteHandler()("primera\r\nsegunda\rtercera", nil)
 
 	select {
 	case raw := <-messages:
-		msg, ok := raw.(tea.KeyMsg)
+		msg, ok := raw.(uikit.KeyMsg)
 		if !ok {
-			t.Fatalf("se esperaba tea.KeyMsg, se obtuvo %T", raw)
+			t.Fatalf("se esperaba uikit.KeyMsg, se obtuvo %T", raw)
 		}
 		if !msg.Paste {
 			t.Fatal("el bloque debe conservar Paste=true")
@@ -35,18 +35,18 @@ func TestTViewSurfacePasteIsAtomic(t *testing.T) {
 }
 
 func TestTViewSurfacePreservesSpaceRune(t *testing.T) {
-	messages := make(chan tea.Msg, 1)
-	surface := newTViewModelSurface(func(msg tea.Msg) { messages <- msg })
+	messages := make(chan uikit.Msg, 1)
+	surface := newTViewModelSurface(func(msg uikit.Msg) { messages <- msg })
 
 	surface.InputHandler()(tcell.NewEventKey(tcell.KeyRune, ' ', tcell.ModNone), nil)
 
 	select {
 	case raw := <-messages:
-		msg, ok := raw.(tea.KeyMsg)
+		msg, ok := raw.(uikit.KeyMsg)
 		if !ok {
-			t.Fatalf("se esperaba tea.KeyMsg, se obtuvo %T", raw)
+			t.Fatalf("se esperaba uikit.KeyMsg, se obtuvo %T", raw)
 		}
-		if msg.Type != tea.KeySpace || string(msg.Runes) != " " {
+		if msg.Type != uikit.KeySpace || string(msg.Runes) != " " {
 			t.Fatalf("espacio inválido: type=%v runes=%q", msg.Type, string(msg.Runes))
 		}
 	case <-time.After(time.Second):
@@ -55,8 +55,8 @@ func TestTViewSurfacePreservesSpaceRune(t *testing.T) {
 }
 
 func TestTViewSurfaceAcceptsLargeMultilinePaste(t *testing.T) {
-	messages := make(chan tea.Msg, 1)
-	surface := newTViewModelSurface(func(msg tea.Msg) { messages <- msg })
+	messages := make(chan uikit.Msg, 1)
+	surface := newTViewModelSurface(func(msg uikit.Msg) { messages <- msg })
 	lines := make([]string, 64)
 	for index := range lines {
 		lines[index] = strings.Repeat(string(rune('a'+index%26)), 96)
@@ -67,7 +67,7 @@ func TestTViewSurfaceAcceptsLargeMultilinePaste(t *testing.T) {
 
 	select {
 	case raw := <-messages:
-		msg := raw.(tea.KeyMsg)
+		msg := raw.(uikit.KeyMsg)
 		got := string(msg.Runes)
 		if strings.Count(got, "\n") != len(lines)-1 {
 			t.Fatalf("líneas perdidas: got=%d want=%d", strings.Count(got, "\n")+1, len(lines))
@@ -93,8 +93,8 @@ func TestTViewMouseDoesNotDuplicateSyntheticClicks(t *testing.T) {
 	if !ok {
 		t.Fatal("MouseLeftDown debe traducirse")
 	}
-	mouse := tea.MouseEvent(msg)
-	if mouse.X != 4 || mouse.Y != 7 || mouse.Action != tea.MouseActionPress || mouse.Button != tea.MouseButtonLeft {
+	mouse := uikit.MouseEvent(msg)
+	if mouse.X != 4 || mouse.Y != 7 || mouse.Action != uikit.MouseActionPress || mouse.Button != uikit.MouseButtonLeft {
 		t.Fatalf("traducción de ratón inesperada: %+v", mouse)
 	}
 }
@@ -104,9 +104,9 @@ func TestTViewRuntimeDispatchesBatchCommands(t *testing.T) {
 		messages: newTViewMessageQueue(),
 		stopped:  make(chan struct{}),
 	}
-	runtime.dispatch(tea.Batch(
-		func() tea.Msg { return systemMsg{text: "uno"} },
-		func() tea.Msg { return systemMsg{text: "dos"} },
+	runtime.dispatch(uikit.Batch(
+		func() uikit.Msg { return systemMsg{text: "uno"} },
+		func() uikit.Msg { return systemMsg{text: "dos"} },
 	))
 
 	seen := map[string]bool{}
@@ -176,5 +176,15 @@ func TestTViewMessageQueueIsNonBlockingAndOrdered(t *testing.T) {
 		if want := fmt.Sprintf("%05d", index); msg.text != want {
 			t.Fatalf("orden alterado en %d: got=%q want=%q", index, msg.text, want)
 		}
+	}
+}
+
+func TestTranslateViewForTViewEscapesLiteralStyleTags(t *testing.T) {
+	got := translateViewForTView("usuario: [red] no es un color")
+	if strings.Contains(got, "[red]") {
+		t.Fatalf("un tag literal de usuario llegó activo a TextView: %q", got)
+	}
+	if !strings.Contains(got, "[red[]") {
+		t.Fatalf("el tag literal no quedó escapado para tview: %q", got)
 	}
 }

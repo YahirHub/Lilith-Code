@@ -74,7 +74,7 @@ type SnapshotInput struct {
 	BaseRevision *int
 }
 
-// Manager is safe to read from the Bubble Tea renderer while a tool executes
+// Manager is safe to read from the TUI renderer while a tool executes
 // in a background command goroutine.
 type Manager struct {
 	mu    sync.RWMutex

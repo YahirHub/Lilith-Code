@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/lilith/li/internal/tui/uikit"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
+	"github.com/lilith/li/internal/tui/uikit/textinput"
 
 	"github.com/lilith/li/internal/providers"
 )
@@ -40,8 +40,8 @@ type modelsFetchedMsg struct {
 	err    error
 }
 
-func fetchModelsCmd(baseURL, key string) tea.Cmd {
-	return func() tea.Msg {
+func fetchModelsCmd(baseURL, key string) uikit.Cmd {
+	return func() uikit.Msg {
 		list, err := providers.FetchModels(baseURL, key)
 		return modelsFetchedMsg{models: list, err: err}
 	}
@@ -53,16 +53,16 @@ func NewCustomLogin(ctx *AppContext) CustomLoginModel {
 	ti.Placeholder = "MyOpenAI"
 	ti.Focus()
 	ti.CharLimit = 2048
-	ti.PromptStyle = lipgloss.NewStyle().Foreground(ctx.Styles.Theme.Primary)
-	ti.TextStyle = lipgloss.NewStyle().Foreground(ctx.Styles.Theme.Foreground)
+	ti.PromptStyle = tuistyle.NewStyle().Foreground(ctx.Styles.Theme.Primary)
+	ti.TextStyle = tuistyle.NewStyle().Foreground(ctx.Styles.Theme.Foreground)
 	models := newAdaptiveTextArea("modelo, otro=1000000 · vacío = consultar /models", 1, 5)
 	models.SetWidth(64)
 	return CustomLoginModel{ctx: ctx, input: ti, modelsInput: models}
 }
 
-func (m CustomLoginModel) Init() tea.Cmd { return textinput.Blink }
+func (m CustomLoginModel) Init() uikit.Cmd { return textinput.Blink }
 
-func (m CustomLoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m CustomLoginModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 	switch v := msg.(type) {
 	case modelsFetchedMsg:
 		m.fetching = false
@@ -72,7 +72,7 @@ func (m CustomLoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.finish(v.models)
 
-	case tea.MouseMsg:
+	case uikit.MouseMsg:
 		e, ok := mouseLeftPress(v)
 		if !ok {
 			return m, nil
@@ -103,7 +103,7 @@ func (m CustomLoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyMsg:
+	case uikit.KeyMsg:
 		if m.fetching {
 			switch v.String() {
 			case "esc":
@@ -129,12 +129,12 @@ func (m CustomLoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.step == stepModels {
 		return m, m.modelsInput.Update(msg)
 	}
-	var cmd tea.Cmd
+	var cmd uikit.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
 }
 
-func (m CustomLoginModel) back() (tea.Model, tea.Cmd) {
+func (m CustomLoginModel) back() (uikit.Model, uikit.Cmd) {
 	if m.step > stepName {
 		m.step--
 		m.err = ""
@@ -172,7 +172,7 @@ func (m CustomLoginModel) currentValue() string {
 	return strings.TrimSpace(m.input.Value())
 }
 
-func (m CustomLoginModel) advance() (tea.Model, tea.Cmd) {
+func (m CustomLoginModel) advance() (uikit.Model, uikit.Cmd) {
 	val := m.currentValue()
 	switch m.step {
 	case stepName:
@@ -214,7 +214,7 @@ func (m CustomLoginModel) advance() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m CustomLoginModel) finish(models []providers.Model) (tea.Model, tea.Cmd) {
+func (m CustomLoginModel) finish(models []providers.Model) (uikit.Model, uikit.Cmd) {
 	p, err := providers.Upsert(m.ctx.ConfigDir, providers.UpsertParams{
 		Name:        m.name,
 		BaseURL:     m.url,

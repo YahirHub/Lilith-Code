@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/subagents"
@@ -64,12 +64,12 @@ func (m *ChatModel) syncAgentModePresentation() {
 	if m.selectedAgentMode() == planstate.Plan {
 		m.textarea.Prompt = "plan ❯ "
 		m.textarea.Placeholder = "Describe qué quieres planificar…  Tab: Build"
-		m.textarea.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(m.ctx.Styles.Theme.Secondary).Bold(true)
+		m.textarea.FocusedStyle.Prompt = tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Secondary).Bold(true)
 		return
 	}
 	m.textarea.Prompt = "❯ "
 	m.textarea.Placeholder = "Escribe un mensaje…  /help"
-	m.textarea.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(m.ctx.Styles.Theme.Primary)
+	m.textarea.FocusedStyle.Prompt = tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Primary)
 }
 
 func (m *ChatModel) planStatePointer() *planstate.State {
@@ -215,7 +215,7 @@ func (m *ChatModel) planWidgetView(_ int) string {
 	if !state.Ready || len(state.Questions) > 0 {
 		return ""
 	}
-	accent := lipgloss.NewStyle().Foreground(m.ctx.Styles.Theme.Secondary).Bold(true)
+	accent := tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Secondary).Bold(true)
 	muted := m.ctx.Styles.Muted
 	return accent.Render("PLAN LISTO") + muted.Render(" · Tab: Build · /plan show")
 }

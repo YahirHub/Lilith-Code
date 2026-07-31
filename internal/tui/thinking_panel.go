@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 )
 
 // ThinkingPanel muestra el resumen de razonamiento del modelo (reasoning
@@ -37,7 +37,7 @@ func (p *ThinkingPanel) View(s Styles, width int, selected bool) string {
 	if p.Done {
 		title = "Pensó"
 	}
-	head := lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render(arrow + " " + title)
+	head := tuistyle.NewStyle().Foreground(t.Primary).Bold(true).Render(arrow + " " + title)
 	if !p.Done {
 		head += "  " + s.Muted.Render("razonando…")
 	}
@@ -54,7 +54,7 @@ func (p *ThinkingPanel) View(s Styles, width int, selected bool) string {
 		if hidden > 0 {
 			view = append([]string{s.Muted.Render("… " + strconv.Itoa(hidden) + " líneas más arriba")}, view...)
 		}
-		muted := lipgloss.NewStyle().Foreground(t.Muted).Italic(true)
+		muted := tuistyle.NewStyle().Foreground(t.Muted).Italic(true)
 		body += "\n" + muted.Render(strings.Join(view, "\n"))
 	}
 
@@ -62,8 +62,8 @@ func (p *ThinkingPanel) View(s Styles, width int, selected bool) string {
 	if selected {
 		border = t.Primary
 	}
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+	return tuistyle.NewStyle().
+		Border(tuistyle.RoundedBorder()).
 		BorderForeground(border).
 		Padding(0, 1).
 		Width(width - 2).

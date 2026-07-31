@@ -4,18 +4,18 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/charmbracelet/x/ansi"
+	"github.com/lilith/li/internal/tui/uikit/ansi"
 )
 
 // sanitizeOutput normalizes raw shell output so it can be rendered inside a
-// lipgloss bordered box without breaking the frame.
+// internal styled box without breaking the frame.
 //
 // Real command output frequently mixes:
-//   - ANSI/OSC escape sequences (colors, cursor moves) that lipgloss can
+//   - ANSI/OSC escape sequences (colors, cursor moves) that the internal layout engine can
 //     mostly measure but that still confuse wrapping.
 //   - Carriage returns (`\r`) used for progress bars — leaving them in place
 //     makes the terminal overprint the border.
-//   - Tabs and backspaces that terminals resolve visually but lipgloss counts
+//   - Tabs and backspaces that terminals resolve visually but the layout engine counts
 //     as zero-width, so lines end up wider than the box.
 //   - Stray control characters (VT/FF/NUL) coming from tools like `less`.
 //

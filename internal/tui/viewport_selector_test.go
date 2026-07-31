@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 )
 
 func TestViewportSelectorOccupiesExactTerminalHeight(t *testing.T) {
@@ -24,7 +24,7 @@ func TestViewportSelectorOccupiesExactTerminalHeight(t *testing.T) {
 		ScreenWidth:   100,
 		ScreenHeight:  height,
 	})
-	if got := lipgloss.Height(view); got != height {
+	if got := tuistyle.Height(view); got != height {
 		t.Fatalf("claude selector height = %d, want %d", got, height)
 	}
 }

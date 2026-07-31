@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 )
 
 // RenderStatusBar keeps the bottom line intentionally minimal: cwd, provider,
@@ -31,8 +31,8 @@ func RenderStatusBar(ctx *AppContext, _ string, usedTokens, maxTokens int) strin
 		model = "sin modelo"
 	}
 
-	providerStyle := lipgloss.NewStyle().Foreground(s.Theme.Secondary).Bold(true)
-	modelStyle := lipgloss.NewStyle().Foreground(s.Theme.Primary).Bold(true)
+	providerStyle := tuistyle.NewStyle().Foreground(s.Theme.Secondary).Bold(true)
+	modelStyle := tuistyle.NewStyle().Foreground(s.Theme.Primary).Bold(true)
 	contextBar := RenderContextBar(s.Theme, usedTokens, maxTokens, 12)
 
 	fixed := "   " + providerStyle.Render(provider) + " · " + modelStyle.Render(model)
@@ -44,7 +44,7 @@ func RenderStatusBar(ctx *AppContext, _ string, usedTokens, maxTokens int) strin
 	if w <= 0 {
 		w = 80
 	}
-	availableCWD := w - lipgloss.Width(fixed) - 2
+	availableCWD := w - tuistyle.Width(fixed) - 2
 	if availableCWD < 4 {
 		availableCWD = 4
 	}
@@ -54,7 +54,7 @@ func RenderStatusBar(ctx *AppContext, _ string, usedTokens, maxTokens int) strin
 }
 
 func truncateStatusPath(path string, maxWidth int) string {
-	if maxWidth <= 0 || lipgloss.Width(path) <= maxWidth {
+	if maxWidth <= 0 || tuistyle.Width(path) <= maxWidth {
 		return path
 	}
 	r := []rune(path)

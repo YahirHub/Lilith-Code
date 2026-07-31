@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/lilith/li/internal/subagents"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 )
 
 // AgentActivity is one tool operation performed inside a child agent. The
@@ -217,7 +217,7 @@ func (p *AgentPanel) View(s Styles, width int) string {
 	if p.Depth > 1 {
 		depth = "d" + strconv.Itoa(p.Depth) + " · "
 	}
-	head := lipgloss.NewStyle().Foreground(accent).Bold(true).Render(arrow + " @" + name)
+	head := tuistyle.NewStyle().Foreground(accent).Bold(true).Render(arrow + " @" + name)
 	head += s.Muted.Render("  " + depth + statusLabel + " · " + strconv.Itoa(p.toolCount()) + " tools · " + formatAgentDuration(p.elapsed()))
 	if p.Resumed {
 		head += s.Muted.Render(" · reanudado")
@@ -242,9 +242,9 @@ func (p *AgentPanel) View(s Styles, width int) string {
 			body += "\n" + s.Muted.Render(trimRunes(meta, inner))
 		}
 		if thinking := agentTail(p.Reasoning, inner, agentReasoningLines); len(thinking) > 0 {
-			body += "\n" + lipgloss.NewStyle().Foreground(t.Muted).Italic(true).Render("pensando: "+thinking[0])
+			body += "\n" + tuistyle.NewStyle().Foreground(t.Muted).Italic(true).Render("pensando: "+thinking[0])
 			for _, line := range thinking[1:] {
-				body += "\n" + lipgloss.NewStyle().Foreground(t.Muted).Italic(true).Render("          "+line)
+				body += "\n" + tuistyle.NewStyle().Foreground(t.Muted).Italic(true).Render("          "+line)
 			}
 		}
 		if len(p.Activities) > 0 {
@@ -264,15 +264,15 @@ func (p *AgentPanel) View(s Styles, width int) string {
 			if p.Status == "running" {
 				label = "avance: "
 			}
-			body += "\n" + lipgloss.NewStyle().Foreground(t.Foreground).Render(label+output[0])
+			body += "\n" + tuistyle.NewStyle().Foreground(t.Foreground).Render(label+output[0])
 			for _, line := range output[1:] {
-				body += "\n" + lipgloss.NewStyle().Foreground(t.Foreground).Render(strings.Repeat(" ", len([]rune(label)))+line)
+				body += "\n" + tuistyle.NewStyle().Foreground(t.Foreground).Render(strings.Repeat(" ", len([]rune(label)))+line)
 			}
 		}
 	}
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+	return tuistyle.NewStyle().
+		Border(tuistyle.RoundedBorder()).
 		BorderForeground(accent).
 		Padding(0, 1).
 		Width(width - 2).
@@ -284,13 +284,13 @@ func renderAgentActivity(s Styles, a AgentActivity, width int) string {
 	style := s.Muted
 	if a.Running {
 		state = "›"
-		style = lipgloss.NewStyle().Foreground(s.Theme.Secondary)
+		style = tuistyle.NewStyle().Foreground(s.Theme.Secondary)
 	} else if a.Failed {
 		state = "x"
-		style = lipgloss.NewStyle().Foreground(s.Theme.Danger)
+		style = tuistyle.NewStyle().Foreground(s.Theme.Danger)
 	} else {
 		state = "+"
-		style = lipgloss.NewStyle().Foreground(s.Theme.Success)
+		style = tuistyle.NewStyle().Foreground(s.Theme.Success)
 	}
 	args := prettyToolArgs(a.Args)
 	line := state + " " + a.Name

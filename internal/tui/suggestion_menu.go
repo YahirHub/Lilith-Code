@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 )
 
 // SuggestionMenu renders the "/" command palette above the input bar.
@@ -36,7 +36,7 @@ func (s SuggestionMenu) View() string {
 	// Align the description column to the widest visible label.
 	labelWidth := 0
 	for i := start; i < end; i++ {
-		w := lipgloss.Width(labelFor(s.Items[i]))
+		w := tuistyle.Width(labelFor(s.Items[i]))
 		if w > labelWidth {
 			labelWidth = w
 		}
@@ -45,12 +45,12 @@ func (s SuggestionMenu) View() string {
 		labelWidth = 40
 	}
 
-	labelStyle := lipgloss.NewStyle().Foreground(s.Theme.Primary).Bold(true)
-	skillLabelStyle := lipgloss.NewStyle().Foreground(s.Theme.Secondary).Bold(true)
-	descStyle := lipgloss.NewStyle().Foreground(s.Theme.Muted)
-	selBg := lipgloss.NewStyle().Background(s.Theme.SurfaceHover).Foreground(s.Theme.Foreground).Bold(true)
-	bullet := lipgloss.NewStyle().Foreground(s.Theme.Muted).Render("·")
-	bulletSel := lipgloss.NewStyle().Foreground(s.Theme.Primary).Bold(true).Render("❯")
+	labelStyle := tuistyle.NewStyle().Foreground(s.Theme.Primary).Bold(true)
+	skillLabelStyle := tuistyle.NewStyle().Foreground(s.Theme.Secondary).Bold(true)
+	descStyle := tuistyle.NewStyle().Foreground(s.Theme.Muted)
+	selBg := tuistyle.NewStyle().Background(s.Theme.SurfaceHover).Foreground(s.Theme.Foreground).Bold(true)
+	bullet := tuistyle.NewStyle().Foreground(s.Theme.Muted).Render("·")
+	bulletSel := tuistyle.NewStyle().Foreground(s.Theme.Primary).Bold(true).Render("❯")
 
 	rows := make([]string, 0, end-start)
 	innerWidth := s.Width - 4
@@ -69,7 +69,7 @@ func (s SuggestionMenu) View() string {
 		if isSkillItem(c) {
 			lstyle = skillLabelStyle
 		}
-		labelCol := lipgloss.NewStyle().Width(labelWidth).Render(lstyle.Render(label))
+		labelCol := tuistyle.NewStyle().Width(labelWidth).Render(lstyle.Render(label))
 		desc := descStyle.Render(clipMenu(descriptionFor(c), descWidth))
 		bul := bullet
 		if i == s.Selected {
@@ -82,8 +82,8 @@ func (s SuggestionMenu) View() string {
 		rows = append(rows, line)
 	}
 
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+	box := tuistyle.NewStyle().
+		Border(tuistyle.RoundedBorder()).
 		BorderForeground(s.Theme.Border).
 		Padding(0, 1).
 		Width(s.Width).

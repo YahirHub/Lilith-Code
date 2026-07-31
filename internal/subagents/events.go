@@ -5,7 +5,7 @@ import "time"
 // EventKind describes one observable lifecycle/progress transition of an
 // isolated subagent. The runtime emits these events synchronously while the
 // child works; hosts may stream them into a TUI, logs or telemetry without
-// coupling the subagent package to Bubble Tea.
+// coupling the subagent package to the terminal UI runtime.
 type EventKind string
 
 const (

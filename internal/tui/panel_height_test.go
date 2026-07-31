@@ -5,14 +5,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 )
 
 func TestThinkingPanelCreceHastaSuLimite(t *testing.T) {
 	s := NewStyles(DefaultTheme())
 	p := &ThinkingPanel{Expanded: true, Content: "uno\ndos"}
 
-	shortHeight := lipgloss.Height(p.View(s, 80, false))
+	shortHeight := tuistyle.Height(p.View(s, 80, false))
 	// borde superior + cabecera + 2 líneas + borde inferior
 	if shortHeight != 5 {
 		t.Fatalf("panel de razonamiento corto debe ajustarse al contenido: got=%d want=5", shortHeight)
@@ -23,7 +23,7 @@ func TestThinkingPanelCreceHastaSuLimite(t *testing.T) {
 		fmt.Fprintf(&long, "linea %d\n", i)
 	}
 	p.Content = long.String()
-	longHeight := lipgloss.Height(p.View(s, 80, false))
+	longHeight := tuistyle.Height(p.View(s, 80, false))
 	wantMax := thinkingPreviewLines + 3 // 2 bordes + cabecera
 	if longHeight != wantMax {
 		t.Fatalf("panel de razonamiento largo debe respetar el máximo: got=%d want=%d", longHeight, wantMax)

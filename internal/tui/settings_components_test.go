@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 )
 
 func TestAdaptiveTextAreaGrowsWithoutTruncatingValue(t *testing.T) {
@@ -103,7 +103,7 @@ func TestSettingsCardWrapsLongMetadataWithinConfiguredWidth(t *testing.T) {
 		Width:       40,
 	})
 	for _, line := range strings.Split(block.text, "\n") {
-		if got := lipgloss.Width(line); got > 40 {
+		if got := tuistyle.Width(line); got > 40 {
 			t.Fatalf("rendered card line width = %d, want <= 40: %q", got, line)
 		}
 	}

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/lilith/li/internal/tui/uikit"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
+	"github.com/lilith/li/internal/tui/uikit/textinput"
 
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/providers/openai"
@@ -30,10 +30,10 @@ func newPlanQuestionDock(ctx *AppContext) planQuestionDock {
 	ti.Placeholder = "Escribe tu respuesta"
 	ti.CharLimit = 4096
 	if ctx != nil {
-		ti.PromptStyle = lipgloss.NewStyle().Foreground(ctx.Styles.Theme.Secondary).Bold(true)
-		ti.TextStyle = lipgloss.NewStyle().Foreground(ctx.Styles.Theme.Foreground)
-		ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(ctx.Styles.Theme.Muted)
-		ti.Cursor.Style = lipgloss.NewStyle().Foreground(ctx.Styles.Theme.Secondary)
+		ti.PromptStyle = tuistyle.NewStyle().Foreground(ctx.Styles.Theme.Secondary).Bold(true)
+		ti.TextStyle = tuistyle.NewStyle().Foreground(ctx.Styles.Theme.Foreground)
+		ti.PlaceholderStyle = tuistyle.NewStyle().Foreground(ctx.Styles.Theme.Muted)
+		ti.Cursor.Style = tuistyle.NewStyle().Foreground(ctx.Styles.Theme.Secondary)
 	}
 	return planQuestionDock{input: ti}
 }
@@ -46,7 +46,7 @@ func (d *planQuestionDock) resetPresentation() {
 	d.input.SetValue("")
 }
 
-func (d *planQuestionDock) openPending() tea.Cmd {
+func (d *planQuestionDock) openPending() uikit.Cmd {
 	d.open = true
 	d.selected = 0
 	d.editing = false
@@ -55,7 +55,7 @@ func (d *planQuestionDock) openPending() tea.Cmd {
 	return nil
 }
 
-func (d *planQuestionDock) beginCustom() tea.Cmd {
+func (d *planQuestionDock) beginCustom() uikit.Cmd {
 	d.editing = true
 	d.input.SetValue("")
 	d.input.CursorEnd()
@@ -123,7 +123,7 @@ func compactQuestionWrap(text string, width, maxLines int) []string {
 		if line != "" {
 			candidate = line + " " + word
 		}
-		if lipgloss.Width(candidate) <= width {
+		if tuistyle.Width(candidate) <= width {
 			line = candidate
 			continue
 		}
@@ -186,7 +186,7 @@ func (m *ChatModel) planQuestionLauncherView(w int) string {
 	if remaining == 0 {
 		return ""
 	}
-	accent := lipgloss.NewStyle().Foreground(m.ctx.Styles.Theme.Secondary).Bold(true)
+	accent := tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Secondary).Bold(true)
 	muted := m.ctx.Styles.Muted
 	detailWidth := w - 2
 	if detailWidth < 8 {
@@ -214,9 +214,9 @@ func (m *ChatModel) planQuestionDockLayout(w int) (string, []planQuestionHit) {
 	}
 
 	theme := m.ctx.Styles.Theme
-	accent := lipgloss.NewStyle().Foreground(theme.Secondary).Bold(true)
-	strong := lipgloss.NewStyle().Foreground(theme.Foreground).Bold(true)
-	plain := lipgloss.NewStyle().Foreground(theme.Foreground)
+	accent := tuistyle.NewStyle().Foreground(theme.Secondary).Bold(true)
+	strong := tuistyle.NewStyle().Foreground(theme.Foreground).Bold(true)
+	plain := tuistyle.NewStyle().Foreground(theme.Foreground)
 	muted := m.ctx.Styles.Muted
 
 	lines := []string{accent.Render("?") + muted.Render(fmt.Sprintf("  Plan · pregunta %d/%d", idx+1, len(state.Questions)))}
@@ -230,7 +230,7 @@ func (m *ChatModel) planQuestionDockLayout(w int) (string, []planQuestionHit) {
 
 	hits := make([]planQuestionHit, 0, 4)
 	if m.planQuestion.editing {
-		inputWidth := contentWidth - 2 - lipgloss.Width(m.planQuestion.input.Prompt)
+		inputWidth := contentWidth - 2 - tuistyle.Width(m.planQuestion.input.Prompt)
 		m.planQuestion.input.Width = maxInt(6, inputWidth)
 		lines = append(lines, "  "+m.planQuestion.input.View())
 		lines = append(lines, muted.Render("  Enter guardar · Esc cancelar"))
@@ -279,7 +279,7 @@ func (m *ChatModel) planQuestionDockView(w int) string {
 	return view
 }
 
-func (m *ChatModel) openPlanQuestions() tea.Cmd {
+func (m *ChatModel) openPlanQuestions() uikit.Cmd {
 	if !m.hasPendingPlanQuestions() {
 		return nil
 	}
@@ -288,10 +288,10 @@ func (m *ChatModel) openPlanQuestions() tea.Cmd {
 	if m.ctx.Width > 0 && m.ctx.Height > 0 {
 		m.Resize(m.ctx.Width, m.ctx.Height)
 	}
-	return tea.EnableMouseCellMotion
+	return uikit.EnableMouseCellMotion
 }
 
-func (m *ChatModel) closePlanQuestions() tea.Cmd {
+func (m *ChatModel) closePlanQuestions() uikit.Cmd {
 	m.planQuestion.open = false
 	m.planQuestion.editing = false
 	m.planQuestion.input.Blur()
@@ -301,16 +301,16 @@ func (m *ChatModel) closePlanQuestions() tea.Cmd {
 	// Keep mouse reporting while a pending launcher is visible so it remains
 	// clickable. Once the request is answered/superseded, normal chat releases it.
 	if m.hasPendingPlanQuestions() {
-		return tea.EnableMouseCellMotion
+		return uikit.EnableMouseCellMotion
 	}
-	return tea.DisableMouse
+	return uikit.DisableMouse
 }
 
-func (m *ChatModel) answerCurrentPlanQuestion(value string) tea.Cmd {
+func (m *ChatModel) answerCurrentPlanQuestion(value string) uikit.Cmd {
 	_, _, q, ok := m.planQuestion.current(m.plans)
 	if !ok {
 		m.planQuestion.resetPresentation()
-		return tea.DisableMouse
+		return uikit.DisableMouse
 	}
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -336,12 +336,12 @@ func (m *ChatModel) answerCurrentPlanQuestion(value string) tea.Cmd {
 	m.planQuestion.resetPresentation()
 	if answers == "" {
 		m.AddError("No se pudieron preparar las respuestas del plan.")
-		return tea.DisableMouse
+		return uikit.DisableMouse
 	}
-	return tea.Batch(m.startPlanQuestionContinuation(answers), tea.DisableMouse)
+	return uikit.Batch(m.startPlanQuestionContinuation(answers), uikit.DisableMouse)
 }
 
-func (m *ChatModel) selectCurrentPlanQuestionChoice() tea.Cmd {
+func (m *ChatModel) selectCurrentPlanQuestionChoice() uikit.Cmd {
 	_, _, q, ok := m.planQuestion.current(m.plans)
 	if !ok {
 		return m.closePlanQuestions()
@@ -352,7 +352,7 @@ func (m *ChatModel) selectCurrentPlanQuestionChoice() tea.Cmd {
 	return m.planQuestion.beginCustom()
 }
 
-func (m *ChatModel) handlePlanQuestionKey(v tea.KeyMsg) (bool, tea.Cmd) {
+func (m *ChatModel) handlePlanQuestionKey(v uikit.KeyMsg) (bool, uikit.Cmd) {
 	if !m.hasPendingPlanQuestions() {
 		return false, nil
 	}
@@ -382,7 +382,7 @@ func (m *ChatModel) handlePlanQuestionKey(v tea.KeyMsg) (bool, tea.Cmd) {
 		case "enter":
 			return true, m.answerCurrentPlanQuestion(m.planQuestion.input.Value())
 		}
-		var cmd tea.Cmd
+		var cmd uikit.Cmd
 		m.planQuestion.input, cmd = m.planQuestion.input.Update(v)
 		return true, cmd
 	}
@@ -418,7 +418,7 @@ func (m *ChatModel) planQuestionChromeY() int {
 	return m.viewportHeightForFrame(w, h, used, maxCtx)
 }
 
-func (m *ChatModel) handlePlanQuestionMouse(v tea.MouseMsg) (bool, tea.Cmd) {
+func (m *ChatModel) handlePlanQuestionMouse(v uikit.MouseMsg) (bool, uikit.Cmd) {
 	if !m.hasPendingPlanQuestions() {
 		return false, nil
 	}
@@ -450,7 +450,7 @@ func (m *ChatModel) handlePlanQuestionMouse(v tea.MouseMsg) (bool, tea.Cmd) {
 // the NEXT ordinary user turn. This mirrors OpenCode's question reply channel:
 // answers continue the request that asked them, even if Tab already selected
 // Build for what comes afterwards.
-func (m *ChatModel) startPlanQuestionContinuation(text string) tea.Cmd {
+func (m *ChatModel) startPlanQuestionContinuation(text string) uikit.Cmd {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil

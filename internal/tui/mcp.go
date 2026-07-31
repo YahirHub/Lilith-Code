@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lilith/li/internal/tui/uikit"
 
 	"github.com/lilith/li/internal/config"
 	"github.com/lilith/li/internal/mcp"
@@ -43,7 +43,7 @@ func mcpConfigSignature(configs map[string]mcp.ServerConfig) string {
 // connectMCP refreshes Claude-compatible MCP connections asynchronously. It is
 // called at startup and whenever the user returns from /config so accepting a
 // previously-untrusted project takes effect without restarting Lilith.
-func (m *ChatModel) connectMCP() tea.Cmd {
+func (m *ChatModel) connectMCP() uikit.Cmd {
 	if m == nil || m.ctx == nil || m.mcpLoading {
 		return nil
 	}
@@ -75,7 +75,7 @@ func (m *ChatModel) connectMCP() tea.Cmd {
 	if base == nil {
 		base = context.Background()
 	}
-	return func() tea.Msg {
+	return func() uikit.Msg {
 		ctx, cancel := context.WithTimeout(base, 45*time.Second)
 		defer cancel()
 		rt := mcp.NewRuntime()

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lilith/li/internal/tui/uikit"
+	"github.com/lilith/li/internal/tui/uikit/textinput"
 
 	"github.com/lilith/li/internal/websearch"
 )
@@ -183,7 +183,7 @@ func (s *searchConfigState) openProvider(provider websearch.ProviderID) {
 	s.danger = ""
 }
 
-func (s *searchConfigState) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
+func (s *searchConfigState) handleKey(msg uikit.KeyMsg) (bool, uikit.Cmd) {
 	if s.view == searchViewKey {
 		if s.busy {
 			if msg.String() == "esc" {
@@ -202,7 +202,7 @@ func (s *searchConfigState) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		case "enter":
 			return true, s.saveAndTestKeyCmd()
 		}
-		var cmd tea.Cmd
+		var cmd uikit.Cmd
 		s.input, cmd = s.input.Update(msg)
 		return true, cmd
 	}
@@ -280,7 +280,7 @@ func (s *searchConfigState) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	return false, nil
 }
 
-func (s *searchConfigState) activate(id string) tea.Cmd {
+func (s *searchConfigState) activate(id string) uikit.Cmd {
 	provider := s.selected
 	state := websearch.Resolve(provider, s.settings, s.auth)
 	s.message = ""
@@ -334,7 +334,7 @@ func (s *searchConfigState) activate(id string) tea.Cmd {
 	return nil
 }
 
-func (s *searchConfigState) handleHit(id string) (bool, tea.Cmd) {
+func (s *searchConfigState) handleHit(id string) (bool, uikit.Cmd) {
 	if s.view == searchViewKey {
 		switch id {
 		case "search-key-input":
@@ -394,7 +394,7 @@ func (s *searchConfigState) handleHit(id string) (bool, tea.Cmd) {
 	return false, nil
 }
 
-func (s *searchConfigState) saveAndTestKeyCmd() tea.Cmd {
+func (s *searchConfigState) saveAndTestKeyCmd() uikit.Cmd {
 	provider := s.selected
 	key := strings.TrimSpace(s.input.Value())
 	if key == "" {
@@ -404,7 +404,7 @@ func (s *searchConfigState) saveAndTestKeyCmd() tea.Cmd {
 	s.busy = true
 	s.danger = ""
 	s.message = ""
-	return func() tea.Msg {
+	return func() uikit.Msg {
 		if err := websearch.SaveAPIKey(s.ctx.ConfigDir, provider, key); err != nil {
 			return searchTestMsg{provider: provider, err: err}
 		}
@@ -416,14 +416,14 @@ func (s *searchConfigState) saveAndTestKeyCmd() tea.Cmd {
 	}
 }
 
-func (s *searchConfigState) testProviderCmd(provider websearch.ProviderID) tea.Cmd {
+func (s *searchConfigState) testProviderCmd(provider websearch.ProviderID) uikit.Cmd {
 	if s.busy {
 		return nil
 	}
 	s.busy = true
 	s.danger = ""
 	s.message = ""
-	return func() tea.Msg {
+	return func() uikit.Msg {
 		ok, message := websearch.TestProvider(context.Background(), s.ctx.ConfigDir, provider)
 		if err := websearch.RecordTest(s.ctx.ConfigDir, provider, ok, message); err != nil {
 			return searchTestMsg{provider: provider, ok: ok, message: message, err: err}
@@ -432,14 +432,14 @@ func (s *searchConfigState) testProviderCmd(provider websearch.ProviderID) tea.C
 	}
 }
 
-func (s *searchConfigState) testAllCmd() tea.Cmd {
+func (s *searchConfigState) testAllCmd() uikit.Cmd {
 	if s.busy {
 		return nil
 	}
 	s.busy = true
 	s.danger = ""
 	s.message = ""
-	return func() tea.Msg {
+	return func() uikit.Msg {
 		_, auth, err := websearch.Load(s.ctx.ConfigDir)
 		if err != nil {
 			return searchTestAllMsg{err: err}

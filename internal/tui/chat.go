@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/lilith/li/internal/tui/uikit"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
+	"github.com/lilith/li/internal/tui/uikit/textarea"
+	"github.com/lilith/li/internal/tui/uikit/viewport"
 
 	"github.com/lilith/li/internal/agents"
 	"github.com/lilith/li/internal/config"
@@ -159,7 +159,7 @@ type ChatModel struct {
 	agentCatalog []agents.Agent
 
 	// todos is the model-owned authoritative task plan for this session. It is
-	// concurrency-safe because tools run outside Bubble Tea's Update goroutine.
+	// concurrency-safe because tools run outside the TUI state goroutine.
 	todos *litodo.Manager
 
 	// todoExpanded only controls presentation. The authoritative plan stays in
@@ -251,7 +251,7 @@ type ChatModel struct {
 
 	// Caché del prefijo estable del transcript. Durante un turno sólo cambia
 	// la cola a partir del último mensaje del usuario; mantener renderizado el
-	// historial anterior evita volver a pasar cientos de mensajes por Glamour
+	// historial anterior evita volver a pasar cientos de mensajes por el render Markdown
 	// en cada delta SSE.
 	transcriptPrefix      string
 	transcriptPrefixCount int
@@ -328,7 +328,7 @@ type manualAgentResultMsg struct {
 }
 
 // agentEventBatchMsg streams a short coalesced slice of child-agent progress
-// into Bubble Tea. Token/reasoning deltas can be very frequent; batching them
+// into the TUI state loop. Token/reasoning deltas can be very frequent; batching them
 // keeps parallel workers observable without forcing a full transcript render
 // for every provider chunk.
 type agentEventBatchMsg struct {
@@ -392,20 +392,20 @@ func (m *ChatModel) resetPasteFallback() {
 	m.pendingEnterSeq++
 }
 
-func (m *ChatModel) armPasteFallback() tea.Cmd {
+func (m *ChatModel) armPasteFallback() uikit.Cmd {
 	m.pasteFallbackActive = true
 	m.pasteFallbackSeq++
 	seq := m.pasteFallbackSeq
-	return tea.Tick(pasteFallbackIdleWindow, func(time.Time) tea.Msg {
+	return uikit.Tick(pasteFallbackIdleWindow, func(time.Time) uikit.Msg {
 		return pasteFallbackIdleMsg{seq: seq}
 	})
 }
 
-func (m *ChatModel) deferEnterSubmit() tea.Cmd {
+func (m *ChatModel) deferEnterSubmit() uikit.Cmd {
 	m.pendingEnter = true
 	m.pendingEnterSeq++
 	seq := m.pendingEnterSeq
-	return tea.Tick(pasteEnterDecisionWindow, func(time.Time) tea.Msg {
+	return uikit.Tick(pasteEnterDecisionWindow, func(time.Time) uikit.Msg {
 		return pasteEnterDecisionMsg{seq: seq}
 	})
 }
@@ -414,7 +414,7 @@ func (m *ChatModel) deferEnterSubmit() tea.Cmd {
 // existe evidencia posterior (otro fragmento del paste). Esa dirección de la
 // comprobación es importante: escribir y pulsar Enter rápidamente no se
 // confunde con un pegado, porque no hay una tecla posterior que lo confirme.
-func (m *ChatModel) confirmPendingEnterAsPaste() tea.Cmd {
+func (m *ChatModel) confirmPendingEnterAsPaste() uikit.Cmd {
 	if !m.pendingEnter {
 		return nil
 	}
@@ -426,29 +426,29 @@ func (m *ChatModel) confirmPendingEnterAsPaste() tea.Cmd {
 	return m.armPasteFallback()
 }
 
-func isPasteContinuationKey(v tea.KeyMsg) bool {
+func isPasteContinuationKey(v uikit.KeyMsg) bool {
 	if v.Paste {
 		return false
 	}
 	switch v.Type {
-	case tea.KeyRunes, tea.KeySpace, tea.KeyTab, tea.KeyEnter, tea.KeyCtrlJ:
+	case uikit.KeyRunes, uikit.KeySpace, uikit.KeyTab, uikit.KeyEnter, uikit.KeyCtrlJ:
 		return true
 	default:
 		return false
 	}
 }
 
-func cmdElapsedTick() tea.Cmd {
+func cmdElapsedTick() uikit.Cmd {
 	// CommandPanel muestra segundos enteros; refrescar dos veces por segundo
 	// reconstruía el viewport sin aportar información visible adicional.
-	return tea.Tick(time.Second, func(time.Time) tea.Msg { return cmdElapsedTickMsg{} })
+	return uikit.Tick(time.Second, func(time.Time) uikit.Msg { return cmdElapsedTickMsg{} })
 }
 
-func agentEventPump(ch <-chan subagents.Event) tea.Cmd {
+func agentEventPump(ch <-chan subagents.Event) uikit.Cmd {
 	if ch == nil {
 		return nil
 	}
-	return func() tea.Msg {
+	return func() uikit.Msg {
 		first, ok := <-ch
 		if !ok {
 			return agentEventStreamDoneMsg{}
@@ -532,7 +532,7 @@ func (m *ChatModel) hasRunningCommand() bool {
 }
 
 // maybeStartElapsedTick arranca el timer de elapsed una única vez.
-func (m *ChatModel) maybeStartElapsedTick() tea.Cmd {
+func (m *ChatModel) maybeStartElapsedTick() uikit.Cmd {
 	if m.cmdTickActive {
 		return nil
 	}
@@ -560,16 +560,16 @@ func NewChat(ctx *AppContext) ChatModel {
 	ta.CharLimit = 20_000
 	ta.ShowLineNumbers = false
 	ta.SetHeight(1)
-	// MaxHeight limita las líneas LÓGICAS almacenadas por Bubbles, no sólo
+	// MaxHeight históricamente limitaba las líneas lógicas, no sólo
 	// la altura visible. Debe quedar ilimitado para aceptar documentos
 	// multilinea completos; chatInputVisibleMaxHeight controla únicamente
 	// cuántas filas ocupa la caja en pantalla.
 	ta.MaxHeight = 0
 	ta.Focus()
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(ctx.Styles.Theme.Primary)
-	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(ctx.Styles.Theme.Foreground)
-	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(ctx.Styles.Theme.Muted)
+	ta.FocusedStyle.CursorLine = tuistyle.NewStyle()
+	ta.FocusedStyle.Prompt = tuistyle.NewStyle().Foreground(ctx.Styles.Theme.Primary)
+	ta.FocusedStyle.Text = tuistyle.NewStyle().Foreground(ctx.Styles.Theme.Foreground)
+	ta.BlurredStyle.Prompt = tuistyle.NewStyle().Foreground(ctx.Styles.Theme.Muted)
 
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
@@ -647,7 +647,7 @@ func (m *ChatModel) beginTurnMode(mode planstate.Mode) error {
 // any message still in flight from the old turn stale.
 func (m *ChatModel) endTurn() {
 	// Invalidar IDs antes de cancelar evita que cualquier evento que ya estaba
-	// encolado en Bubble Tea pueda confundirse con trabajo aún vigente.
+	// encolado en el runtime TUI pueda confundirse con trabajo aún vigente.
 	m.activeRequestID = 0
 	m.activeTurnID = 0
 	if m.requestCancel != nil {
@@ -680,7 +680,7 @@ func (m *ChatModel) checkpointPartialAssistantHistory() {
 	m.reasoningBuf.Reset()
 }
 
-// cancelTurn is deliberately cheap on the Bubble Tea Update goroutine. It only
+// cancelTurn is deliberately cheap on the TUI state goroutine. It only
 // signals cancellation, invalidates the turn, repairs tool-call history and
 // refreshes the small mutable tail. Process-tree termination happens in the
 // background command goroutine through the shared context.
@@ -694,7 +694,7 @@ func (m *ChatModel) cancelTurn() string {
 	// would be invalid.
 	m.checkpointPartialAssistantHistory()
 	// Invalidate FIRST. A provider chunk, tool result or canceled-request event
-	// that was already waiting in Bubble Tea must become stale before we even
+	// that was already waiting in the TUI queue must become stale before we even
 	// signal the OS. This is the hard guarantee that a process closing later can
 	// never re-enter runTurn().
 	m.activeRequestID = 0
@@ -930,9 +930,9 @@ func (m *ChatModel) snapshotTranscriptRange(start, end int) []session.Transcript
 }
 
 // requestLivePersist coalesces token-level changes into a compact sidecar at
-// most five times per second. Disk IO runs as a Bubble Tea command, never on
+// most five times per second. Disk IO runs as a TUI command, never on
 // the Update goroutine, so long chats do not become laggy again.
-func (m *ChatModel) requestLivePersist() tea.Cmd {
+func (m *ChatModel) requestLivePersist() uikit.Cmd {
 	if m.store == nil || m.sess == nil || m.activeTurnID == 0 {
 		return nil
 	}
@@ -949,13 +949,13 @@ func (m *ChatModel) requestLivePersist() tea.Cmd {
 			}
 			m.livePersistTimer = true
 			wait := livePersistInterval - elapsed
-			return tea.Tick(wait, func(time.Time) tea.Msg { return livePersistTickMsg{} })
+			return uikit.Tick(wait, func(time.Time) uikit.Msg { return livePersistTickMsg{} })
 		}
 	}
 	return m.startLivePersist()
 }
 
-func (m *ChatModel) startLivePersist() tea.Cmd {
+func (m *ChatModel) startLivePersist() uikit.Cmd {
 	if m.store == nil || m.sess == nil {
 		m.livePersistDirty = false
 		return nil
@@ -989,7 +989,7 @@ func (m *ChatModel) startLivePersist() tea.Cmd {
 	m.livePersistDirty = false
 	m.livePersistTimer = false
 	m.lastLivePersist = time.Now()
-	return func() tea.Msg {
+	return func() uikit.Msg {
 		err := store.SaveLive(project, sessionID, checkpoint)
 		return livePersistDoneMsg{revision: revision, err: err}
 	}
@@ -1595,8 +1595,8 @@ func (m *ChatModel) renderHeader() string {
 
 	logo := RenderLogo(w, 12, s.Theme)
 	tag := s.Subtitle.Render("Lilith ejecutará comandos en tu nombre para ayudarte a construir.")
-	dir := s.Muted.Render("Directorio ") + lipgloss.NewStyle().Foreground(s.Theme.Primary).Render(cwd)
-	return lipgloss.JoinVertical(lipgloss.Left, logo, "", tag, dir, "")
+	dir := s.Muted.Render("Directorio ") + tuistyle.NewStyle().Foreground(s.Theme.Primary).Render(cwd)
+	return tuistyle.JoinVertical(tuistyle.Left, logo, "", tag, dir, "")
 }
 
 func (m *ChatModel) selectedFilePanel() *FilePanel {
@@ -1633,7 +1633,7 @@ func (m *ChatModel) renderMessage(msg ChatMessage, width int, selectedPanel *Fil
 	case MsgTool:
 		// Tool messages already start with "$ " (see describeCall) or "  ↳"
 		// for results, so we render them verbatim in a muted terminal-ish tone.
-		style := lipgloss.NewStyle().Foreground(s.Theme.Muted)
+		style := tuistyle.NewStyle().Foreground(s.Theme.Muted)
 		if strings.HasPrefix(msg.Content, "$ ") {
 			head := s.Accent.Render("$")
 			rest := style.Render(strings.TrimPrefix(msg.Content, "$"))
@@ -1723,7 +1723,7 @@ func wrapTranscriptChunk(content string, width int) string {
 	if content == "" || width <= 0 {
 		return content
 	}
-	return lipgloss.NewStyle().Width(width).Render(content)
+	return tuistyle.NewStyle().Width(width).Render(content)
 }
 
 func (m *ChatModel) refreshTranscript(scrollBottom bool) {
@@ -1741,7 +1741,7 @@ func (m *ChatModel) refreshTranscript(scrollBottom bool) {
 		// El historial estable sólo crece en condiciones normales. Renderiza
 		// exclusivamente los mensajes nuevos y añádelos al prefijo ya pintado;
 		// así una conversación de cientos de mensajes no vuelve a pasar completa
-		// por Glamour al terminar un turno y comenzar el siguiente.
+		// por el render Markdown al terminar un turno y comenzar el siguiente.
 		chunk := wrapTranscriptChunk(
 			m.renderTranscriptRange(m.transcriptPrefixCount, prefixCount, false),
 			width,
@@ -1786,7 +1786,7 @@ func (m *ChatModel) refreshTranscript(scrollBottom bool) {
 // viewport durante SSE. Los mensajes y streamBuf se actualizan siempre; sólo
 // agrupamos la pintura. Esto conserva el historial completo y evita que
 // SetContent procese miles de líneas por cada token recibido.
-func (m *ChatModel) refreshTranscriptStreaming(scrollBottom bool) tea.Cmd {
+func (m *ChatModel) refreshTranscriptStreaming(scrollBottom bool) uikit.Cmd {
 	if scrollBottom {
 		m.transcriptRefreshAutoBottom = true
 	}
@@ -1808,7 +1808,7 @@ func (m *ChatModel) refreshTranscriptStreaming(scrollBottom bool) tea.Cmd {
 	}
 	m.transcriptRefreshPending = true
 	wait := interval - elapsed
-	return tea.Tick(wait, func(time.Time) tea.Msg { return transcriptRefreshTickMsg{} })
+	return uikit.Tick(wait, func(time.Time) uikit.Msg { return transcriptRefreshTickMsg{} })
 }
 
 func indent(s, prefix string) string {
@@ -1819,12 +1819,12 @@ func indent(s, prefix string) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m *ChatModel) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, agentEventPump(m.agentEventCh), m.connectMCP(), m.resumeActiveGoalCmd())
+func (m *ChatModel) Init() uikit.Cmd {
+	return uikit.Batch(textarea.Blink, agentEventPump(m.agentEventCh), m.connectMCP(), m.resumeActiveGoalCmd())
 }
 
 // visualInputLineCount estima las filas visibles que ocupará el valor dentro
-// del textarea. Bubbles no expone el conteo de líneas soft-wrapped: LineCount
+// del textarea. El conteo de líneas lógicas no incluye el soft-wrap: LineCount
 // sólo devuelve líneas lógicas. Por eso usamos el ancho real de texto y
 // reservamos una fila extra cuando la línea cae justo en el borde, igual que el
 // cursor/espacio final que renderiza textarea.
@@ -1837,7 +1837,7 @@ func visualInputLineCount(value string, textWidth, maxLines int) int {
 	}
 	lines := 0
 	for _, row := range strings.Split(value, "\n") {
-		width := lipgloss.Width(row)
+		width := tuistyle.Width(row)
 		rowLines := 1
 		if width > 0 {
 			rowLines = (width / textWidth) + 1
@@ -1854,7 +1854,7 @@ func visualInputLineCount(value string, textWidth, maxLines int) int {
 }
 
 func (m *ChatModel) setInputHeightForContent() bool {
-	// textarea.MaxHeight no puede usarse como límite visual: Bubbles también
+	// textarea.MaxHeight no se usa como límite visual porque históricamente también
 	// lo aplica al contenido y descartaría todas las líneas posteriores.
 	maxHeight := chatInputVisibleMaxHeight
 	value := m.textarea.Value()
@@ -1868,7 +1868,7 @@ func (m *ChatModel) setInputHeightForContent() bool {
 	}
 	m.textarea.SetHeight(lines)
 	if value != "" && totalLines <= lines {
-		// Bubbles v0.20 conserva un viewport interno con YOffset obsoleto cuando
+		// El editor anterior conservaba un YOffset obsoleto cuando
 		// el host auto-redimensiona el textarea por líneas soft-wrapped. Resetear
 		// el valor fuerza el viewport interno a volver arriba y mantiene visible
 		// todo el texto que ahora cabe en la caja.
@@ -1967,9 +1967,9 @@ func (m *ChatModel) queuePanelView(w int) string {
 		lines = append(lines, s.Muted.Render(prefix)+truncateOneLine(firstLine(item.Text), avail))
 	}
 	body := strings.Join(lines, "\n")
-	panel := lipgloss.NewStyle().
+	panel := tuistyle.NewStyle().
 		Width(boxWidth).
-		Border(lipgloss.RoundedBorder()).
+		Border(tuistyle.RoundedBorder()).
 		BorderForeground(s.Theme.Primary).
 		Padding(0, 1).
 		Render(body)
@@ -2008,7 +2008,7 @@ func (m *ChatModel) pinnedActivityView(w int) string {
 	if boxWidth < 10 {
 		boxWidth = w
 	}
-	return lipgloss.NewStyle().Width(boxWidth).Padding(0, 1).Render(body)
+	return tuistyle.NewStyle().Width(boxWidth).Padding(0, 1).Render(body)
 }
 
 // bottomChromeParts devuelve exactamente los bloques que se dibujan debajo
@@ -2069,7 +2069,7 @@ func (m *ChatModel) bottomChromeHeight(w int) int {
 	}
 	// View concatena transcript + "\n" + chrome. Ese salto sólo separa
 	// ambas regiones; no crea una fila vacía adicional.
-	return lipgloss.Height(chrome)
+	return tuistyle.Height(chrome)
 }
 
 func (m *ChatModel) viewportHeightForFrame(w, h, usedTokens, maxTokens int) int {
@@ -2082,7 +2082,7 @@ func (m *ChatModel) viewportHeightForFrame(w, h, usedTokens, maxTokens int) int 
 	chrome := m.bottomChromeView(w, usedTokens, maxTokens)
 	chromeHeight := 0
 	if chrome != "" {
-		chromeHeight = lipgloss.Height(chrome)
+		chromeHeight = tuistyle.Height(chrome)
 	}
 	height := h - chromeHeight
 	if height < 1 {
@@ -2201,7 +2201,7 @@ func (m *ChatModel) buildPalette(query string) []SlashCommand {
 			Name:        name,
 			Usage:       s.ArgumentHint,
 			Description: desc,
-			Run: func(ctx *AppContext, chat *ChatModel, args string) tea.Cmd {
+			Run: func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd {
 				return chat.invokeSkill(skillName, args)
 			},
 		})
@@ -2209,13 +2209,13 @@ func (m *ChatModel) buildPalette(query string) []SlashCommand {
 	return rows
 }
 
-func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 	// Los componentes inferiores son dinámicos (TodoWrite, actividad, cola,
 	// paleta e input autoajustable). Sincroniza su geometría antes de que una
 	// tecla de scroll use una altura heredada del frame anterior.
 	m.syncViewportGeometry()
 	switch v := msg.(type) {
-	case tea.WindowSizeMsg:
+	case uikit.WindowSizeMsg:
 		m.Resize(v.Width, v.Height)
 		return m, nil
 
@@ -2224,7 +2224,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.thinkingFrame = v.frame
-		// El shimmer vive fuera del viewport. Bubble Tea vuelve a ejecutar View
+		// El shimmer vive fuera del viewport. el runtime vuelve a ejecutar View
 		// tras este mensaje, así que reconstruir el transcript aquí sólo hacía
 		// trabajo O(historial) unas 11 veces por segundo sin cambiar su contenido.
 		return m, thinkingTick(v.frame)
@@ -2313,9 +2313,9 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		refreshCmd := m.refreshTranscriptStreaming(!m.userScrolled)
 		liveCmd := m.requestLivePersist()
 		if v.done {
-			return m, tea.Batch(refreshCmd, liveCmd)
+			return m, uikit.Batch(refreshCmd, liveCmd)
 		}
-		return m, tea.Batch(refreshCmd, liveCmd, agentEventPump(v.ch))
+		return m, uikit.Batch(refreshCmd, liveCmd, agentEventPump(v.ch))
 
 	case agentEventStreamDoneMsg:
 		return m, nil
@@ -2334,7 +2334,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.endTurn()
 			m.persist()
 			m.refreshTranscript(true)
-			return m, tea.Batch(m.chatMouseModeCmd(), m.drainFollowUp())
+			return m, uikit.Batch(m.chatMouseModeCmd(), m.drainFollowUp())
 		}
 		content := strings.TrimSpace(v.text)
 		if content == "" {
@@ -2345,7 +2345,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.endTurn()
 		m.persist()
 		m.refreshTranscript(true)
-		return m, tea.Batch(m.chatMouseModeCmd(), m.drainFollowUp())
+		return m, uikit.Batch(m.chatMouseModeCmd(), m.drainFollowUp())
 
 	case chatStreamMsg:
 		// Todo chunk de proveedor debe pertenecer tanto al turno como al request
@@ -2386,7 +2386,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.persist()
 			return m, nil
 		}
-		var refreshCmd tea.Cmd
+		var refreshCmd uikit.Cmd
 		liveDirty := false
 		if len(v.superseded) > 0 {
 			for _, idx := range v.superseded {
@@ -2462,9 +2462,9 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				liveCmd := m.requestLivePersist()
 				if v.ch != nil {
-					return m, tea.Batch(refreshCmd, liveCmd, streamPump(v.ch, v.turnID, v.requestID))
+					return m, uikit.Batch(refreshCmd, liveCmd, streamPump(v.ch, v.turnID, v.requestID))
 				}
-				return m, tea.Batch(refreshCmd, liveCmd)
+				return m, uikit.Batch(refreshCmd, liveCmd)
 			}
 			m.pendingCall = append(m.pendingCall, v.toolCalls...)
 		}
@@ -2522,12 +2522,12 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// the current turn before launching the external tool; rewriting the
 				// entire historical session here would reintroduce long-chat lag.
 				m.forceLivePersist()
-				batch := []tea.Cmd{m.runTools(calls, text), thinkingTick(m.thinkingFrame)}
+				batch := []uikit.Cmd{m.runTools(calls, text), thinkingTick(m.thinkingFrame)}
 
 				if tick := m.maybeStartElapsedTick(); tick != nil {
 					batch = append(batch, tick)
 				}
-				return m, tea.Batch(batch...)
+				return m, uikit.Batch(batch...)
 			}
 
 			if text != "" {
@@ -2583,14 +2583,14 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			liveDirty = true
 		}
-		var liveCmd tea.Cmd
+		var liveCmd uikit.Cmd
 		if liveDirty {
 			liveCmd = m.requestLivePersist()
 		}
 		if v.ch != nil {
-			return m, tea.Batch(refreshCmd, liveCmd, streamPump(v.ch, v.turnID, v.requestID))
+			return m, uikit.Batch(refreshCmd, liveCmd, streamPump(v.ch, v.turnID, v.requestID))
 		}
-		return m, tea.Batch(refreshCmd, liveCmd)
+		return m, uikit.Batch(refreshCmd, liveCmd)
 
 	case toolResultsMsg:
 		if v.turnID == 0 || v.turnID != m.activeTurnID || m.turnCtx == nil || m.turnCtx.Err() != nil {
@@ -2660,7 +2660,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.refreshTranscript(true)
 		}
-		var todoMouseCmd tea.Cmd
+		var todoMouseCmd uikit.Cmd
 		if v.todoChanged {
 			todoMouseCmd = m.chatMouseModeCmd()
 		}
@@ -2690,7 +2690,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.refreshTranscript(true)
 			}
-			return m, tea.Batch(todoMouseCmd, m.chatMouseModeCmd())
+			return m, uikit.Batch(todoMouseCmd, m.chatMouseModeCmd())
 		}
 
 		if m.goalStopsCurrentLoop() {
@@ -2704,7 +2704,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.AddSystem("Goal detenido: " + goalStatusLabel(state.Status) + ".")
 			}
 			m.persist()
-			return m, tea.Batch(todoMouseCmd, m.chatMouseModeCmd(), m.drainFollowUp())
+			return m, uikit.Batch(todoMouseCmd, m.chatMouseModeCmd(), m.drainFollowUp())
 		}
 
 		// Tool outputs are a stable API boundary. This is also the preferred
@@ -2712,32 +2712,32 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// instruction can safely influence the very next model request.
 		m.deliverSteering()
 		m.forceLivePersist()
-		return m, tea.Batch(m.runTurn(), todoMouseCmd)
+		return m, uikit.Batch(m.runTurn(), todoMouseCmd)
 
 	case bashResultMsg:
 		m.messages = append(m.messages, ChatMessage{Kind: MsgTool, Content: v.output, Time: time.Now()})
 		m.refreshTranscript(true)
 		return m, nil
 
-	case tea.MouseMsg:
+	case uikit.MouseMsg:
 		if handled, cmd := m.handlePlanQuestionMouse(v); handled {
 			return m, cmd
 		}
 		if handled, cmd := m.handleTodoMouse(v); handled {
 			return m, cmd
 		}
-		var cmd tea.Cmd
+		var cmd uikit.Cmd
 		m.viewport, cmd = m.viewport.Update(v)
 		m.userScrolled = !m.viewport.AtBottom()
-		return m, tea.Batch(cmd, m.chatMouseModeCmd())
+		return m, uikit.Batch(cmd, m.chatMouseModeCmd())
 
-	case tea.KeyMsg:
+	case uikit.KeyMsg:
 		if handled, cmd := m.handlePlanQuestionKey(v); handled {
 			return m, cmd
 		}
 		key := v.String()
-		var pasteCmd tea.Cmd
-		// Bubble Tea v1 entrega bracketed paste como un único KeyMsg con Paste
+		var pasteCmd uikit.Cmd
+		// tview entrega bracketed paste como un bloque único marcado con Paste
 		// activo. Insertamos el bloque completo de una vez: los saltos de línea
 		// son texto, nunca eventos Enter, y un pegado grande no se "teclea" rune
 		// por rune a través del loop principal.
@@ -2764,7 +2764,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// inserta una segunda línea vacía.
 		if m.pendingEnter && isPasteContinuationKey(v) {
 			pasteCmd = m.confirmPendingEnterAsPaste()
-			if v.Type == tea.KeyCtrlJ {
+			if v.Type == uikit.KeyCtrlJ {
 				// CR + LF representan un único salto de línea.
 				m.pasteAwaitingLF = false
 				return m, pasteCmd
@@ -2775,7 +2775,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// sin crear una línea vacía adicional. Si llega cualquier otra cosa, el
 		// terminal estaba usando CR solo y seguimos procesándola normalmente.
 		if m.pasteFallbackActive && m.pasteAwaitingLF {
-			if v.Type == tea.KeyCtrlJ {
+			if v.Type == uikit.KeyCtrlJ {
 				m.pasteAwaitingLF = false
 				return m, m.armPasteFallback()
 			}
@@ -2803,7 +2803,7 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Un LF inmediatamente posterior a un CR fue consumido arriba como la
 		// segunda mitad de CRLF. Los LF siguientes, mientras el paste siga
 		// confirmado, sí representan líneas nuevas.
-		if m.pasteFallbackActive && v.Type == tea.KeyCtrlJ {
+		if m.pasteFallbackActive && v.Type == uikit.KeyCtrlJ {
 			m.textarea.InsertString("\n")
 			m.updatePalette()
 			m.syncInputHeight()
@@ -2814,10 +2814,10 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// o ejecución de herramientas. Permiten leer el historial mientras
 		// Lilith trabaja.
 		if isScrollKey(key) {
-			var cmd tea.Cmd
+			var cmd uikit.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
 			m.userScrolled = !m.viewport.AtBottom()
-			return m, tea.Batch(cmd, m.chatMouseModeCmd())
+			return m, uikit.Batch(cmd, m.chatMouseModeCmd())
 		}
 		if m.paletteOpen {
 			switch key {
@@ -2961,11 +2961,11 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// editor nunca recibe pulsaciones invisibles mientras se lee historial.
 		m.returnToInteractionBottom()
 
-		// Para teclas normales dejamos que Bubbles actualice el textarea y
+		// Para teclas normales dejamos que el editor interno actualice el textarea y
 		// conservamos, si aplica, el timer del fallback de paste. Retornar aquí
 		// evita que el mismo KeyMsg se procese dos veces en el bloque genérico.
 		prev := m.textarea.Value()
-		var cmd tea.Cmd
+		var cmd uikit.Cmd
 		m.textarea, cmd = m.textarea.Update(msg)
 		if m.textarea.Value() != prev {
 			m.updatePalette()
@@ -2974,34 +2974,34 @@ func (m *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pasteFallbackActive && isPasteContinuationKey(v) {
 			pasteCmd = m.armPasteFallback()
 		}
-		return m, tea.Batch(cmd, pasteCmd)
+		return m, uikit.Batch(cmd, pasteCmd)
 	}
 
-	var cmds []tea.Cmd
+	var cmds []uikit.Cmd
 	if m.planQuestion.editing {
-		var qcmd tea.Cmd
+		var qcmd uikit.Cmd
 		m.planQuestion.input, qcmd = m.planQuestion.input.Update(msg)
 		cmds = append(cmds, qcmd)
 	}
 	prev := m.textarea.Value()
-	var cmd tea.Cmd
+	var cmd uikit.Cmd
 	m.textarea, cmd = m.textarea.Update(msg)
 	cmds = append(cmds, cmd)
 	if m.textarea.Value() != prev {
 		m.updatePalette()
 		m.syncInputHeight()
 	}
-	if _, isKey := msg.(tea.KeyMsg); !isKey {
+	if _, isKey := msg.(uikit.KeyMsg); !isKey {
 		m.viewport, cmd = m.viewport.Update(msg)
 		cmds = append(cmds, cmd)
 		// El viewport puede haberse desplazado por rueda del mouse. Ajusta
 		// el flag para que el auto-scroll respete la posición del usuario.
-		if _, isMouse := msg.(tea.MouseMsg); isMouse {
+		if _, isMouse := msg.(uikit.MouseMsg); isMouse {
 			m.userScrolled = !m.viewport.AtBottom()
 			cmds = append(cmds, m.chatMouseModeCmd())
 		}
 	}
-	return m, tea.Batch(cmds...)
+	return m, uikit.Batch(cmds...)
 }
 
 // Queue helpers implementan dos clases de mensajes como Pi: steering para la
@@ -3057,7 +3057,7 @@ func (m *ChatModel) deliverSteering() bool {
 // drainFollowUp starts one Alt+Enter follow-up only after the active agent work
 // has fully stopped. A stray steering item is preferred defensively so ordering
 // remains useful even if it was queued on the final completion frame.
-func (m *ChatModel) drainFollowUp() tea.Cmd {
+func (m *ChatModel) drainFollowUp() uikit.Cmd {
 	if m.streaming || len(m.queue) == 0 {
 		return nil
 	}
@@ -3100,7 +3100,7 @@ func (m *ChatModel) restoreQueuedToEditor() int {
 	return count
 }
 
-func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
+func (m *ChatModel) submit(val string) (uikit.Model, uikit.Cmd) {
 	m.resetPasteFallback()
 	m.textarea.Reset()
 	m.paletteOpen = false
@@ -3119,7 +3119,7 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 		if m.mcpRuntime != nil {
 			_ = m.mcpRuntime.Close()
 		}
-		return m, tea.Quit
+		return m, uikit.Quit
 	}
 
 	// Codex exposes /goal while a task is running. Treat it as durable state,
@@ -3218,12 +3218,12 @@ func (m *ChatModel) submit(val string) (tea.Model, tea.Cmd) {
 		m.cleanupCompletedTodos()
 	}
 	m.persistTurnStart()
-	return m, tea.Batch(m.runTurn(), m.chatMouseModeCmd())
+	return m, uikit.Batch(m.runTurn(), m.chatMouseModeCmd())
 }
 
 // runTurn envía el historial actual al modelo con los esquemas de herramientas
 // activos y arranca el streaming.
-func (m *ChatModel) runTurn() tea.Cmd {
+func (m *ChatModel) runTurn() uikit.Cmd {
 	turnID := m.activeTurnID
 	if turnID == 0 || m.turnCtx == nil || m.turnCtx.Err() != nil {
 		return nil
@@ -3298,11 +3298,11 @@ func (m *ChatModel) runTurn() tea.Cmd {
 	requestCtx, requestCancel := context.WithCancel(m.turnCtx)
 	m.requestCancel = requestCancel
 	ch := m.ctx.Client.Stream(requestCtx, req)
-	batch := []tea.Cmd{streamPump(ch, turnID, requestID), thinkingTick(0)}
+	batch := []uikit.Cmd{streamPump(ch, turnID, requestID), thinkingTick(0)}
 	if tick := m.maybeStartElapsedTick(); tick != nil {
 		batch = append(batch, tick)
 	}
-	return tea.Batch(batch...)
+	return uikit.Batch(batch...)
 }
 
 // contextUsage devuelve los tokens estimados del turno actual y la ventana
@@ -3341,7 +3341,7 @@ func (m *ChatModel) contextUsage() (int, int) {
 }
 
 // runTools ejecuta el lote de llamadas y devuelve los mensajes `tool`.
-func (m *ChatModel) runTools(calls []openai.ToolCall, assistantText string) tea.Cmd {
+func (m *ChatModel) runTools(calls []openai.ToolCall, assistantText string) uikit.Cmd {
 	turnID := m.activeTurnID
 	runCtx := m.turnCtx
 	if m.turnAgentMode == planstate.Plan {
@@ -3353,7 +3353,7 @@ func (m *ChatModel) runTools(calls []openai.ToolCall, assistantText string) tea.
 			}
 		}
 		if hasExit && (len(calls) != 1 || strings.TrimSpace(assistantText) != "") {
-			return func() tea.Msg {
+			return func() uikit.Msg {
 				results := make([]openai.Message, 0, len(calls))
 				for _, call := range calls {
 					results = append(results, toolMessage(call, "error: plan_exit debe ser la única acción final, sin texto ni otras herramientas en la misma respuesta."))
@@ -3372,7 +3372,7 @@ func (m *ChatModel) runTools(calls []openai.ToolCall, assistantText string) tea.
 	env := m.toolEnvWithAgentEvents(root, m.turnAgentMode, eventSink)
 	env.Skills = skillCatalog
 	startTodoRevision := m.todoRevision()
-	execCmd := func() tea.Msg {
+	execCmd := func() uikit.Msg {
 		results := make([]openai.Message, 0, len(calls))
 		materialized := make([]string, 0, 4)
 		env.Materialize = func(names []string) {
@@ -3533,7 +3533,7 @@ func preflightStreamingCreateCall(root string, call openai.ToolCall) (openai.Too
 	return call, result, true
 }
 
-func (m *ChatModel) interceptExistingCreateCall(call openai.ToolCall) (tea.Cmd, bool) {
+func (m *ChatModel) interceptExistingCreateCall(call openai.ToolCall) (uikit.Cmd, bool) {
 	root, err := os.Getwd()
 	if err != nil {
 		return nil, false
@@ -3677,9 +3677,9 @@ func toolMessage(c openai.ToolCall, content string) openai.Message {
 }
 
 // runBash ejecuta el modo `!comando` directamente, sin pasar por el modelo.
-func (m *ChatModel) runBash(command string) tea.Cmd {
+func (m *ChatModel) runBash(command string) uikit.Cmd {
 	root, _ := os.Getwd()
-	return func() tea.Msg {
+	return func() uikit.Msg {
 		out, err := tools.Execute(context.Background(), "run_terminal_command",
 			map[string]any{"command": command}, tools.Env{Root: root})
 		if err != nil {
@@ -3822,7 +3822,7 @@ func prettyToolArgs(raw string) string {
 	return line
 }
 
-func (m *ChatModel) invokeAgentDirect(name, prompt, visible string) (tea.Model, tea.Cmd) {
+func (m *ChatModel) invokeAgentDirect(name, prompt, visible string) (uikit.Model, uikit.Cmd) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		m.AddError("Uso: @" + name + " <tarea>")
@@ -3836,19 +3836,19 @@ func (m *ChatModel) invokeAgentDirect(name, prompt, visible string) (tea.Model, 
 	return m.invokeAgentDefinition(*a, prompt, visible, "direct @"+a.Name)
 }
 
-func (m *ChatModel) invokeAgentDefinition(a agents.Agent, prompt, visible, description string) (tea.Model, tea.Cmd) {
+func (m *ChatModel) invokeAgentDefinition(a agents.Agent, prompt, visible, description string) (uikit.Model, uikit.Cmd) {
 	return m.invokeAgentDefinitionWithOptions(a, prompt, visible, description, false, false, "")
 }
 
-func (m *ChatModel) invokeAgentDefinitionWithBackground(a agents.Agent, prompt, visible, description string, background bool) (tea.Model, tea.Cmd) {
+func (m *ChatModel) invokeAgentDefinitionWithBackground(a agents.Agent, prompt, visible, description string, background bool) (uikit.Model, uikit.Cmd) {
 	return m.invokeAgentDefinitionWithOptions(a, prompt, visible, description, background, false, "")
 }
 
-func (m *ChatModel) invokeForkDefinitionWithBackground(a agents.Agent, prompt, visible, description string, background bool, isolation string) (tea.Model, tea.Cmd) {
+func (m *ChatModel) invokeForkDefinitionWithBackground(a agents.Agent, prompt, visible, description string, background bool, isolation string) (uikit.Model, uikit.Cmd) {
 	return m.invokeAgentDefinitionWithOptions(a, prompt, visible, description, background, true, isolation)
 }
 
-func (m *ChatModel) invokeAgentDefinitionWithOptions(a agents.Agent, prompt, visible, description string, background, fork bool, isolation string) (tea.Model, tea.Cmd) {
+func (m *ChatModel) invokeAgentDefinitionWithOptions(a agents.Agent, prompt, visible, description string, background, fork bool, isolation string) (uikit.Model, uikit.Cmd) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return m, nil
@@ -3863,7 +3863,7 @@ func (m *ChatModel) invokeAgentDefinitionWithOptions(a agents.Agent, prompt, vis
 	request := tools.AgentRequest{Agent: a, Prompt: prompt, Description: description, Model: a.Model, Background: background, Fork: fork, Isolation: isolation}
 	if background && backgroundTasksAllowed() {
 		m.persist()
-		return m, func() tea.Msg {
+		return m, func() uikit.Msg {
 			result, err := env.RunAgent(m.sessionCtx, request)
 			if err != nil {
 				return systemMsg{text: "No se pudo iniciar @" + a.Name + " en background: " + err.Error()}
@@ -3886,7 +3886,7 @@ func (m *ChatModel) invokeAgentDefinitionWithOptions(a agents.Agent, prompt, vis
 	m.userScrolled = false
 	m.persistTurnStart()
 	m.refreshTranscript(true)
-	execCmd := func() tea.Msg {
+	execCmd := func() uikit.Msg {
 		result, err := env.RunAgent(runCtx, request)
 		return manualAgentResultMsg{turnID: turnID, agent: a.Name, taskID: result.TaskID, text: result.Text, err: err}
 	}
@@ -4005,7 +4005,7 @@ func (m *ChatModel) skillsBlock() string {
 // invokeSkill maneja "/skills:<nombre> [args]": lee SKILL.md, la inyecta como
 // mensaje de usuario con instrucciones explícitas y arranca el turno. Si la
 // skill no existe o los skills están desactivados, avisa por el chat.
-func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
+func (m *ChatModel) invokeSkill(name, args string) uikit.Cmd {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		m.AddError("Uso: /skills:<nombre> [instrucciones extra]")
@@ -4111,7 +4111,7 @@ func (m *ChatModel) invokeSkill(name, args string) tea.Cmd {
 		m.cleanupCompletedTodos()
 	}
 	m.persistTurnStart()
-	return tea.Batch(m.runTurn(), m.chatMouseModeCmd())
+	return uikit.Batch(m.runTurn(), m.chatMouseModeCmd())
 }
 
 // Kept in English on purpose: tool-use guidance is generally followed more
@@ -4170,8 +4170,8 @@ func activeToolsSignature(names []string) string {
 
 // streamPump reads one chunk and forwards it as a chatStreamMsg, keeping the
 // channel handle so the next tick can continue pumping.
-func streamPump(ch <-chan openai.Chunk, turnID, requestID uint64) tea.Cmd {
-	return func() tea.Msg {
+func streamPump(ch <-chan openai.Chunk, turnID, requestID uint64) uikit.Cmd {
+	return func() uikit.Msg {
 		c, ok := <-ch
 		if !ok {
 			return chatStreamMsg{turnID: turnID, requestID: requestID, done: true}
@@ -4200,7 +4200,7 @@ func (m *ChatModel) View() string {
 	vp := m.viewportForFrame(w, h, used, maxCtx)
 	transcript := vp.View()
 	if bar := m.renderScrollbarFor(vp); bar != "" {
-		transcript = lipgloss.JoinHorizontal(lipgloss.Top, transcript, bar)
+		transcript = tuistyle.JoinHorizontal(tuistyle.Top, transcript, bar)
 	}
 
 	chrome := m.bottomChromeView(w, used, maxCtx)
@@ -4210,4 +4210,4 @@ func (m *ChatModel) View() string {
 	return transcript + "\n" + chrome
 }
 
-var _ tea.Model = (*ChatModel)(nil)
+var _ uikit.Model = (*ChatModel)(nil)

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/lilith/li/internal/tui/uikit"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 
 	"github.com/lilith/li/internal/providers"
 	"github.com/lilith/li/internal/providers/openai"
@@ -60,7 +60,7 @@ func TestChatViewOcupaTodoElAltoConChromeDinamico(t *testing.T) {
 
 	assertHeight := func(label string) {
 		t.Helper()
-		if got := lipgloss.Height(m.View()); got != 36 {
+		if got := tuistyle.Height(m.View()); got != 36 {
 			t.Fatalf("%s: View debe ocupar las 36 filas de la terminal, obtuvo %d", label, got)
 		}
 	}
@@ -121,7 +121,7 @@ func TestScrollManualOcultaTodoInputYStatusYUsaTodaLaTerminal(t *testing.T) {
 	if strings.Contains(reading, "Tareas 1/3") || strings.Contains(reading, "Escribe un mensaje") || strings.Contains(reading, "sin proveedor") {
 		t.Fatalf("reading older transcript must not keep bottom chrome pinned:\n%s", reading)
 	}
-	if got := lipgloss.Height(m.View()); got != 28 {
+	if got := tuistyle.Height(m.View()); got != 28 {
 		t.Fatalf("full-height reading mode should consume 28 rows, got %d", got)
 	}
 }
@@ -133,7 +133,7 @@ func TestTextareaAutoresizeNoOcultaPrimeraLineaEnvuelta(t *testing.T) {
 
 	input := strings.Repeat("mensaje largo ", 10)
 	for _, r := range input {
-		if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}); cmd != nil {
+		if _, cmd := m.Update(uikit.KeyMsg{Type: uikit.KeyRunes, Runes: []rune{r}}); cmd != nil {
 			_ = cmd
 		}
 	}

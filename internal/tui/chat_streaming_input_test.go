@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lilith/li/internal/tui/uikit"
 
 	"github.com/lilith/li/internal/providers"
 	"github.com/lilith/li/internal/providers/openai"
@@ -78,8 +78,8 @@ func TestRunTurnNoMuestraLilithAntesDelPrimerDelta(t *testing.T) {
 func TestEnterInmediatoDespuesDeEscribirEnvia(t *testing.T) {
 	m := newInputTestChat(t)
 
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyRunes, Runes: []rune{'x'}})
+	_, cmd := m.Update(uikit.KeyMsg{Type: uikit.KeyEnter})
 	if cmd == nil || !m.pendingEnter {
 		t.Fatal("Enter debe quedar pendiente sólo durante la ventana mínima de decisión")
 	}
@@ -103,7 +103,7 @@ func TestBracketedPasteMultilineaSeInsertaComoUnBloque(t *testing.T) {
 	m := newInputTestChat(t)
 	pasted := "primera línea\r\nsegunda línea\r\ntercera línea"
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pasted), Paste: true})
+	_, cmd := m.Update(uikit.KeyMsg{Type: uikit.KeyRunes, Runes: []rune(pasted), Paste: true})
 	if cmd != nil {
 		t.Fatal("un paste bracketed no necesita tareas asíncronas para simular escritura")
 	}
@@ -115,7 +115,7 @@ func TestBracketedPasteMultilineaSeInsertaComoUnBloque(t *testing.T) {
 		t.Fatalf("los saltos del paste no deben disparar solicitudes: %#v", m.messages)
 	}
 
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyEnter})
 	_, _ = m.Update(pasteEnterDecisionMsg{seq: m.pendingEnterSeq})
 	if len(m.messages) != 1 || m.messages[0].Kind != MsgUser || m.messages[0].Content != want {
 		t.Fatalf("el bloque pegado debe enviarse como un único mensaje: %#v", m.messages)
@@ -132,7 +132,7 @@ func TestBracketedPasteNoSeTruncaAlSuperarOchoLineas(t *testing.T) {
 	pasted := strings.Join(lines, "\r\n")
 	want := strings.Join(lines, "\n")
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pasted), Paste: true})
+	_, cmd := m.Update(uikit.KeyMsg{Type: uikit.KeyRunes, Runes: []rune(pasted), Paste: true})
 	if cmd != nil {
 		t.Fatal("un paste bracketed no debe crear tareas asíncronas")
 	}
@@ -155,15 +155,15 @@ func TestPasteMultilineaSinBracketedPasteNoEnviaNiEncola(t *testing.T) {
 	m := newInputTestChat(t)
 
 	// Simula el caso observado en Windows: el host perdió ESC[200~/ESC[201~
-	// y Bubble Tea recibe párrafos y CRLF como eventos de teclado normales.
-	input := []tea.KeyMsg{
-		{Type: tea.KeyRunes, Runes: []rune("## Requisitos principales")},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyCtrlJ}, // LF de CRLF: no debe duplicar la línea.
-		{Type: tea.KeyRunes, Runes: []rune("### 1. Vinculación mediante QR")},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyCtrlJ},
-		{Type: tea.KeyRunes, Runes: []rune("El bot debe poder vincularse a una cuenta de WhatsApp.")},
+	// y el runtime recibe párrafos y CRLF como eventos de teclado normales.
+	input := []uikit.KeyMsg{
+		{Type: uikit.KeyRunes, Runes: []rune("## Requisitos principales")},
+		{Type: uikit.KeyEnter},
+		{Type: uikit.KeyCtrlJ}, // LF de CRLF: no debe duplicar la línea.
+		{Type: uikit.KeyRunes, Runes: []rune("### 1. Vinculación mediante QR")},
+		{Type: uikit.KeyEnter},
+		{Type: uikit.KeyCtrlJ},
+		{Type: uikit.KeyRunes, Runes: []rune("El bot debe poder vincularse a una cuenta de WhatsApp.")},
 	}
 
 	for _, key := range input {
@@ -183,7 +183,7 @@ func TestPasteMultilineaSinBracketedPasteNoEnviaNiEncola(t *testing.T) {
 
 	// Al terminar la ráfaga, un Enter humano vuelve a significar enviar.
 	_, _ = m.Update(pasteFallbackIdleMsg{seq: m.pasteFallbackSeq})
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyEnter})
 	_, _ = m.Update(pasteEnterDecisionMsg{seq: m.pendingEnterSeq})
 	if len(m.messages) != 1 || m.messages[0].Kind != MsgUser || m.messages[0].Content != want {
 		t.Fatalf("el paste completo debe salir como una sola solicitud: %#v", m.messages)
@@ -194,12 +194,12 @@ func TestPasteMultilineaMientrasStreamingSeEncolaComoUnSoloMensaje(t *testing.T)
 	m := newInputTestChat(t)
 	m.streaming = true
 
-	for _, key := range []tea.KeyMsg{
-		{Type: tea.KeyRunes, Runes: []rune("párrafo uno")},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune("párrafo dos")},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune("párrafo tres")},
+	for _, key := range []uikit.KeyMsg{
+		{Type: uikit.KeyRunes, Runes: []rune("párrafo uno")},
+		{Type: uikit.KeyEnter},
+		{Type: uikit.KeyRunes, Runes: []rune("párrafo dos")},
+		{Type: uikit.KeyEnter},
+		{Type: uikit.KeyRunes, Runes: []rune("párrafo tres")},
 	} {
 		_, _ = m.Update(key)
 	}
@@ -213,7 +213,7 @@ func TestPasteMultilineaMientrasStreamingSeEncolaComoUnSoloMensaje(t *testing.T)
 	}
 
 	_, _ = m.Update(pasteFallbackIdleMsg{seq: m.pasteFallbackSeq})
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyEnter})
 	_, _ = m.Update(pasteEnterDecisionMsg{seq: m.pendingEnterSeq})
 	if len(m.queue) != 1 || m.queue[0].Text != want || m.queue[0].Mode != queueSteer {
 		t.Fatalf("el mensaje completo debe encolarse una sola vez como steering: %#v", m.queue)
@@ -223,10 +223,10 @@ func TestPasteMultilineaMientrasStreamingSeEncolaComoUnSoloMensaje(t *testing.T)
 func TestTimerViejoDeEnterNoPuedeEnviarUnPasteConfirmado(t *testing.T) {
 	m := newInputTestChat(t)
 
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("primera")})
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyRunes, Runes: []rune("primera")})
+	_, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyEnter})
 	oldSeq := m.pendingEnterSeq
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("segunda")})
+	_, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyRunes, Runes: []rune("segunda")})
 
 	if !m.pasteFallbackActive {
 		t.Fatal("la continuación posterior al Enter debe confirmar el paste")

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lilith/li/internal/tui/uikit"
 
 	"github.com/lilith/li/internal/config"
 	"github.com/lilith/li/internal/skills"
@@ -46,7 +46,7 @@ func TestConfigSectionArrowsOnlyWorkWhenTopNavigationHasFocus(t *testing.T) {
 	ctx := testConfigContext(t)
 	m := NewConfigScreen(ctx)
 
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	next, _ := m.Update(uikit.KeyMsg{Type: uikit.KeyRight})
 	m = next.(*ConfigScreen)
 	if m.section != configSectionSearch {
 		t.Fatalf("right on top nav section = %q, want search", m.section)
@@ -55,26 +55,26 @@ func TestConfigSectionArrowsOnlyWorkWhenTopNavigationHasFocus(t *testing.T) {
 		t.Fatalf("focus = %q, want top navigation", m.focus)
 	}
 
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	next, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyDown})
 	m = next.(*ConfigScreen)
 	if m.focus != "search-content" {
 		t.Fatalf("down from top nav focus = %q, want search-content", m.focus)
 	}
 
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	next, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyRight})
 	m = next.(*ConfigScreen)
 	if m.section != configSectionSearch {
 		t.Fatalf("right inside search content changed section to %q", m.section)
 	}
 
 	// Tavily is the first row, so Up returns to the top section picker.
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	next, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyUp})
 	m = next.(*ConfigScreen)
 	if m.focus != configSectionNavFocus {
 		t.Fatalf("up from first provider focus = %q, want top navigation", m.focus)
 	}
 
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	next, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyRight})
 	m = next.(*ConfigScreen)
 	if m.section != configSectionSecurity {
 		t.Fatalf("right after returning to nav section = %q, want security", m.section)
@@ -97,9 +97,9 @@ func TestSearchSectionStartsAsProviderListAndOpensProviderDetail(t *testing.T) {
 	}
 
 	// Enter the list and open the selected provider.
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	next, _ := m.Update(uikit.KeyMsg{Type: uikit.KeyDown})
 	m = next.(*ConfigScreen)
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyEnter})
 	m = next.(*ConfigScreen)
 	if m.search.view != searchViewProvider {
 		t.Fatalf("search view = %q, want provider detail", m.search.view)

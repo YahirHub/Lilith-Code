@@ -3,17 +3,17 @@ package tui
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/lilith/li/internal/providers/openai"
+	"github.com/lilith/li/internal/tui/uikit"
 )
 
 type inertScreen struct {
 	updates int
 }
 
-func (s *inertScreen) Init() tea.Cmd { return nil }
-func (s *inertScreen) View() string  { return "settings" }
-func (s *inertScreen) Update(tea.Msg) (tea.Model, tea.Cmd) {
+func (s *inertScreen) Init() uikit.Cmd { return nil }
+func (s *inertScreen) View() string    { return "settings" }
+func (s *inertScreen) Update(uikit.Msg) (uikit.Model, uikit.Cmd) {
 	s.updates++
 	return s, nil
 }

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lilith/li/internal/tui/uikit"
 
 	"github.com/lilith/li/internal/agents"
 	"github.com/lilith/li/internal/config"
@@ -82,7 +82,7 @@ func (m *ChatModel) loadClaudePluginMCP() map[string]mcp.ServerConfig {
 	return out
 }
 
-func (m *ChatModel) runPluginsCommand() tea.Cmd {
+func (m *ChatModel) runPluginsCommand() uikit.Cmd {
 	list := m.claudePlugins()
 	if len(list) == 0 {
 		m.AddSystem("No hay plugins locales Claude detectados. Se buscan manifests .claude-plugin/plugin.json dentro de ~/.claude/skills y .claude/skills; los plugins del proyecto requieren confianza.")
@@ -116,7 +116,7 @@ func (m *ChatModel) runPluginsCommand() tea.Cmd {
 	return nil
 }
 
-func (m *ChatModel) runReloadPluginsCommand() tea.Cmd {
+func (m *ChatModel) runReloadPluginsCommand() uikit.Cmd {
 	plugins := m.claudePlugins()
 	agents := m.loadClaudePluginAgents()
 	skills := m.loadClaudePluginSkills()

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lilith/li/internal/tui/uikit"
+	"github.com/lilith/li/internal/tui/uikit/textinput"
 
 	"github.com/lilith/li/internal/session"
 )
@@ -70,11 +70,11 @@ func (m *HistoryModel) applyFilter() {
 	}
 }
 
-func (m *HistoryModel) Init() tea.Cmd { return textinput.Blink }
+func (m *HistoryModel) Init() uikit.Cmd { return textinput.Blink }
 
-func (m *HistoryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *HistoryModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case uikit.KeyMsg:
 		switch msg.String() {
 		case "esc":
 			return m, switchToChat()
@@ -105,10 +105,10 @@ func (m *HistoryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err != nil {
 				return m, showError(err)
 			}
-			return m, func() tea.Msg { return resumeSessionMsg{sess: sess} }
+			return m, func() uikit.Msg { return resumeSessionMsg{sess: sess} }
 		}
 	}
-	var cmd tea.Cmd
+	var cmd uikit.Cmd
 	prev := m.filter.Value()
 	m.filter, cmd = m.filter.Update(msg)
 	if m.filter.Value() != prev {
@@ -160,4 +160,4 @@ func humanAgo(t time.Time) string {
 	return t.Format("02/01/2006 15:04")
 }
 
-var _ tea.Model = (*HistoryModel)(nil)
+var _ uikit.Model = (*HistoryModel)(nil)

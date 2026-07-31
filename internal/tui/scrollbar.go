@@ -3,8 +3,8 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/viewport"
-	"github.com/charmbracelet/lipgloss"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
+	"github.com/lilith/li/internal/tui/uikit/viewport"
 )
 
 // renderScrollbar dibuja una barra vertical con la posición actual del
@@ -25,8 +25,8 @@ func (m *ChatModel) renderScrollbarFor(vp viewport.Model) string {
 		return ""
 	}
 	theme := m.ctx.Styles.Theme
-	trackStyle := lipgloss.NewStyle().Foreground(theme.Muted)
-	thumbStyle := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
+	trackStyle := tuistyle.NewStyle().Foreground(theme.Muted)
+	thumbStyle := tuistyle.NewStyle().Foreground(theme.Primary).Bold(true)
 
 	total := vp.TotalLineCount()
 	visible := h

@@ -3,8 +3,8 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lilith/li/internal/tui/uikit"
+	"github.com/lilith/li/internal/tui/uikit/textinput"
 
 	"github.com/lilith/li/internal/providers"
 )
@@ -93,11 +93,11 @@ func (m *ModelSelectorModel) applyFilter() {
 	}
 }
 
-func (m ModelSelectorModel) Init() tea.Cmd { return textinput.Blink }
+func (m ModelSelectorModel) Init() uikit.Cmd { return textinput.Blink }
 
-func (m ModelSelectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m ModelSelectorModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case uikit.KeyMsg:
 		switch msg.String() {
 		case "esc":
 			return m, switchToChat()
@@ -127,7 +127,7 @@ func (m ModelSelectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, switchToChatWithSystem("Modelo activo: " + row.provName + " / " + row.modelID)
 		}
 	}
-	var cmd tea.Cmd
+	var cmd uikit.Cmd
 	prev := m.filter.Value()
 	m.filter, cmd = m.filter.Update(msg)
 	if m.filter.Value() != prev {

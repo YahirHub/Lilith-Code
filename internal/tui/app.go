@@ -3,7 +3,7 @@ package tui
 import (
 	"context"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lilith/li/internal/tui/uikit"
 
 	"github.com/lilith/li/internal/providers"
 	"github.com/lilith/li/internal/providers/openai"
@@ -52,21 +52,21 @@ func (c *AppContext) SelectOpenCodeFree() error {
 // Screen router
 // -----------------------------------------------------------------------------
 
-type switchScreenMsg struct{ next tea.Model }
+type switchScreenMsg struct{ next uikit.Model }
 type systemMsg struct{ text string }
 type errMsg struct{ err error }
 
-func switchTo(m tea.Model) tea.Cmd { return func() tea.Msg { return switchScreenMsg{next: m} } }
-func switchToChat() tea.Cmd        { return func() tea.Msg { return switchScreenMsg{next: nil} } } // nil = go to chat
-func switchToChatWithSystem(s string) tea.Cmd {
-	return tea.Batch(switchToChat(), func() tea.Msg { return systemMsg{text: s} })
+func switchTo(m uikit.Model) uikit.Cmd { return func() uikit.Msg { return switchScreenMsg{next: m} } }
+func switchToChat() uikit.Cmd          { return func() uikit.Msg { return switchScreenMsg{next: nil} } } // nil = go to chat
+func switchToChatWithSystem(s string) uikit.Cmd {
+	return uikit.Batch(switchToChat(), func() uikit.Msg { return systemMsg{text: s} })
 }
-func showError(err error) tea.Cmd { return func() tea.Msg { return errMsg{err: err} } }
+func showError(err error) uikit.Cmd { return func() uikit.Msg { return errMsg{err: err} } }
 
 // RootModel wraps whichever screen is active.
 type RootModel struct {
 	ctx     *AppContext
-	current tea.Model
+	current uikit.Model
 	chat    *ChatModel // persistent chat model
 	cancel  context.CancelFunc
 }
@@ -76,7 +76,7 @@ type RootModel struct {
 // tool results and animation/persistence ticks must keep reaching ChatModel
 // while /config, /models, /providers, etc. are open; otherwise the command
 // chain that pumps the stream is lost and the turn appears frozen on return.
-func chatRuntimeMsg(msg tea.Msg) bool {
+func chatRuntimeMsg(msg uikit.Msg) bool {
 	switch msg.(type) {
 	case thinkingTickMsg,
 		transcriptRefreshTickMsg,
@@ -109,15 +109,15 @@ func (m *ChatModel) wantsMouseCapture() bool {
 // clickable inline control. Most of the time reporting remains disabled so the
 // terminal keeps native text selection/copy behavior. A large TodoWrite also
 // opts in because its visible block can be clicked to expand/collapse.
-func (m *ChatModel) chatMouseModeCmd() tea.Cmd {
+func (m *ChatModel) chatMouseModeCmd() uikit.Cmd {
 	if m.wantsMouseCapture() {
-		return tea.EnableMouseCellMotion
+		return uikit.EnableMouseCellMotion
 	}
-	return tea.DisableMouse
+	return uikit.DisableMouse
 }
 
 // wantsMouseCapture reports the logical mouse mode independently from the
-// terminal backend. Bubble Tea uses it through mouseModeCmd; the Windows Tcell
+// terminal backend. Lilith uses it through mouseModeCmd; the tview/Tcell
 // runtime reads the same value when publishing each complete frame.
 func (m RootModel) wantsMouseCapture() bool {
 	if m.chatVisible() {
@@ -128,11 +128,11 @@ func (m RootModel) wantsMouseCapture() bool {
 
 // mouseModeCmd keeps click support on settings/select screens but releases
 // mouse capture in ordinary chat.
-func (m RootModel) mouseModeCmd() tea.Cmd {
+func (m RootModel) mouseModeCmd() uikit.Cmd {
 	if m.wantsMouseCapture() {
-		return tea.EnableMouseCellMotion
+		return uikit.EnableMouseCellMotion
 	}
-	return tea.DisableMouse
+	return uikit.DisableMouse
 }
 
 // NewRootModel builds the persistent screen router consumed by the tview
@@ -152,21 +152,21 @@ func NewRootModel(ctx *AppContext) RootModel {
 	return m
 }
 
-func (m RootModel) Init() tea.Cmd {
+func (m RootModel) Init() uikit.Cmd {
 	if m.current == nil {
 		return nil
 	}
 	// Auxiliary screens start with logical mouse capture in both terminal backends.
 	// Only chat needs an Init-time override so native text selection stays active.
 	if m.chatVisible() {
-		return tea.Batch(m.current.Init(), m.mouseModeCmd())
+		return uikit.Batch(m.current.Init(), m.mouseModeCmd())
 	}
 	return m.current.Init()
 }
 
-func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m RootModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 	switch v := msg.(type) {
-	case tea.WindowSizeMsg:
+	case uikit.WindowSizeMsg:
 		m.ctx.Width = v.Width
 		m.ctx.Height = v.Height
 		if m.chat != nil {
@@ -177,10 +177,10 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Return to chat
 			m.chat.invalidateContextUsage()
 			m.current = m.chat
-			return m, tea.Batch(m.mouseModeCmd(), m.chat.connectMCP())
+			return m, uikit.Batch(m.mouseModeCmd(), m.chat.connectMCP())
 		}
 		m.current = v.next
-		return m, tea.Batch(m.current.Init(), m.mouseModeCmd())
+		return m, uikit.Batch(m.current.Init(), m.mouseModeCmd())
 	case systemMsg:
 		m.chat.AddSystem(v.text)
 		return m, nil
@@ -190,10 +190,10 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case resumeSessionMsg:
 		m.chat.LoadSession(v.sess)
 		m.current = m.chat
-		return m, tea.Batch(m.mouseModeCmd(), m.chat.connectMCP(), m.chat.resumeActiveGoalCmd())
+		return m, uikit.Batch(m.mouseModeCmd(), m.chat.connectMCP(), m.chat.resumeActiveGoalCmd())
 	}
 
-	// Chat work is long-lived and independent of the visible screen. Bubble Tea
+	// Chat work is long-lived and independent of the visible screen. The root
 	// commands form a chain (each stream chunk schedules the next pump), so
 	// dropping even one runtime message while a settings screen is active stops
 	// the turn permanently. Route those messages directly to the persistent chat

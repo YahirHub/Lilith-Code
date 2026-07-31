@@ -3,13 +3,13 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/viewport"
-	"github.com/charmbracelet/lipgloss"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
+	"github.com/lilith/li/internal/tui/uikit/viewport"
 )
 
 // viewportSelector is the shared compact picker used by searchable terminal
 // lists such as /models and /history. It gives all remaining terminal height
-// to a real Bubbles viewport and keeps the complete result set as viewport
+// to the internal viewport and keeps the complete result set as viewport
 // content; only YOffset changes to keep the focused row visible.
 type viewportSelectorSpec struct {
 	Title         string
@@ -58,9 +58,9 @@ func renderViewportSelector(s Styles, spec viewportSelectorSpec) string {
 	// Every component is joined with exactly one newline, so its rendered
 	// height is simply the sum of the component heights. There are no guessed
 	// separator rows and no padding strings masquerading as a viewport.
-	fixedHeight := 1 + lipgloss.Height(header) + lipgloss.Height(search) + lipgloss.Height(rule) + lipgloss.Height(footer)
+	fixedHeight := 1 + tuistyle.Height(header) + tuistyle.Height(search) + tuistyle.Height(rule) + tuistyle.Height(footer)
 	if errorText != "" {
-		fixedHeight += lipgloss.Height(errorText)
+		fixedHeight += tuistyle.Height(errorText)
 	}
 	listHeight := spec.ScreenHeight - fixedHeight
 	if listHeight < 1 {
@@ -71,7 +71,7 @@ func renderViewportSelector(s Styles, spec viewportSelectorSpec) string {
 	content := rendered.content
 	if strings.TrimSpace(content) == "" {
 		content = s.Muted.Render(spec.EmptyText)
-		rendered.lineCount = lipgloss.Height(content)
+		rendered.lineCount = tuistyle.Height(content)
 		rendered.selectedStart = 0
 		rendered.selectedEnd = rendered.lineCount
 	}
@@ -88,7 +88,7 @@ func renderViewportSelector(s Styles, spec viewportSelectorSpec) string {
 	parts = append(parts, footer)
 
 	body := "\n" + strings.Join(parts, "\n")
-	return lipgloss.PlaceHorizontal(spec.ScreenWidth, lipgloss.Center, lipgloss.NewStyle().Width(width).Render(body))
+	return tuistyle.PlaceHorizontal(spec.ScreenWidth, tuistyle.Center, tuistyle.NewStyle().Width(width).Render(body))
 }
 
 func viewportSelectorWidth(screenWidth int) int {
@@ -109,7 +109,7 @@ func viewportSelectorSearch(s Styles, content string, width int) string {
 	if inner < 1 {
 		inner = 1
 	}
-	return lipgloss.NewStyle().
+	return tuistyle.NewStyle().
 		Foreground(s.Theme.Foreground).
 		Padding(0, 1).
 		Width(inner).
@@ -159,14 +159,14 @@ func viewportSelectorItemLines(s Styles, item viewportSelectorItem, selected boo
 	if item.Active {
 		active = "  [ACTIVO]"
 	}
-	primaryWidth := width - lipgloss.Width(prefix) - lipgloss.Width(active) - 1
+	primaryWidth := width - tuistyle.Width(prefix) - tuistyle.Width(active) - 1
 	if primaryWidth < 1 {
 		primaryWidth = 1
 	}
 	primary := settingsFitSingleLine(item.Primary, primaryWidth)
 	line := prefix + primary + active
 
-	rowStyle := lipgloss.NewStyle().Width(width)
+	rowStyle := tuistyle.NewStyle().Width(width)
 	if selected {
 		rowStyle = rowStyle.Background(s.Theme.Surface).Foreground(s.Theme.Foreground).Bold(true)
 		line = rowStyle.Render(line)
@@ -184,7 +184,7 @@ func viewportSelectorItemLines(s Styles, item viewportSelectorItem, selected boo
 		}
 		secondary := "    " + settingsFitSingleLine(item.Secondary, secondaryWidth)
 		if selected {
-			secondary = lipgloss.NewStyle().
+			secondary = tuistyle.NewStyle().
 				Width(width).
 				Background(s.Theme.Surface).
 				Foreground(s.Theme.Muted).

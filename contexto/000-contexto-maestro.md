@@ -2,7 +2,7 @@
 
 > Este documento reúne el estado, decisiones y arquitectura de Lilith
 > para que otra IA (o desarrollador humano) pueda continuar el trabajo
-> sin necesidad de leer el historial anterior. Escrito el 2026-07-27.
+> sin necesidad de leer el historial anterior. Escrito el 2026-07-27 y actualizado el 2026-07-31.
 
 ## 1. Qué es Lilith
 
@@ -25,14 +25,17 @@ Objetivos:
 
 ## 2. Stack técnico
 
-- Go **1.23+** (`go.mod` declara 1.23; el build local usa 1.25 vía Nix).
-- Framework TUI: **Charmbracelet**
-  - `bubbletea` — event loop / modelo MVU
-  - `bubbles` — `textarea`, `viewport`
-  - `lipgloss` — estilos + join layouts
-  - `glamour` — render Markdown → ANSI
-- CLI framework: `spf13/cobra`
-- Sin dependencias fuera de estas + stdlib.
+- Go **1.24+** (`go.mod` declara 1.24).
+- Runtime TUI: **tview v0.42.0** sobre **Tcell v2.13.10**.
+- Componentes de estado y widgets propios en `internal/tui/uikit`:
+  - mensajes, comandos y máquina de estado;
+  - textarea, textinput y viewport;
+  - estilos, layouts y helpers ANSI;
+  - renderer Markdown interno.
+- `rivo/uniseg` para ancho Unicode.
+- CLI framework: `spf13/cobra`.
+- No quedan dependencias Bubble Tea, Bubbles, Lip Gloss, Glamour ni otros
+  módulos Charmbracelet. Véase `080-migracion-completa-tview-sin-charm.md`.
 
 ## 3. Estructura de directorios
 
@@ -52,7 +55,7 @@ lilith/
 │   └── tui/
 │       ├── app.go             # AppContext (config, providers, cliente, styles)
 │       ├── theme.go           # paleta oscura estilo Codewolf (purple)
-│       ├── styles.go          # lipgloss styles derivados del theme
+│       ├── styles.go          # estilos ANSI internos derivados del theme
 │       ├── logo.go            # logo ASCII "LILITH"
 │       ├── onboarding.go      # pantalla primera ejecución (3 tarjetas)
 │       ├── login_custom.go    # form multi-paso proveedor custom
@@ -61,7 +64,7 @@ lilith/
 │       ├── suggestion_menu.go # popup para /comandos
 │       ├── status_bar.go      # barra inferior (proveedor · modelo · modo)
 │       ├── commands.go        # slash commands: /help /login /models /clear /quit
-│       ├── markdown.go        # RenderMarkdown() via glamour (cache por width)
+│       ├── markdown.go        # RenderMarkdown() interno, sin Glamour
 │       ├── thinking.go        # animación shimmer "Pensando..." (spinner + colores)
 │       └── chat.go            # ChatModel: transcript + input + streaming
 ├── original/                  # código fuente de Codewolf (referencia, no editar)
@@ -139,8 +142,8 @@ Multi-paso: Nombre → Base URL → API Key → descubrir modelos
 - **Transcript** en `viewport.Model`. Cada mensaje:
   - `[HH:MM] tú` / `[HH:MM] ✦ lilith`
   - Contenido indentado 2 espacios.
-  - **Asistente**: se pasa por `RenderMarkdown(content, width-2)` (glamour
-    con estilo `dark`, wrap por ancho, emoji habilitado).
+  - **Asistente**: se pasa por `RenderMarkdown(content, width-2)`, renderer
+    Markdown interno con ANSI, wrap por ancho y estilos del tema.
   - **Mensaje asistente vacío + `thinking`**: se muestra shimmer animado
     en lugar del texto.
 - **Input** (`textarea`, 3 filas, `❯ ` prompt), soporte multilínea con
@@ -152,14 +155,14 @@ Multi-paso: Nombre → Base URL → API Key → descubrir modelos
 - **Streaming**:
   - `submit()` añade mensaje user + placeholder asistente vacío,
     activa `streaming=true`, `thinking=true`, y despacha
-    `tea.Batch(streamPump(ch), thinkingTick(0))`.
+    `uikit.Batch(streamPump(ch), thinkingTick(0))`.
   - `chatStreamMsg` con `delta` desactiva `thinking` en el primer chunk
     y agrega texto al `streamBuf`.
   - `chatStreamMsg{done:true}` finaliza y resetea flags.
   - `Esc` cancela el turno activo y restaura la cola al editor. `Ctrl+C` y `Ctrl+Z` no cierran ni suspenden el proceso; la salida explícita es `/exit`.
 
 ### 6.5 Animación "Pensando..." (`tui/thinking.go`)
-- `thinkingTickMsg` disparado cada **90ms** vía `tea.Tick`.
+- `thinkingTickMsg` disparado cada **90ms** vía `uikit.Tick`.
 - `RenderThinking(frame)` produce:
   - Spinner braille (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) con color rotativo.
   - Palabra "Pensando" con **shimmer**: cada letra toma un color de
@@ -169,18 +172,16 @@ Multi-paso: Nombre → Base URL → API Key → descubrir modelos
   asistente es el último`.
 
 ### 6.6 Markdown (`tui/markdown.go`)
-- Wrapper alrededor de `glamour.TermRenderer`.
-- Cache del renderer indexado por width (recrea si cambia el ancho).
-- Opciones: `WithStandardStyle("dark")`, `WithWordWrap(width)`,
-  `WithEmoji()`.
+- Renderer interno sin Glamour ni Goldmark.
+- Cubre encabezados, listas, citas, bloques de código, énfasis y código en línea.
+- Conserva ANSI durante el wrap y respeta anchos Unicode con `rivo/uniseg`.
 - Recorta saltos de línea sobrantes para no romper el viewport.
-- Fallback: si glamour falla, devuelve el texto crudo.
 
 ### 6.7 Slash commands (`tui/commands.go`)
 Registrados: `/help`, `/login`, `/providers`, `/models`, `/model`,
 `/clear`, `/history`, `/config`, `/exit`.
 - `/models` abre el `model_selector` con búsqueda fuzzy por modelo/proveedor y
-  selector compacto compartido basado en `bubbles/viewport`.
+  selector compacto compartido basado en `uikit/viewport`.
 - `/login` reinicia el form custom.
 - `/clear` vacía el transcript.
 
@@ -203,7 +204,7 @@ Funciona:
 - [x] OpenCode Free con catálogo dinámico + fallback.
 - [x] Chat streaming SSE contra cualquier endpoint OpenAI-compat.
 - [x] Slash commands + paleta interactiva.
-- [x] **Markdown renderizado en respuestas del asistente** (glamour).
+- [x] **Markdown renderizado en respuestas del asistente** (renderer interno).
 - [x] **Animación shimmer "Pensando..."** mientras espera el primer chunk.
 - [x] Cancelación con Esc durante streaming y salida explícita únicamente con `/exit`.
 - [x] Tests: `internal/providers` (store, normalización) e
@@ -224,15 +225,15 @@ Pendiente (siguientes fases sugeridas):
 
 ```bash
 cd lilith
-# usa Go 1.23+ del sistema, o vía nix:
-nix run nixpkgs#go -- build -o bin/li ./cmd/li
+# requiere Go 1.24+:
+go build -o bin/li ./cmd/li
 ./bin/li            # primera vez: onboarding
 ./bin/li            # siguientes: chat
 ```
 
 Tests:
 ```bash
-nix run nixpkgs#go -- test ./...
+go test ./...
 ```
 
 ## 10. Referencias clave del código de Codewolf
@@ -245,26 +246,22 @@ comportamiento son:
 - `components/shimmer-text.tsx` — animación shimmer (referencia visual;
   Lilith usa una versión simplificada por letra).
 - `components/thinking.tsx` — "Pensando" / spinner.
-- `utils/markdown-renderer.tsx` — renderizado Markdown (Codewolf usa
-  su propio parser; Lilith delega en glamour, resultado equivalente).
+- `utils/markdown-renderer.tsx` — referencia visual para el renderer Markdown
+  interno de Lilith.
 - `providers/opencode-catalog.ts` — endpoint `opencode.ai/zen/v1/models`.
 
-## 11. Cambios recientes (este turno)
+## 11. Cambios recientes (2026-07-31)
 
-1. Añadido `internal/tui/markdown.go` — `RenderMarkdown()` con glamour
-   cacheado por ancho, estilo `dark`, wrap y emoji.
-2. Añadido `internal/tui/thinking.go` — `RenderThinking(frame)` con
-   spinner braille + shimmer por letra + puntos animados; tick 90ms.
-3. Modificado `internal/tui/chat.go`:
-   - `ChatModel` gana `thinkingFrame` y `thinking bool`.
-   - `renderTranscript` renderiza Markdown en asistente y muestra
-     shimmer si el mensaje del asistente está vacío y `thinking`.
-   - `Update` maneja `thinkingTickMsg` y desactiva `thinking` al primer
-     `delta`, al `done` o al `err`.
-   - `submit` inicializa el placeholder del asistente como `""` (no `…`),
-     activa `thinking` y despacha `tea.Batch(streamPump, thinkingTick(0))`.
-4. Añadidas dependencias: `glamour v1.0.0` (+ transitivas: goldmark,
-   bluemonday, cellbuf, etc.). Actualizados `lipgloss`, `termenv`,
-   `x/ansi`, `runewidth`, `colorful`, `sync`, `sys`, `text`.
+1. `tview.Application` pasó a ser el único ciclo físico de terminal.
+2. Se retiraron Bubble Tea, Bubbles, Lip Gloss, Glamour, `x/ansi` y
+   `x/cellbuf` de código, `go.mod` y `go.sum`.
+3. Se añadió `internal/tui/uikit` con mensajes, comandos, textarea, textinput,
+   viewport, estilos y helpers ANSI propios.
+4. El root visual es un `tview.TextView`; `tview.TranslateANSI` traduce el
+   diseño preservado a estilos Tcell.
+5. Se preservaron pegado atómico, espacio, textos largos, streaming, colas,
+   navegación, Ctrl+C y selección nativa de terminal.
+6. La suite completa pasó en la copia de compilación con stubs de API locales;
+   la validación final con módulos oficiales requiere Go 1.24.
 
-Build limpio: `go build ./...` OK. Tests: `go test ./...` OK.
+Véase `080-migracion-completa-tview-sin-charm.md`.

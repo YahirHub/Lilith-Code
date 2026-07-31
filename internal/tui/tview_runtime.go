@@ -6,16 +6,14 @@ import (
 	"strings"
 	"sync"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/cellbuf"
 	"github.com/gdamore/tcell/v2"
+	"github.com/lilith/li/internal/tui/uikit"
 	"github.com/rivo/tview"
 )
 
-// tviewRuntime makes tview the owner of the terminal event loop and rendering
-// lifecycle. The existing Bubble Tea models remain a compatibility state engine
-// during the UI migration, but Bubble Tea no longer owns stdin, stdout, the
-// alternate screen, paste handling, mouse capture, or frame scheduling.
+// tviewRuntime owns Lilith's terminal event loop, input, paste handling, mouse
+// capture, frame scheduling and rendering. The state machine is framework-neutral
+// and uses only Lilith's internal uikit messages and commands.
 type tviewRuntime struct {
 	app     *tview.Application
 	surface *tviewModelSurface
@@ -84,7 +82,7 @@ func (r *tviewRuntime) stop() {
 // mutex-protected FIFO preserves key and paste ordering under redraw pressure.
 type tviewMessageQueue struct {
 	mu    sync.Mutex
-	items []tea.Msg
+	items []uikit.Msg
 	ready chan struct{}
 }
 
@@ -92,7 +90,7 @@ func newTViewMessageQueue() *tviewMessageQueue {
 	return &tviewMessageQueue{ready: make(chan struct{}, 1)}
 }
 
-func (q *tviewMessageQueue) push(msg tea.Msg) {
+func (q *tviewMessageQueue) push(msg uikit.Msg) {
 	if q == nil || msg == nil {
 		return
 	}
@@ -105,7 +103,7 @@ func (q *tviewMessageQueue) push(msg tea.Msg) {
 	}
 }
 
-func (q *tviewMessageQueue) pop(stopped <-chan struct{}) (tea.Msg, bool) {
+func (q *tviewMessageQueue) pop(stopped <-chan struct{}) (uikit.Msg, bool) {
 	if q == nil {
 		return nil, false
 	}
@@ -131,7 +129,7 @@ func (q *tviewMessageQueue) pop(stopped <-chan struct{}) (tea.Msg, bool) {
 	}
 }
 
-func (r *tviewRuntime) send(msg tea.Msg) {
+func (r *tviewRuntime) send(msg uikit.Msg) {
 	if msg == nil {
 		return
 	}
@@ -159,7 +157,7 @@ func (r *tviewRuntime) modelLoop() {
 		if !ok {
 			return
 		}
-		if _, quitting := msg.(tea.QuitMsg); quitting {
+		if _, quitting := msg.(uikit.QuitMsg); quitting {
 			r.stop()
 			return
 		}
@@ -188,7 +186,7 @@ func (r *tviewRuntime) modelLoop() {
 	}
 }
 
-func (r *tviewRuntime) dispatch(cmd tea.Cmd) {
+func (r *tviewRuntime) dispatch(cmd uikit.Cmd) {
 	if cmd == nil {
 		return
 	}
@@ -202,7 +200,7 @@ func (r *tviewRuntime) dispatch(cmd tea.Cmd) {
 		if msg == nil {
 			return
 		}
-		if batch, ok := msg.(tea.BatchMsg); ok {
+		if batch, ok := msg.(uikit.BatchMsg); ok {
 			for _, child := range batch {
 				r.dispatch(child)
 			}
@@ -212,51 +210,55 @@ func (r *tviewRuntime) dispatch(cmd tea.Cmd) {
 	}()
 }
 
-// tviewModelSurface is a native tview primitive which paints Lilith's complete
-// ANSI frame into tcell cells. It also exposes tview's paste callback so a whole
-// clipboard block reaches the model as one atomic KeyMsg.
+// tviewModelSurface is Lilith's native tview primitive. TextView translates the
+// ANSI styling produced by the internal style package into tcell styles, so no
+// legacy renderer or external cell buffer remains in the terminal path.
 type tviewModelSurface struct {
-	*tview.Box
+	*tview.TextView
 
-	mu       sync.RWMutex
-	view     string
-	emit     func(tea.Msg)
+	mu       sync.Mutex
+	emit     func(uikit.Msg)
 	lastSize struct{ width, height int }
 }
 
-func newTViewModelSurface(emit func(tea.Msg)) *tviewModelSurface {
-	return &tviewModelSurface{
-		Box:  tview.NewBox(),
-		emit: emit,
-	}
+func newTViewModelSurface(emit func(uikit.Msg)) *tviewModelSurface {
+	view := tview.NewTextView()
+	view.SetDynamicColors(true)
+	view.SetWrap(false)
+	view.SetScrollable(false)
+	return &tviewModelSurface{TextView: view, emit: emit}
+}
+
+func translateViewForTView(view string) string {
+	// User messages and source code may legitimately contain strings such as
+	// [red]. Escape those literals before TranslateANSI inserts its own style
+	// tags, otherwise TextView would interpret user content as formatting.
+	return tview.TranslateANSI(tview.Escape(view))
 }
 
 func (s *tviewModelSurface) setView(view string) {
 	s.mu.Lock()
-	s.view = view
+	s.TextView.SetText(translateViewForTView(view))
 	s.mu.Unlock()
 }
 
 func (s *tviewModelSurface) Draw(screen tcell.Screen) {
-	x, y, width, height := s.GetRect()
+	_, _, width, height := s.GetRect()
 	if width <= 0 || height <= 0 {
 		return
 	}
 
 	s.mu.Lock()
-	view := s.view
 	resized := s.lastSize.width != width || s.lastSize.height != height
 	if resized {
 		s.lastSize.width = width
 		s.lastSize.height = height
 	}
+	s.TextView.Draw(screen)
 	s.mu.Unlock()
 
-	drawANSIRegion(screen, x, y, width, height, view)
 	if resized && s.emit != nil {
-		// Draw runs inside tview's event loop. Queue the resize back into the
-		// model loop rather than mutating RootModel while a frame is painted.
-		go s.emit(tea.WindowSizeMsg{Width: width, Height: height})
+		go s.emit(uikit.WindowSizeMsg{Width: width, Height: height})
 	}
 }
 
@@ -278,7 +280,7 @@ func (s *tviewModelSurface) PasteHandler() func(string, func(tview.Primitive)) {
 		}
 		text = strings.ReplaceAll(text, "\r\n", "\n")
 		text = strings.ReplaceAll(text, "\r", "\n")
-		s.emit(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text), Paste: true})
+		s.emit(uikit.KeyMsg{Type: uikit.KeyRunes, Runes: []rune(text), Paste: true})
 	}
 }
 
@@ -298,10 +300,10 @@ func (s *tviewModelSurface) MouseHandler() func(tview.MouseAction, *tcell.EventM
 	}
 }
 
-func tviewMouseMsg(action tview.MouseAction, event *tcell.EventMouse) (tea.MouseMsg, bool) {
+func tviewMouseMsg(action tview.MouseAction, event *tcell.EventMouse) (uikit.MouseMsg, bool) {
 	x, y := event.Position()
 	modifiers := event.Modifiers()
-	msg := tea.MouseEvent{
+	msg := uikit.MouseEvent{
 		X:     x,
 		Y:     y,
 		Shift: modifiers&tcell.ModShift != 0,
@@ -311,72 +313,42 @@ func tviewMouseMsg(action tview.MouseAction, event *tcell.EventMouse) (tea.Mouse
 
 	switch action {
 	case tview.MouseMove:
-		msg.Action = tea.MouseActionMotion
-		msg.Button = tea.MouseButtonNone
+		msg.Action = uikit.MouseActionMotion
+		msg.Button = uikit.MouseButtonNone
 	case tview.MouseLeftDown:
-		msg.Action = tea.MouseActionPress
-		msg.Button = tea.MouseButtonLeft
+		msg.Action = uikit.MouseActionPress
+		msg.Button = uikit.MouseButtonLeft
 	case tview.MouseLeftUp:
-		msg.Action = tea.MouseActionRelease
-		msg.Button = tea.MouseButtonLeft
+		msg.Action = uikit.MouseActionRelease
+		msg.Button = uikit.MouseButtonLeft
 	case tview.MouseMiddleDown:
-		msg.Action = tea.MouseActionPress
-		msg.Button = tea.MouseButtonMiddle
+		msg.Action = uikit.MouseActionPress
+		msg.Button = uikit.MouseButtonMiddle
 	case tview.MouseMiddleUp:
-		msg.Action = tea.MouseActionRelease
-		msg.Button = tea.MouseButtonMiddle
+		msg.Action = uikit.MouseActionRelease
+		msg.Button = uikit.MouseButtonMiddle
 	case tview.MouseRightDown:
-		msg.Action = tea.MouseActionPress
-		msg.Button = tea.MouseButtonRight
+		msg.Action = uikit.MouseActionPress
+		msg.Button = uikit.MouseButtonRight
 	case tview.MouseRightUp:
-		msg.Action = tea.MouseActionRelease
-		msg.Button = tea.MouseButtonRight
+		msg.Action = uikit.MouseActionRelease
+		msg.Button = uikit.MouseButtonRight
 	case tview.MouseScrollUp:
-		msg.Action = tea.MouseActionPress
-		msg.Button = tea.MouseButtonWheelUp
+		msg.Action = uikit.MouseActionPress
+		msg.Button = uikit.MouseButtonWheelUp
 	case tview.MouseScrollDown:
-		msg.Action = tea.MouseActionPress
-		msg.Button = tea.MouseButtonWheelDown
+		msg.Action = uikit.MouseActionPress
+		msg.Button = uikit.MouseButtonWheelDown
 	case tview.MouseScrollLeft:
-		msg.Action = tea.MouseActionPress
-		msg.Button = tea.MouseButtonWheelLeft
+		msg.Action = uikit.MouseActionPress
+		msg.Button = uikit.MouseButtonWheelLeft
 	case tview.MouseScrollRight:
-		msg.Action = tea.MouseActionPress
-		msg.Button = tea.MouseButtonWheelRight
+		msg.Action = uikit.MouseActionPress
+		msg.Button = uikit.MouseButtonWheelRight
 	default:
 		// Click and double-click actions are synthesized after the down/up
 		// events. Ignoring them prevents duplicate activations in legacy models.
-		return tea.MouseMsg{}, false
+		return uikit.MouseMsg{}, false
 	}
-	return tea.MouseMsg(msg), true
-}
-
-func drawANSIRegion(screen tcell.Screen, originX, originY, width, height int, view string) {
-	buffer := cellbuf.NewBuffer(width, height)
-	cellbuf.SetContent(buffer, view)
-
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			cell := buffer.Cell(x, y)
-			if cell == nil || cell.Width <= 0 {
-				screen.SetContent(originX+x, originY+y, ' ', nil, tcell.StyleDefault)
-				continue
-			}
-
-			r := cell.Rune
-			combining := cell.Comb
-			if r == 0 {
-				r = ' '
-			}
-			if cell.Style.Attrs.Contains(cellbuf.ConcealAttr) {
-				r = ' '
-				combining = nil
-			}
-			screen.SetContent(originX+x, originY+y, r, combining, tcellStyle(cell.Style, cell.Link))
-			if cell.Width > 1 {
-				x += cell.Width - 1
-			}
-		}
-	}
-	screen.HideCursor()
+	return uikit.MouseMsg(msg), true
 }

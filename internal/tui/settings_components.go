@@ -3,12 +3,12 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/lilith/li/internal/tui/uikit"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
+	"github.com/lilith/li/internal/tui/uikit/textarea"
 )
 
-// settingsRect and settingsHit are deliberately small. Bubble Tea already
+// settingsRect and settingsHit are deliberately small. The runtime already
 // delivers cell coordinates; we only need deterministic hit-testing for the
 // controls rendered by settings screens.
 type settingsRect struct {
@@ -72,8 +72,8 @@ func (c *settingsCanvas) render(screenWidth int) (string, []settingsHit) {
 		c.hits[i].rect.x += x
 		c.hits[i].rect.y++
 	}
-	body := lipgloss.NewStyle().Width(c.width).Render(content)
-	return "\n" + lipgloss.PlaceHorizontal(screenWidth, lipgloss.Center, body), c.hits
+	body := tuistyle.NewStyle().Width(c.width).Render(content)
+	return "\n" + tuistyle.PlaceHorizontal(screenWidth, tuistyle.Center, body), c.hits
 }
 
 func settingsContentWidth(screenWidth int) int {
@@ -112,7 +112,7 @@ func settingsWrapPlain(text string, width int) string {
 		var line strings.Builder
 		for _, r := range []rune(hardLine) {
 			candidate := line.String() + string(r)
-			if line.Len() > 0 && lipgloss.Width(candidate) > width {
+			if line.Len() > 0 && tuistyle.Width(candidate) > width {
 				out = append(out, line.String())
 				line.Reset()
 			}
@@ -157,7 +157,7 @@ func settingsInput(s Styles, spec settingsInputSpec) settingsBlock {
 	text := style.Width(w - 4).Render(spec.Content)
 	hits := []settingsHit{}
 	if spec.ID != "" && !spec.Disabled {
-		hits = append(hits, settingsHit{id: spec.ID, rect: settingsRect{w: lipgloss.Width(text), h: lipgloss.Height(text)}})
+		hits = append(hits, settingsHit{id: spec.ID, rect: settingsRect{w: tuistyle.Width(text), h: tuistyle.Height(text)}})
 	}
 	return settingsBlock{text: text, hits: hits}
 }
@@ -176,9 +176,9 @@ func settingsButtonRow(s Styles, specs ...settingsButtonSpec) settingsBlock {
 	hits := make([]settingsHit, 0, len(specs))
 	x := 0
 	for _, spec := range specs {
-		style := lipgloss.NewStyle().
+		style := tuistyle.NewStyle().
 			Padding(0, 1).
-			Border(lipgloss.RoundedBorder()).
+			Border(tuistyle.RoundedBorder()).
 			BorderForeground(s.Theme.Border).
 			Foreground(s.Theme.Foreground)
 		if spec.Active && !spec.Disabled {
@@ -195,13 +195,13 @@ func settingsButtonRow(s Styles, specs ...settingsButtonSpec) settingsBlock {
 		}
 		text := style.Render(spec.Label)
 		parts = append(parts, text)
-		w := lipgloss.Width(text)
+		w := tuistyle.Width(text)
 		if !spec.Disabled && spec.ID != "" {
-			hits = append(hits, settingsHit{id: spec.ID, rect: settingsRect{x: x, y: 0, w: w, h: lipgloss.Height(text)}})
+			hits = append(hits, settingsHit{id: spec.ID, rect: settingsRect{x: x, y: 0, w: w, h: tuistyle.Height(text)}})
 		}
 		x += w + 2
 	}
-	return settingsBlock{text: lipgloss.JoinHorizontal(lipgloss.Top, intersperse(parts, "  ")...), hits: hits}
+	return settingsBlock{text: tuistyle.JoinHorizontal(tuistyle.Top, intersperse(parts, "  ")...), hits: hits}
 }
 
 func settingsButtonGroup(s Styles, width int, specs ...settingsButtonSpec) settingsBlock {
@@ -217,7 +217,7 @@ func settingsButtonGroup(s Styles, width int, specs ...settingsButtonSpec) setti
 	buttons := make([]renderedButton, 0, len(specs))
 	for _, spec := range specs {
 		b := settingsButtonRow(s, spec)
-		buttons = append(buttons, renderedButton{text: b.text, spec: spec, w: lipgloss.Width(b.text), h: lipgloss.Height(b.text)})
+		buttons = append(buttons, renderedButton{text: b.text, spec: spec, w: tuistyle.Width(b.text), h: tuistyle.Height(b.text)})
 	}
 	var rows [][]renderedButton
 	current := []renderedButton{}
@@ -263,7 +263,7 @@ func settingsButtonGroup(s Styles, width int, specs ...settingsButtonSpec) setti
 			}
 			x += b.w
 		}
-		texts = append(texts, lipgloss.JoinHorizontal(lipgloss.Top, parts...))
+		texts = append(texts, tuistyle.JoinHorizontal(tuistyle.Top, parts...))
 		y += rowHeight
 	}
 	return settingsBlock{text: strings.Join(texts, "\n"), hits: hits}
@@ -296,7 +296,7 @@ type settingsCardSpec struct {
 }
 
 func settingsFitSingleLine(text string, width int) string {
-	if width < 1 || lipgloss.Width(text) <= width {
+	if width < 1 || tuistyle.Width(text) <= width {
 		return text
 	}
 	if width == 1 {
@@ -306,7 +306,7 @@ func settingsFitSingleLine(text string, width int) string {
 	limit := width - 1
 	for _, r := range []rune(text) {
 		candidate := out.String() + string(r)
-		if lipgloss.Width(candidate) > limit {
+		if tuistyle.Width(candidate) > limit {
 			break
 		}
 		out.WriteRune(r)
@@ -336,7 +336,7 @@ func settingsCard(s Styles, spec settingsCardSpec) settingsBlock {
 		active = "  " + s.Success.Render("ACTIVO")
 	}
 	suffix := badge + active
-	titleWidth := innerWidth - lipgloss.Width(suffix)
+	titleWidth := innerWidth - tuistyle.Width(suffix)
 	if titleWidth < 1 {
 		titleWidth = innerWidth
 		suffix = ""
@@ -364,7 +364,7 @@ func settingsCard(s Styles, spec settingsCardSpec) settingsBlock {
 	text := style.Render(strings.Join(lines, "\n"))
 	hits := []settingsHit{}
 	if spec.ID != "" {
-		hits = append(hits, settingsHit{id: spec.ID, rect: settingsRect{w: lipgloss.Width(text), h: lipgloss.Height(text)}})
+		hits = append(hits, settingsHit{id: spec.ID, rect: settingsRect{w: tuistyle.Width(text), h: tuistyle.Height(text)}})
 	}
 	return settingsBlock{text: text, hits: hits}
 }
@@ -391,10 +391,10 @@ func settingsSwitch(s Styles, spec settingsSwitchSpec) settingsBlock {
 	if spec.Disabled {
 		fg = s.Theme.Muted
 	}
-	control := lipgloss.NewStyle().Foreground(fg).Bold(!spec.Disabled).Render("[" + knob + " " + state + "]")
+	control := tuistyle.NewStyle().Foreground(fg).Bold(!spec.Disabled).Render("[" + knob + " " + state + "]")
 	label := s.Title.Render(spec.Label)
-	controlWidth := lipgloss.Width(control)
-	labelWidth := lipgloss.Width(label)
+	controlWidth := tuistyle.Width(control)
+	labelWidth := tuistyle.Width(label)
 	line := ""
 	if labelWidth+controlWidth+2 <= spec.Width {
 		gap := spec.Width - labelWidth - controlWidth
@@ -406,7 +406,7 @@ func settingsSwitch(s Styles, spec settingsSwitchSpec) settingsBlock {
 		line = s.Title.Render(settingsWrapPlain(spec.Label, spec.Width)) + "\n" + control
 	}
 	if spec.Focused && !spec.Disabled {
-		line = lipgloss.NewStyle().Background(s.Theme.SurfaceHover).Width(spec.Width).Render(line)
+		line = tuistyle.NewStyle().Background(s.Theme.SurfaceHover).Width(spec.Width).Render(line)
 	}
 	lines := []string{line}
 	if spec.Description != "" {
@@ -415,7 +415,7 @@ func settingsSwitch(s Styles, spec settingsSwitchSpec) settingsBlock {
 	text := strings.Join(lines, "\n")
 	hits := []settingsHit{}
 	if !spec.Disabled && spec.ID != "" {
-		hits = append(hits, settingsHit{id: spec.ID, rect: settingsRect{w: spec.Width, h: lipgloss.Height(text)}})
+		hits = append(hits, settingsHit{id: spec.ID, rect: settingsRect{w: spec.Width, h: tuistyle.Height(text)}})
 	}
 	return settingsBlock{text: text, hits: hits}
 }
@@ -446,15 +446,15 @@ func settingsSlider(s Styles, spec settingsSliderSpec) settingsBlock {
 		track[i] = '━'
 	}
 	track[pos] = '●'
-	style := lipgloss.NewStyle().Foreground(s.Theme.Secondary)
+	style := tuistyle.NewStyle().Foreground(s.Theme.Secondary)
 	if spec.Disabled {
 		style = style.Foreground(s.Theme.Muted)
 	}
 	line := s.Title.Render(spec.Label) + "  " + style.Render(string(track)) + "  " + s.Muted.Render(fmtInt(value))
 	if spec.Focused && !spec.Disabled {
-		line = lipgloss.NewStyle().Background(s.Theme.SurfaceHover).Render(line)
+		line = tuistyle.NewStyle().Background(s.Theme.SurfaceHover).Render(line)
 	}
-	start := lipgloss.Width(s.Title.Render(spec.Label) + "  ")
+	start := tuistyle.Width(s.Title.Render(spec.Label) + "  ")
 	hits := []settingsHit{}
 	if !spec.Disabled {
 		hits = append(hits, settingsHit{id: spec.ID, part: "track", rect: settingsRect{x: start, w: spec.Track, h: 1}})
@@ -492,20 +492,20 @@ func settingsStepper(s Styles, spec settingsStepperSpec) settingsBlock {
 	value := s.Accent.Render(fmtInt(spec.Value))
 	prefix := s.Title.Render(spec.Label) + "  "
 	middle := "  " + value + "  "
-	text := lipgloss.JoinHorizontal(lipgloss.Center, prefix, left.text, middle, right.text)
-	leftX := lipgloss.Width(prefix)
-	rightX := leftX + lipgloss.Width(left.text) + lipgloss.Width(middle)
+	text := tuistyle.JoinHorizontal(tuistyle.Center, prefix, left.text, middle, right.text)
+	leftX := tuistyle.Width(prefix)
+	rightX := leftX + tuistyle.Width(left.text) + tuistyle.Width(middle)
 	hits := []settingsHit{}
 	if !spec.Disabled {
 		hits = append(hits,
-			settingsHit{id: spec.ID, part: "dec", rect: settingsRect{x: leftX, w: lipgloss.Width(left.text), h: lipgloss.Height(left.text)}},
-			settingsHit{id: spec.ID, part: "inc", rect: settingsRect{x: rightX, w: lipgloss.Width(right.text), h: lipgloss.Height(right.text)}},
+			settingsHit{id: spec.ID, part: "dec", rect: settingsRect{x: leftX, w: tuistyle.Width(left.text), h: tuistyle.Height(left.text)}},
+			settingsHit{id: spec.ID, part: "inc", rect: settingsRect{x: rightX, w: tuistyle.Width(right.text), h: tuistyle.Height(right.text)}},
 		)
 	}
 	return settingsBlock{text: text, hits: hits}
 }
 
-// adaptiveTextArea wraps Bubbles' textarea and keeps only the rows required by
+// adaptiveTextArea wraps Lilith's internal textarea and keeps only the rows required by
 // its current content, up to maxHeight. This is the same density rule used by
 // streaming/tool panels: content grows the control, empty reserved space does
 // not.
@@ -533,9 +533,9 @@ func newAdaptiveTextArea(placeholder string, minHeight, maxHeight int) adaptiveT
 	return adaptiveTextArea{model: ta, minHeight: minHeight, maxHeight: maxHeight}
 }
 
-func (a *adaptiveTextArea) Focus() tea.Cmd { return a.model.Focus() }
-func (a *adaptiveTextArea) Blur()          { a.model.Blur() }
-func (a *adaptiveTextArea) Value() string  { return a.model.Value() }
+func (a *adaptiveTextArea) Focus() uikit.Cmd { return a.model.Focus() }
+func (a *adaptiveTextArea) Blur()            { a.model.Blur() }
+func (a *adaptiveTextArea) Value() string    { return a.model.Value() }
 func (a *adaptiveTextArea) SetValue(v string) {
 	a.model.SetValue(v)
 	a.syncHeight()
@@ -554,8 +554,8 @@ func (a *adaptiveTextArea) SetWidth(width int) {
 }
 func (a *adaptiveTextArea) Height() int  { return a.model.Height() }
 func (a *adaptiveTextArea) View() string { return a.model.View() }
-func (a *adaptiveTextArea) Update(msg tea.Msg) tea.Cmd {
-	var cmd tea.Cmd
+func (a *adaptiveTextArea) Update(msg uikit.Msg) uikit.Cmd {
+	var cmd uikit.Cmd
 	a.model, cmd = a.model.Update(msg)
 	a.syncHeight()
 	return cmd
@@ -571,7 +571,7 @@ func (a *adaptiveTextArea) syncHeight() {
 	if a.width > 4 {
 		wrapped := 0
 		for _, line := range strings.Split(a.model.Value(), "\n") {
-			cells := lipgloss.Width(line) + 2 // prompt width
+			cells := tuistyle.Width(line) + 2 // prompt width
 			rows := (cells + a.width - 1) / a.width
 			if rows < 1 {
 				rows = 1
@@ -596,9 +596,9 @@ func clampInt(v, minV, maxV int) int {
 	return v
 }
 
-func mouseLeftPress(msg tea.MouseMsg) (tea.MouseEvent, bool) {
-	e := tea.MouseEvent(msg)
-	return e, e.Action == tea.MouseActionPress && e.Button == tea.MouseButtonLeft
+func mouseLeftPress(msg uikit.MouseMsg) (uikit.MouseEvent, bool) {
+	e := uikit.MouseEvent(msg)
+	return e, e.Action == uikit.MouseActionPress && e.Button == uikit.MouseButtonLeft
 }
 
 func hitAt(hits []settingsHit, x, y int) (settingsHit, bool) {

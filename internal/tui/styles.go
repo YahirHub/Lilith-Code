@@ -1,81 +1,81 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 
-// Styles bundles the reusable lipgloss styles.
+// Styles bundles Lilith's reusable terminal styles.
 type Styles struct {
 	Theme Theme
 
-	Title    lipgloss.Style
-	Subtitle lipgloss.Style
-	Muted    lipgloss.Style
-	Accent   lipgloss.Style
-	Danger   lipgloss.Style
-	Success  lipgloss.Style
-	Warning  lipgloss.Style
+	Title    tuistyle.Style
+	Subtitle tuistyle.Style
+	Muted    tuistyle.Style
+	Accent   tuistyle.Style
+	Danger   tuistyle.Style
+	Success  tuistyle.Style
+	Warning  tuistyle.Style
 
-	Card         lipgloss.Style
-	CardSelected lipgloss.Style
-	Badge        lipgloss.Style
+	Card         tuistyle.Style
+	CardSelected tuistyle.Style
+	Badge        tuistyle.Style
 
-	InputBox        lipgloss.Style
-	InputBoxFocused lipgloss.Style
-	StatusBar       lipgloss.Style
+	InputBox        tuistyle.Style
+	InputBoxFocused tuistyle.Style
+	StatusBar       tuistyle.Style
 
-	MessageUser      lipgloss.Style
-	MessageAssistant lipgloss.Style
-	MessageSystem    lipgloss.Style
-	MessageError     lipgloss.Style
+	MessageUser      tuistyle.Style
+	MessageAssistant tuistyle.Style
+	MessageSystem    tuistyle.Style
+	MessageError     tuistyle.Style
 }
 
 func NewStyles(t Theme) Styles {
 	return Styles{
 		Theme:    t,
-		Title:    lipgloss.NewStyle().Foreground(t.Foreground).Bold(true),
-		Subtitle: lipgloss.NewStyle().Foreground(t.Muted),
-		Muted:    lipgloss.NewStyle().Foreground(t.Muted),
-		Accent:   lipgloss.NewStyle().Foreground(t.Primary).Bold(true),
-		Danger:   lipgloss.NewStyle().Foreground(t.Danger),
-		Success:  lipgloss.NewStyle().Foreground(t.Success),
-		Warning:  lipgloss.NewStyle().Foreground(t.Warning),
+		Title:    tuistyle.NewStyle().Foreground(t.Foreground).Bold(true),
+		Subtitle: tuistyle.NewStyle().Foreground(t.Muted),
+		Muted:    tuistyle.NewStyle().Foreground(t.Muted),
+		Accent:   tuistyle.NewStyle().Foreground(t.Primary).Bold(true),
+		Danger:   tuistyle.NewStyle().Foreground(t.Danger),
+		Success:  tuistyle.NewStyle().Foreground(t.Success),
+		Warning:  tuistyle.NewStyle().Foreground(t.Warning),
 
-		Card: lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
+		Card: tuistyle.NewStyle().
+			Border(tuistyle.RoundedBorder()).
 			BorderForeground(t.Border).
 			Padding(0, 2).
 			Foreground(t.Foreground),
 
-		CardSelected: lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
+		CardSelected: tuistyle.NewStyle().
+			Border(tuistyle.RoundedBorder()).
 			BorderForeground(t.Primary).
 			Padding(0, 2).
 			Foreground(t.Foreground).
 			Bold(true),
 
-		Badge: lipgloss.NewStyle().
+		Badge: tuistyle.NewStyle().
 			Foreground(t.Background).
 			Background(t.Primary).
 			Padding(0, 1).
 			Bold(true),
 
-		InputBox: lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
+		InputBox: tuistyle.NewStyle().
+			Border(tuistyle.RoundedBorder()).
 			BorderForeground(t.Border).
 			Padding(0, 1),
 
-		InputBoxFocused: lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
+		InputBoxFocused: tuistyle.NewStyle().
+			Border(tuistyle.RoundedBorder()).
 			BorderForeground(t.Primary).
 			Padding(0, 1),
 
-		StatusBar: lipgloss.NewStyle().
+		StatusBar: tuistyle.NewStyle().
 			Foreground(t.Muted).
 			Background(t.Surface).
 			Padding(0, 1),
 
-		MessageUser:      lipgloss.NewStyle().Foreground(t.Info).Bold(true),
-		MessageAssistant: lipgloss.NewStyle().Foreground(t.Foreground),
-		MessageSystem:    lipgloss.NewStyle().Foreground(t.Muted).Italic(true),
-		MessageError:     lipgloss.NewStyle().Foreground(t.Danger).Bold(true),
+		MessageUser:      tuistyle.NewStyle().Foreground(t.Info).Bold(true),
+		MessageAssistant: tuistyle.NewStyle().Foreground(t.Foreground),
+		MessageSystem:    tuistyle.NewStyle().Foreground(t.Muted).Italic(true),
+		MessageError:     tuistyle.NewStyle().Foreground(t.Danger).Bold(true),
 	}
 }

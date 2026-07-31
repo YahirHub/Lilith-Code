@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lilith/li/internal/tui/uikit"
 
 	planstate "github.com/lilith/li/internal/plan"
 )
@@ -14,7 +14,7 @@ type SlashCommand struct {
 	Aliases     []string
 	Usage       string
 	Description string
-	Run         func(ctx *AppContext, chat *ChatModel, args string) tea.Cmd
+	Run         func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd
 }
 
 // Commands returns the full slash-command list.
@@ -23,28 +23,28 @@ func Commands() []SlashCommand {
 		{
 			Name: "help", Aliases: []string{"h", "?"},
 			Description: "Abre la referencia completa de comandos y atajos de teclado.",
-			Run: func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd {
+			Run: func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd {
 				return switchTo(NewHelpScreen(ctx))
 			},
 		},
 		{
 			Name:        "init",
 			Description: "Analiza el proyecto y crea o mejora LILITH.md con instrucciones persistentes.",
-			Run: func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd {
+			Run: func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd {
 				return chat.runInit()
 			},
 		},
 		{
 			Name: "goal", Usage: "[--tokens N] <objetivo>|status|pause|resume|complete|clear",
 			Description: "Define o administra un objetivo persistente para trabajo autónomo de larga duración.",
-			Run: func(ctx *AppContext, chat *ChatModel, args string) tea.Cmd {
+			Run: func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd {
 				return chat.runGoalCommand(args)
 			},
 		},
 		{
 			Name: "plan", Usage: "[show|status|exit|<instrucción>]",
 			Description: "Activa Plan para explorar sin mutar; show muestra el plan listo y exit vuelve a Build.",
-			Run: func(ctx *AppContext, chat *ChatModel, args string) tea.Cmd {
+			Run: func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd {
 				arg := strings.TrimSpace(args)
 				switch strings.ToLower(arg) {
 				case "show":
@@ -73,7 +73,7 @@ func Commands() []SlashCommand {
 		{
 			Name:        "build",
 			Description: "Selecciona Build para el siguiente turno y restaura herramientas de implementación.",
-			Run: func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd {
+			Run: func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd {
 				chat.setAgentMode(planstate.Build)
 				return chat.chatMouseModeCmd()
 			},
@@ -81,37 +81,37 @@ func Commands() []SlashCommand {
 		{
 			Name: "memory", Usage: "[on|off|status]",
 			Description: "Muestra instrucciones/memoria Claude-compatible y permite activar o desactivar auto memory.",
-			Run:         func(ctx *AppContext, chat *ChatModel, args string) tea.Cmd { return chat.runMemoryCommand(args) },
+			Run:         func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd { return chat.runMemoryCommand(args) },
 		},
 		{
 			Name: "mcp", Usage: "[reload]",
 			Description: "Muestra servidores/herramientas MCP conectados o fuerza una reconexión.",
-			Run:         func(ctx *AppContext, chat *ChatModel, args string) tea.Cmd { return chat.runMCPCommand(args) },
+			Run:         func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd { return chat.runMCPCommand(args) },
 		},
 		{
 			Name:        "tasks",
 			Description: "Lista subagentes foreground/background de la sesión, estado, task_id y relación padre-hijo.",
-			Run:         func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd { return chat.runTasksCommand() },
+			Run:         func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd { return chat.runTasksCommand() },
 		},
 		{
 			Name: "subtask", Aliases: []string{"fork"}, Usage: "[--foreground] [--worktree] <tarea>",
 			Description: "Crea un fork Claude-compatible que hereda la conversación, modelo, instrucciones y tools activos.",
-			Run:         func(ctx *AppContext, chat *ChatModel, args string) tea.Cmd { return chat.runForkCommand(args) },
+			Run:         func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd { return chat.runForkCommand(args) },
 		},
 		{
 			Name:        "plugins",
 			Description: "Lista plugins locales Claude detectados y sus componentes namespaced.",
-			Run:         func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd { return chat.runPluginsCommand() },
+			Run:         func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd { return chat.runPluginsCommand() },
 		},
 		{
 			Name:        "reload-plugins",
 			Description: "Fuerza un rescan de plugins locales Claude para el siguiente turno.",
-			Run:         func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd { return chat.runReloadPluginsCommand() },
+			Run:         func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd { return chat.runReloadPluginsCommand() },
 		},
 		{
 			Name: "agents", Aliases: []string{"subagents"},
 			Description: "Lista subagentes Claude-compatible detectados; también puedes invocarlos con @nombre tarea.",
-			Run: func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd {
+			Run: func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd {
 				list := chat.loadAgents()
 				if len(list) == 0 {
 					chat.AddSystem("No hay subagentes disponibles.")
@@ -138,39 +138,39 @@ func Commands() []SlashCommand {
 		{
 			Name: "login", Aliases: []string{"signin"},
 			Description: "Conecta un nuevo proveedor.",
-			Run:         func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd { return switchTo(NewOnboarding(ctx, false)) },
+			Run:         func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd { return switchTo(NewOnboarding(ctx, false)) },
 		},
 		{
 			Name: "providers", Aliases: []string{"provider"},
 			Description: "Administra proveedores configurados.",
-			Run:         func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd { return switchTo(NewProviderScreen(ctx)) },
+			Run:         func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd { return switchTo(NewProviderScreen(ctx)) },
 		},
 		{
 			Name: "models", Aliases: []string{"model"},
 			Description: "Elige el modelo activo.",
-			Run:         func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd { return switchTo(NewModelSelector(ctx)) },
+			Run:         func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd { return switchTo(NewModelSelector(ctx)) },
 		},
 		{
 			Name: "config", Aliases: []string{"settings"},
 			Description: "Abre configuración de General, Búsqueda y Seguridad.",
-			Run:         func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd { return switchTo(NewConfigScreen(ctx)) },
+			Run:         func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd { return switchTo(NewConfigScreen(ctx)) },
 		},
 		{
 			Name: "clear", Aliases: []string{"new", "c", "n", "reset"},
 			Description: "Empieza una conversación nueva y vuelve al agente Build.",
-			Run:         func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd { chat.Clear(); return tea.DisableMouse },
+			Run:         func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd { chat.Clear(); return uikit.DisableMouse },
 		},
 		{
 			Name: "history", Aliases: []string{"chats", "resume", "continue"},
 			Description: "Abre el historial de conversaciones del proyecto.",
-			Run: func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd {
+			Run: func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd {
 				return switchTo(NewHistory(ctx, chat.store, chat.project))
 			},
 		},
 		{
 			Name: "bash", Aliases: []string{"!"}, Usage: "<comando>",
 			Description: "Ejecuta shell directamente con !comando; en Plan sólo admite inspección segura.",
-			Run: func(ctx *AppContext, chat *ChatModel, args string) tea.Cmd {
+			Run: func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd {
 				if strings.TrimSpace(args) == "" {
 					chat.AddSystem("Uso: !comando")
 					return nil
@@ -182,14 +182,14 @@ func Commands() []SlashCommand {
 		{
 			Name:        "exit",
 			Description: "Cierra Lilith. Es la única salida explícita del proceso.",
-			Run: func(ctx *AppContext, chat *ChatModel, _ string) tea.Cmd {
+			Run: func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd {
 				if chat != nil {
 					if chat.activeTurnID != 0 {
 						chat.cancelTurn()
 					}
 					chat.runSessionHook("SessionEnd")
 				}
-				return tea.Quit
+				return uikit.Quit
 			},
 		},
 	}

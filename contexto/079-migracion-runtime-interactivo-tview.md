@@ -1,5 +1,8 @@
 # 079 · Migración del runtime interactivo a tview
 
+> **Estado:** fase intermedia superada por `080-migracion-completa-tview-sin-charm.md`.
+> Este documento se conserva como historial de la transición híbrida.
+
 ## Fecha
 
 2026-07-31

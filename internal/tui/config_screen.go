@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/lilith/li/internal/tui/uikit"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 
 	"github.com/lilith/li/internal/config"
 	"github.com/lilith/li/internal/skills"
@@ -55,9 +55,9 @@ func NewConfigScreen(ctx *AppContext) *ConfigScreen {
 	}
 }
 
-func (c *ConfigScreen) Init() tea.Cmd { return nil }
+func (c *ConfigScreen) Init() uikit.Cmd { return nil }
 
-func (c *ConfigScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (c *ConfigScreen) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 	switch v := msg.(type) {
 	case searchTestMsg:
 		c.search.applyTest(v)
@@ -65,7 +65,7 @@ func (c *ConfigScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case searchTestAllMsg:
 		c.search.applyTestAll(v)
 		return c, nil
-	case tea.MouseMsg:
+	case uikit.MouseMsg:
 		e, ok := mouseLeftPress(v)
 		if !ok {
 			return c, nil
@@ -104,7 +104,7 @@ func (c *ConfigScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return c, switchToChat()
 		}
 
-	case tea.KeyMsg:
+	case uikit.KeyMsg:
 		// Nested search screens (provider detail, API key and fallback order)
 		// own their keyboard completely until they return to the provider list.
 		if c.section == configSectionSearch && c.search.inNestedView() {
@@ -248,7 +248,7 @@ func (c *ConfigScreen) moveFocus(delta int) {
 	c.focus = order[next]
 }
 
-func (c *ConfigScreen) toggleSkills() (tea.Model, tea.Cmd) {
+func (c *ConfigScreen) toggleSkills() (uikit.Model, uikit.Cmd) {
 	c.settings.SkillsEnabled = !c.settings.SkillsEnabled
 	if err := config.Save(c.ctx.ConfigDir, c.settings); err != nil {
 		c.danger = "No se pudo guardar: " + err.Error()
@@ -357,7 +357,7 @@ func (c *ConfigScreen) footerText() string {
 	return "↑↓ mover foco · ↑ hasta la barra superior · Enter/Espacio usar · clic · Esc volver"
 }
 
-func (c *ConfigScreen) toggleSetting(id string) (tea.Model, tea.Cmd) {
+func (c *ConfigScreen) toggleSetting(id string) (uikit.Model, uikit.Cmd) {
 	switch id {
 	case "lilith-md":
 		c.settings.ProjectInstructionsEnabled = !c.settings.ProjectInstructionsEnabled
@@ -399,17 +399,17 @@ func (c *ConfigScreen) toggleFocusCard(width int, id, title, description string,
 	}
 	titleText := marker + s.Title.Render(title)
 	status := stateStyle.Render("[" + state + "]")
-	gap := inner - lipgloss.Width(titleText) - lipgloss.Width(status)
+	gap := inner - tuistyle.Width(titleText) - tuistyle.Width(status)
 	if gap < 2 {
 		gap = 2
 	}
 	lines := []string{titleText + strings.Repeat(" ", gap) + status, s.Muted.Render(settingsWrapPlain(description, inner))}
-	style := lipgloss.NewStyle().Width(inner).Padding(0, 1).Border(lipgloss.RoundedBorder()).BorderForeground(s.Theme.Border)
+	style := tuistyle.NewStyle().Width(inner).Padding(0, 1).Border(tuistyle.RoundedBorder()).BorderForeground(s.Theme.Border)
 	if c.focus == id {
 		style = style.BorderForeground(s.Theme.BorderFocus).Background(s.Theme.SurfaceHover).Bold(true)
 	}
 	text := style.Render(strings.Join(lines, "\n"))
-	return settingsBlock{text: text, hits: []settingsHit{{id: id, rect: settingsRect{w: lipgloss.Width(text), h: lipgloss.Height(text)}}}}
+	return settingsBlock{text: text, hits: []settingsHit{{id: id, rect: settingsRect{w: tuistyle.Width(text), h: tuistyle.Height(text)}}}}
 }
 
 func (c *ConfigScreen) skillsFocusCard(width int) settingsBlock {
@@ -430,7 +430,7 @@ func (c *ConfigScreen) skillsFocusCard(width int) settingsBlock {
 	}
 	title := marker + s.Title.Render("Skills")
 	status := stateStyle.Render("[" + state + "]")
-	gap := inner - lipgloss.Width(title) - lipgloss.Width(status)
+	gap := inner - tuistyle.Width(title) - tuistyle.Width(status)
 	if gap < 2 {
 		gap = 2
 	}
@@ -438,10 +438,10 @@ func (c *ConfigScreen) skillsFocusCard(width int) settingsBlock {
 		title + strings.Repeat(" ", gap) + status,
 		s.Muted.Render(settingsWrapPlain(fmt.Sprintf("%d skill(s) detectada(s). Activa o desactiva su carga automática.", len(c.loaded)), inner)),
 	}
-	style := lipgloss.NewStyle().
+	style := tuistyle.NewStyle().
 		Width(inner).
 		Padding(0, 1).
-		Border(lipgloss.RoundedBorder()).
+		Border(tuistyle.RoundedBorder()).
 		BorderForeground(s.Theme.Border)
 	if c.focus == "skills" {
 		style = style.
@@ -452,7 +452,7 @@ func (c *ConfigScreen) skillsFocusCard(width int) settingsBlock {
 	text := style.Render(strings.Join(lines, "\n"))
 	return settingsBlock{
 		text: text,
-		hits: []settingsHit{{id: "skills", rect: settingsRect{w: lipgloss.Width(text), h: lipgloss.Height(text)}}},
+		hits: []settingsHit{{id: "skills", rect: settingsRect{w: tuistyle.Width(text), h: tuistyle.Height(text)}}},
 	}
 }
 
@@ -470,10 +470,10 @@ func (c *ConfigScreen) backFocusCard(width int) settingsBlock {
 		marker + s.Title.Render("Volver al chat"),
 		s.Muted.Render("Regresa a la conversación actual."),
 	}
-	style := lipgloss.NewStyle().
+	style := tuistyle.NewStyle().
 		Width(inner).
 		Padding(0, 1).
-		Border(lipgloss.RoundedBorder()).
+		Border(tuistyle.RoundedBorder()).
 		BorderForeground(s.Theme.Border)
 	if c.focus == "back" {
 		style = style.
@@ -484,7 +484,7 @@ func (c *ConfigScreen) backFocusCard(width int) settingsBlock {
 	text := style.Render(strings.Join(lines, "\n"))
 	return settingsBlock{
 		text: text,
-		hits: []settingsHit{{id: "back", rect: settingsRect{w: lipgloss.Width(text), h: lipgloss.Height(text)}}},
+		hits: []settingsHit{{id: "back", rect: settingsRect{w: tuistyle.Width(text), h: tuistyle.Height(text)}}},
 	}
 }
 
@@ -493,7 +493,7 @@ func (c *ConfigScreen) View() string {
 	return view
 }
 
-var _ tea.Model = (*ConfigScreen)(nil)
+var _ uikit.Model = (*ConfigScreen)(nil)
 
 // currentProject wraps os.Getwd() para poder ser stubbeado en tests.
 func currentProject() string {

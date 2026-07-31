@@ -4,16 +4,16 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/lilith/li/internal/tui/uikit"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 )
 
 // thinkingTickMsg avanza un frame de la animación "pensando".
 type thinkingTickMsg struct{ frame int }
 
 // thinkingTick programa el siguiente frame.
-func thinkingTick(frame int) tea.Cmd {
-	return tea.Tick(90*time.Millisecond, func(time.Time) tea.Msg {
+func thinkingTick(frame int) uikit.Cmd {
+	return uikit.Tick(90*time.Millisecond, func(time.Time) uikit.Msg {
 		return thinkingTickMsg{frame: frame + 1}
 	})
 }
@@ -38,15 +38,15 @@ var workingPalette = []string{
 
 func renderShimmer(frame int, label string, palette []string) string {
 	spin := thinkingSpinner[frame%len(thinkingSpinner)]
-	spinStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(palette[frame%len(palette)])).Render(spin)
+	spinStyled := tuistyle.NewStyle().Foreground(tuistyle.Color(palette[frame%len(palette)])).Render(spin)
 
 	var b strings.Builder
 	for i, r := range label {
 		c := palette[(i+frame)%len(palette)]
-		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(c)).Bold(true).Render(string(r)))
+		b.WriteString(tuistyle.NewStyle().Foreground(tuistyle.Color(c)).Bold(true).Render(string(r)))
 	}
 	dots := strings.Repeat(".", (frame % 4))
-	dotsStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(palette[1])).Render(dots + strings.Repeat(" ", 3-len(dots)))
+	dotsStyled := tuistyle.NewStyle().Foreground(tuistyle.Color(palette[1])).Render(dots + strings.Repeat(" ", 3-len(dots)))
 	return spinStyled + "  " + b.String() + dotsStyled
 }
 
@@ -60,4 +60,3 @@ func RenderThinking(frame int) string {
 func RenderWorking(frame int) string {
 	return renderShimmer(frame, "Trabajando", workingPalette)
 }
-

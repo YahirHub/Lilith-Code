@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gdamore/tcell/v2"
+	"github.com/lilith/li/internal/tui/uikit"
 )
 
 func TestTcellPasteIsAtomic(t *testing.T) {
@@ -31,9 +31,9 @@ func TestTcellPasteIsAtomic(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("el pegado debe emitirse como un único mensaje, obtuvo %d", len(msgs))
 	}
-	key, ok := msgs[0].(tea.KeyMsg)
+	key, ok := msgs[0].(uikit.KeyMsg)
 	if !ok {
-		t.Fatalf("el mensaje debe ser tea.KeyMsg, obtuvo %T", msgs[0])
+		t.Fatalf("el mensaje debe ser uikit.KeyMsg, obtuvo %T", msgs[0])
 	}
 	if !key.Paste {
 		t.Fatal("el mensaje debe conservar Paste=true")
@@ -45,7 +45,7 @@ func TestTcellPasteIsAtomic(t *testing.T) {
 
 func TestTcellEventBridgeDrainsLargePasteBeforePublishing(t *testing.T) {
 	events := make(chan tcell.Event)
-	messages := make(chan tea.Msg)
+	messages := make(chan uikit.Msg)
 	quit := make(chan struct{})
 	go bridgeTCellEvents(events, messages, quit)
 
@@ -75,9 +75,9 @@ func TestTcellEventBridgeDrainsLargePasteBeforePublishing(t *testing.T) {
 		if !ok {
 			t.Fatal("el puente cerró la salida sin publicar el pegado")
 		}
-		key, ok := raw.(tea.KeyMsg)
+		key, ok := raw.(uikit.KeyMsg)
 		if !ok {
-			t.Fatalf("el mensaje debe ser tea.KeyMsg, obtuvo %T", raw)
+			t.Fatalf("el mensaje debe ser uikit.KeyMsg, obtuvo %T", raw)
 		}
 		if !key.Paste {
 			t.Fatal("el pegado largo debe conservar Paste=true")
@@ -105,8 +105,30 @@ func TestTcellKeyTranslation(t *testing.T) {
 		if !ok {
 			t.Fatal("Ctrl+C debe traducirse")
 		}
-		if msg.Type != tea.KeyCtrlC {
+		if msg.Type != uikit.KeyCtrlC {
 			t.Fatalf("tipo inesperado: %v", msg.Type)
+		}
+	})
+
+	t.Run("special keys", func(t *testing.T) {
+		tests := []struct {
+			name string
+			key  tcell.Key
+			want uikit.KeyType
+		}{
+			{name: "enter", key: tcell.KeyEnter, want: uikit.KeyEnter},
+			{name: "tab", key: tcell.KeyTab, want: uikit.KeyTab},
+			{name: "backspace", key: tcell.KeyBackspace, want: uikit.KeyBackspace},
+			{name: "escape", key: tcell.KeyEsc, want: uikit.KeyEsc},
+			{name: "ctrl-j", key: tcell.KeyCtrlJ, want: uikit.KeyCtrlJ},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				msg, ok := tcellKeyMsg(tcell.NewEventKey(test.key, 0, tcell.ModNone))
+				if !ok || msg.Type != test.want {
+					t.Fatalf("traducción de %s inesperada: ok=%v msg=%#v", test.name, ok, msg)
+				}
+			})
 		}
 	})
 
@@ -115,7 +137,7 @@ func TestTcellKeyTranslation(t *testing.T) {
 		if !ok {
 			t.Fatal("el espacio debe traducirse")
 		}
-		if msg.Type != tea.KeySpace {
+		if msg.Type != uikit.KeySpace {
 			t.Fatalf("tipo inesperado: %v", msg.Type)
 		}
 		if got := string(msg.Runes); got != " " {
@@ -128,68 +150,8 @@ func TestTcellKeyTranslation(t *testing.T) {
 		if !ok {
 			t.Fatal("Alt+Up debe traducirse")
 		}
-		if msg.Type != tea.KeyUp || !msg.Alt {
+		if msg.Type != uikit.KeyUp || !msg.Alt {
 			t.Fatalf("mensaje inesperado: %#v", msg)
 		}
 	})
-}
-
-func TestRenderTCellClearsContractedRows(t *testing.T) {
-	screen := tcell.NewSimulationScreen("UTF-8")
-	if err := screen.Init(); err != nil {
-		t.Fatalf("inicializar pantalla simulada: %v", err)
-	}
-	defer screen.Fini()
-	screen.SetSize(24, 5)
-
-	previous := renderTCell(screen, "uno\ndos\ntres", 0, true)
-	if previous != 3 {
-		t.Fatalf("altura inicial inesperada: %d", previous)
-	}
-	current := renderTCell(screen, "nuevo", previous, false)
-	if current != 1 {
-		t.Fatalf("altura contraída inesperada: %d", current)
-	}
-
-	cells, width, height := screen.GetContents()
-	for y := 1; y < height; y++ {
-		var row strings.Builder
-		for x := 0; x < width; x++ {
-			cell := cells[y*width+x]
-			if len(cell.Runes) == 0 {
-				row.WriteRune(' ')
-				continue
-			}
-			row.WriteRune(cell.Runes[0])
-		}
-		if strings.TrimSpace(row.String()) != "" {
-			t.Fatalf("la fila %d conserva contenido fantasma: %q", y, row.String())
-		}
-	}
-}
-
-func TestPublishLatestFramePreservesForcedSync(t *testing.T) {
-	frames := make(chan terminalFrame, 1)
-	publishLatestFrame(frames, terminalFrame{view: "antes", forceSync: true})
-	publishLatestFrame(frames, terminalFrame{view: "después"})
-
-	frame := <-frames
-	if frame.view != "después" {
-		t.Fatalf("se esperaba el frame más reciente, obtuvo %q", frame.view)
-	}
-	if !frame.forceSync {
-		t.Fatal("el frame reciente debe conservar la sincronización pendiente")
-	}
-}
-
-func TestFrameNeedsSyncAfterPasteOrEnter(t *testing.T) {
-	if !frameNeedsSync(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("texto"), Paste: true}) {
-		t.Fatal("un pegado debe solicitar sincronización física")
-	}
-	if !frameNeedsSync(tea.KeyMsg{Type: tea.KeyEnter}) {
-		t.Fatal("Enter debe solicitar sincronización física")
-	}
-	if frameNeedsSync(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")}) {
-		t.Fatal("una tecla ordinaria no debe forzar sincronización física")
-	}
 }

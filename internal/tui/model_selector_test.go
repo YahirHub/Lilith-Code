@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lilith/li/internal/tui/uikit"
 
 	"github.com/lilith/li/internal/providers"
 )
@@ -56,7 +56,7 @@ func TestModelSelectorAppliesSelectionImmediatelyInMemoryAndOnDisk(t *testing.T)
 			break
 		}
 	}
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := m.Update(uikit.KeyMsg{Type: uikit.KeyEnter})
 	if cmd == nil {
 		t.Fatal("seleccionar un modelo debe volver al chat")
 	}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 )
 
 // CommandPanel is the live terminal-style window used for
@@ -141,22 +141,22 @@ func (p *CommandPanel) View(s Styles, width int, selected bool) string {
 	inner := width - 4
 
 	// Border + accent color depending on state.
-	var borderColor lipgloss.Color
+	var borderColor tuistyle.Color
 	var tag string
-	var tagStyle lipgloss.Style
+	var tagStyle tuistyle.Style
 	switch {
 	case p.Canceled:
 		borderColor = t.Muted
 		tag = "canceled"
-		tagStyle = lipgloss.NewStyle().Foreground(t.Background).Background(t.Muted).Padding(0, 1).Bold(true)
+		tagStyle = tuistyle.NewStyle().Foreground(t.Background).Background(t.Muted).Padding(0, 1).Bold(true)
 	case p.Superseded:
 		borderColor = t.Muted
 		tag = "retried"
-		tagStyle = lipgloss.NewStyle().Foreground(t.Background).Background(t.Muted).Padding(0, 1).Bold(true)
+		tagStyle = tuistyle.NewStyle().Foreground(t.Background).Background(t.Muted).Padding(0, 1).Bold(true)
 	case !p.Done:
 		borderColor = t.Info // blue while streaming/running
 		tag = "running"
-		tagStyle = lipgloss.NewStyle().Foreground(t.Background).Background(t.Info).Padding(0, 1).Bold(true)
+		tagStyle = tuistyle.NewStyle().Foreground(t.Background).Background(t.Info).Padding(0, 1).Bold(true)
 	case p.Failed:
 		borderColor = t.Danger
 		if p.TimedOut {
@@ -164,11 +164,11 @@ func (p *CommandPanel) View(s Styles, width int, selected bool) string {
 		} else {
 			tag = fmt.Sprintf("exit %d", p.ExitCode)
 		}
-		tagStyle = lipgloss.NewStyle().Foreground(t.Background).Background(t.Danger).Padding(0, 1).Bold(true)
+		tagStyle = tuistyle.NewStyle().Foreground(t.Background).Background(t.Danger).Padding(0, 1).Bold(true)
 	default:
 		borderColor = t.Success
 		tag = "exit 0"
-		tagStyle = lipgloss.NewStyle().Foreground(t.Background).Background(t.Success).Padding(0, 1).Bold(true)
+		tagStyle = tuistyle.NewStyle().Foreground(t.Background).Background(t.Success).Padding(0, 1).Bold(true)
 	}
 	if selected && !p.Done {
 		borderColor = t.Info
@@ -180,11 +180,11 @@ func (p *CommandPanel) View(s Styles, width int, selected bool) string {
 	if cmd == "" {
 		cmd = "…"
 	}
-	promptStyle := lipgloss.NewStyle().Foreground(t.Info).Bold(true)
-	cmdStyle := lipgloss.NewStyle().Foreground(t.Foreground).Bold(true)
+	promptStyle := tuistyle.NewStyle().Foreground(t.Info).Bold(true)
+	cmdStyle := tuistyle.NewStyle().Foreground(t.Foreground).Bold(true)
 	// Reserve room for `$ `, the two-space gap and the tag chip (its text
 	// plus two padding cells) so the header never wraps the box border.
-	tagCols := lipgloss.Width(tagStyle.Render(tag))
+	tagCols := tuistyle.Width(tagStyle.Render(tag))
 	cmdCols := inner - 2 /* "$ " */ - 2 /* gap */ - tagCols
 	if cmdCols < 8 {
 		cmdCols = 8
@@ -232,8 +232,8 @@ func (p *CommandPanel) View(s Styles, width int, selected bool) string {
 		body += "\n" + footer
 	}
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+	return tuistyle.NewStyle().
+		Border(tuistyle.RoundedBorder()).
 		BorderForeground(borderColor).
 		Padding(0, 1).
 		Width(width - 2).
@@ -242,8 +242,8 @@ func (p *CommandPanel) View(s Styles, width int, selected bool) string {
 
 func (p *CommandPanel) renderOutput(s Styles, inner int) string {
 	t := s.Theme
-	outStyle := lipgloss.NewStyle().Foreground(t.Foreground)
-	errStyle := lipgloss.NewStyle().Foreground(t.Danger)
+	outStyle := tuistyle.NewStyle().Foreground(t.Foreground)
+	errStyle := tuistyle.NewStyle().Foreground(t.Danger)
 
 	var lines []string
 	for _, l := range splitLines(p.Stdout) {

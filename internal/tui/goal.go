@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lilith/li/internal/tui/uikit"
 
 	ligoal "github.com/lilith/li/internal/goal"
 	planstate "github.com/lilith/li/internal/plan"
@@ -60,7 +60,7 @@ func formatGoalState(s *ligoal.State) string {
 // runGoalCommand implements the user-controlled half of Codex-style durable
 // goals. Model-controlled transitions are intentionally narrower and live in
 // create_goal/get_goal/update_goal.
-func (m *ChatModel) runGoalCommand(args string) tea.Cmd {
+func (m *ChatModel) runGoalCommand(args string) uikit.Cmd {
 	args = strings.TrimSpace(args)
 	mgr := m.ensureGoalManager()
 	if args == "" || strings.EqualFold(args, "status") || strings.EqualFold(args, "show") {
@@ -175,7 +175,7 @@ func (m *ChatModel) persistGoalState() {
 	m.persist()
 }
 
-func (m *ChatModel) startGoalContinuation(instruction string) tea.Cmd {
+func (m *ChatModel) startGoalContinuation(instruction string) uikit.Cmd {
 	if m.goals == nil || !m.goals.Active() || m.activeTurnID != 0 {
 		return nil
 	}
@@ -190,7 +190,7 @@ func (m *ChatModel) startGoalContinuation(instruction string) tea.Cmd {
 		m.cleanupCompletedTodos()
 	}
 	m.persistTurnStart()
-	return tea.Batch(m.runTurn(), m.chatMouseModeCmd())
+	return uikit.Batch(m.runTurn(), m.chatMouseModeCmd())
 }
 
 // continueGoalAtBoundary keeps the same logical parent turn alive without a
@@ -235,7 +235,7 @@ func (m *ChatModel) pauseGoalOnInterrupt() {
 	m.goalRequestTokens = 0
 }
 
-func (m *ChatModel) resumeActiveGoalCmd() tea.Cmd {
+func (m *ChatModel) resumeActiveGoalCmd() uikit.Cmd {
 	if m == nil || m.goals == nil || !m.goals.Active() || m.activeTurnID != 0 {
 		return nil
 	}
