@@ -82,7 +82,8 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - En repositorios Git, los snapshots usan un índice temporal, un commit interno y `refs/lilith/rewind/...`; nunca modificar el índice/staging real del usuario. En monorepos, la restauración se limita al subdirectorio de proyecto activo y no toca workspaces hermanos.
 - Las operaciones Git que capturan o materializan contenido (`add`, `checkout-index`, `worktree add`) deben ignorar el `core.autocrlf` global del equipo para no cambiar bytes LF/CRLF durante rewind o fork. Las pruebas de rutas deben comparar rutas limpias semánticamente, no separadores literales de un sistema operativo.
 - Fuera de Git, usar blobs por SHA-256 y manifiestos. Los snapshots parciales deben advertirlo y nunca prometer restauración exacta de rutas excluidas o archivos omitidos.
-- `/fork [título]` crea una sesión con ID y procedencia nuevos y una copia independiente del workspace: worktree Git cuando sea posible, copia por blobs en fallback. Sólo se permite sin trabajo foreground/background activo. No compartir slices/estados mutables ni copiar el historial de rewind de la sesión origen.
+- `/fork [título]` abre primero un navegador de carpetas propio de la TUI. Debe funcionar con teclado en SSH y con clic/rueda cuando el terminal reporte mouse; permite volver al directorio padre, recorrer unidades en Windows y crear una carpeta. El destino final debe existir, estar vacío y quedar fuera del workspace original.
+- Tras elegir el destino, `/fork` crea una sesión con ID y procedencia nuevos y una copia independiente del workspace: worktree Git cuando sea posible, copia por blobs en fallback. Sólo se permite sin trabajo foreground/background activo. No compartir slices/estados mutables ni copiar el historial de rewind de la sesión origen.
 - Un fork exitoso cambia el proyecto activo a la copia; la conversación y el workspace originales permanecen intactos.
 - Los checkpoints se limitan y podan por sesión. No eliminar refs Git de un punto aún vigente ni reutilizar snapshots de otra ruta/proyecto.
 
@@ -120,7 +121,7 @@ También probar manualmente la ruta o pantalla afectada en Windows Terminal y Li
 
 ## Commits y documentación
 
-- Autor Git local: `YahirHub <217099863+YahirHub@users.noreply.github.com>`.
+- Autor Git local: `ThowiLabs <217099863+YahirHub@users.noreply.github.com>`.
 - Commits en español, detallados y sin mencionar IA.
 - Cada cambio importante debe añadir o actualizar un MD numerado en `contexto/`.
 - No inventar URLs, repositorios, resultados de pruebas ni compatibilidad no ejecutada.

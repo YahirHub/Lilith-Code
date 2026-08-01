@@ -12,6 +12,37 @@ import (
 	"strings"
 )
 
+// ResolveWorkspaceRoot returns the directory that a fork must be created
+// outside of. Git projects use the repository root even when Lilith was opened
+// from a nested subproject; non-Git projects use the project directory itself.
+// Detection is best-effort so the destination picker remains available when
+// Git is missing or the current directory is not a repository.
+func ResolveWorkspaceRoot(projectPath string) string {
+	projectAbs, err := filepath.Abs(projectPath)
+	if err != nil {
+		return filepath.Clean(projectPath)
+	}
+	projectAbs = filepath.Clean(projectAbs)
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return projectAbs
+	}
+	repoRoot, err := gitOutput(projectAbs, nil, gitPath, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return projectAbs
+	}
+	repoAbs, err := filepath.Abs(strings.TrimSpace(repoRoot))
+	if err != nil || strings.TrimSpace(repoRoot) == "" {
+		return projectAbs
+	}
+	repoAbs = filepath.Clean(repoAbs)
+	rel, err := filepath.Rel(repoAbs, projectAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return projectAbs
+	}
+	return repoAbs
+}
+
 func captureGitWorkspace(projectPath, tempDir, sessionID, pointID string) (WorkspaceSnapshot, error) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {

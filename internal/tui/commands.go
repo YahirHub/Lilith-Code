@@ -99,7 +99,7 @@ func Commands() []SlashCommand {
 		{
 			Name:        "fork",
 			Usage:       "[título opcional]",
-			Description: "Crea una conversación y copia de archivos independientes; usa un git worktree cuando es posible.",
+			Description: "Crea una conversación y workspace independientes eligiendo una carpeta vacía en un navegador interactivo.",
 			Run: func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd {
 				return chat.runForkSessionCommand(args)
 			},

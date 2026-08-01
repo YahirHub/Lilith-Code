@@ -137,7 +137,9 @@ Las operaciones que introducen o extraen contenido del índice temporal desactiv
 
 Fuera de Git, se usa un manifiesto con blobs SHA-256. Se excluyen `.git`, `.lilith`, `.cache`, `node_modules`, `.next`, `dist`, `build` y `target`; cada archivo está limitado a 32 MiB y el snapshot a 512 MiB. Un punto parcial sigue permitiendo restaurar lo capturado, pero la UI debe advertirlo.
 
-`/fork [título opcional]` captura el estado actual y crea una sesión independiente con nuevo ID y `ForkedFrom`. Se rechaza mientras haya un turno, comando directo o subagente background activo. Para Git materializa un worktree separado en el commit del snapshot; en fallback reconstruye una copia independiente desde los blobs. Lilith cambia al nuevo directorio y reconecta MCP. La sesión original, sus archivos y su historial de rewind permanecen intactos; el fork no hereda checkpoints antiguos.
+`/fork [título opcional]` abre un navegador de carpetas dentro de la propia TUI antes de capturar el estado. Empieza junto a la raíz del workspace fuente —la raíz del repositorio en Git o el proyecto activo fuera de Git—, permite abrir carpetas, volver al directorio padre, recorrer unidades en Windows y crear una carpeta nueva. Todas las acciones tienen atajos de teclado para funcionar por SSH; cuando Tcell recibe eventos de mouse también admite clic y rueda. El usuario debe elegir una carpeta existente y vacía fuera del workspace original.
+
+Después de elegir el destino, `/fork` captura el estado actual y crea una sesión independiente con nuevo ID y `ForkedFrom`. Se rechaza mientras haya un turno, comando directo o subagente background activo. Para Git materializa un worktree separado en el commit del snapshot; en fallback reconstruye una copia independiente desde los blobs. Lilith cambia al nuevo directorio y reconecta MCP. La sesión original, sus archivos y su historial de rewind permanecen intactos; el fork no hereda checkpoints antiguos.
 
 ## 10. OCR estructural
 
@@ -192,3 +194,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `088-rewind-y-fork-conversacion-codigo.md`
 - `089-goal-sin-limites-y-rutas-placeholder.md`
 - `090-tests-windows-mcp-y-rewind-eol.md`
+- `091-selector-interactivo-destino-fork.md`

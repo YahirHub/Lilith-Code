@@ -178,9 +178,24 @@ func TestForkCommandCreatesIndependentWorkspaceAndSession(t *testing.T) {
 
 	cmd := model.runForkSessionCommand("Alternativa")
 	if cmd == nil {
-		t.Fatal("/fork did not create a command")
+		t.Fatal("/fork did not open the destination selector")
 	}
 	raw := cmd()
+	switchMsg, ok := raw.(switchScreenMsg)
+	if !ok {
+		t.Fatalf("unexpected /fork command result type: %T", raw)
+	}
+	selector, ok := switchMsg.next.(*ForkDestinationModel)
+	if !ok || selector.title != "Alternativa" {
+		t.Fatalf("/fork did not preserve the title in its selector: %#v", switchMsg.next)
+	}
+
+	destination := filepath.Join(t.TempDir(), "fork")
+	cmd = model.startForkSessionAt("Alternativa", destination)
+	if cmd == nil {
+		t.Fatal("fork creation did not create a command")
+	}
+	raw = cmd()
 	result, ok := raw.(forkSessionResultMsg)
 	if !ok {
 		t.Fatalf("unexpected fork result type: %T", raw)

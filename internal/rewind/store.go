@@ -395,9 +395,8 @@ func (s *Store) ForkWorkspace(point *Point, destination string) (ForkResult, err
 	if strings.TrimSpace(destination) == "" {
 		return ForkResult{}, errors.New("ruta de fork vacía")
 	}
-	if _, err := os.Stat(destination); err == nil {
-		return ForkResult{}, fmt.Errorf("la ruta del fork ya existe: %s", destination)
-	} else if !errors.Is(err, os.ErrNotExist) {
+	destination, existed, err := prepareForkDestination(point.Workspace.Root, destination)
+	if err != nil {
 		return ForkResult{}, err
 	}
 	switch point.Workspace.Kind {
@@ -408,7 +407,11 @@ func (s *Store) ForkWorkspace(point *Point, destination string) (ForkResult, err
 			return ForkResult{}, err
 		}
 		if err := restoreFileWorkspace(point.Workspace, s.blobDir(point.Meta.ProjectPath), destination); err != nil {
-			_ = os.RemoveAll(destination)
+			if existed {
+				_ = clearDirectory(destination)
+			} else {
+				_ = os.RemoveAll(destination)
+			}
 			return ForkResult{}, err
 		}
 		projectPath := destination
@@ -421,15 +424,75 @@ func (s *Store) ForkWorkspace(point *Point, destination string) (ForkResult, err
 	}
 }
 
-// DefaultForkDestination returns a unique config-owned directory. The caller
-// may display it and leave it intact as an independent project checkout.
-func (s *Store) DefaultForkDestination(projectPath, sessionID string) string {
-	base := filepath.Base(filepath.Clean(projectPath))
-	if base == "." || base == "" {
-		base = "project"
+func prepareForkDestination(workspaceRoot, destination string) (string, bool, error) {
+	abs, err := filepath.Abs(destination)
+	if err != nil {
+		return "", false, fmt.Errorf("resolver ruta del fork: %w", err)
 	}
-	name := cleanID(base) + "-fork-" + time.Now().Format("20060102-150405") + "-" + randomSuffix()[:4]
-	return filepath.Join(s.root, "forks", cleanID(sessionID), name)
+	abs = filepath.Clean(abs)
+	if forkPathContains(workspaceRoot, abs) {
+		return "", false, fmt.Errorf("la ruta del fork no puede estar dentro del workspace original: %s", abs)
+	}
+	info, err := os.Stat(abs)
+	if errors.Is(err, os.ErrNotExist) {
+		return abs, false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if !info.IsDir() {
+		return "", false, fmt.Errorf("la ruta del fork no es un directorio: %s", abs)
+	}
+	entries, err := os.ReadDir(abs)
+	if err != nil {
+		return "", false, fmt.Errorf("comprobar carpeta de fork: %w", err)
+	}
+	if len(entries) > 0 {
+		return "", false, fmt.Errorf("la carpeta del fork debe estar vacía: %s", abs)
+	}
+	return abs, true, nil
+}
+
+func forkPathContains(root, target string) bool {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return false
+	}
+	rootAbs = resolveExistingPath(rootAbs)
+	targetAbs = resolveExistingPath(targetAbs)
+	rel, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel))
+}
+
+func resolveExistingPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+	parent := filepath.Dir(path)
+	if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+		return filepath.Join(resolved, filepath.Base(path))
+	}
+	return filepath.Clean(path)
+}
+
+func clearDirectory(path string) error {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(path, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CopyTo writes r atomically with private permissions. Kept here for fallback

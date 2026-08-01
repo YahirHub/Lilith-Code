@@ -193,24 +193,45 @@ func goalCommandNeedsCheckpoint(args string) bool {
 	}
 }
 
-func (m *ChatModel) runForkSessionCommand(title string) uikit.Cmd {
+func (m *ChatModel) forkSessionValidationError() error {
 	if m == nil || m.rewindStore == nil || m.sess == nil {
-		return nil
+		return errors.New("el historial de fork no está disponible")
 	}
 	if m.rewindSessionBusy() {
-		m.AddError("/fork sólo puede ejecutarse cuando el agente y sus tareas en background están inactivos.")
-		return nil
+		return errors.New("/fork sólo puede ejecutarse cuando el agente y sus tareas en background están inactivos")
 	}
 	conversation := m.snapshotSessionForRewind()
 	if conversation == nil || (len(conversation.Messages) == 0 && len(conversation.Transcript) == 0) {
-		m.AddError("/fork requiere una conversación con al menos un mensaje.")
+		return errors.New("/fork requiere una conversación con al menos un mensaje")
+	}
+	return nil
+}
+
+func (m *ChatModel) runForkSessionCommand(title string) uikit.Cmd {
+	if err := m.forkSessionValidationError(); err != nil {
+		if m != nil {
+			m.AddError(err.Error() + ".")
+		}
 		return nil
+	}
+	return switchTo(NewForkDestinationScreen(m.ctx, m, title))
+}
+
+func (m *ChatModel) startForkSessionAt(title, destination string) uikit.Cmd {
+	if err := m.forkSessionValidationError(); err != nil {
+		return func() uikit.Msg { return forkSessionResultMsg{err: err} }
+	}
+	destination = strings.TrimSpace(destination)
+	if destination == "" {
+		return func() uikit.Msg { return forkSessionResultMsg{err: errors.New("ruta de destino del fork vacía")} }
 	}
 	project := m.project
 	sessionID := m.sess.ID
 	store := m.rewindStore
 	sessionStore := m.store
+	conversation := m.snapshotSessionForRewind()
 	title = strings.TrimSpace(title)
+	destination = filepath.Clean(destination)
 	return func() uikit.Msg {
 		meta, err := store.CreateSafety(project, sessionID, "Estado usado para crear el fork", conversation)
 		if err != nil {
@@ -223,7 +244,6 @@ func (m *ChatModel) runForkSessionCommand(title string) uikit.Cmd {
 		if err != nil {
 			return forkSessionResultMsg{err: err}
 		}
-		destination := store.DefaultForkDestination(project, sessionID)
 		workspace, err := store.ForkWorkspace(point, destination)
 		if err != nil {
 			return forkSessionResultMsg{err: err}

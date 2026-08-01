@@ -72,6 +72,13 @@ func TestGitWorkspaceSnapshotRestoreAndFork(t *testing.T) {
 	runGit(t, repo, "add", "-f", "ignored.txt")
 	runGit(t, repo, "commit", "-m", "base")
 	head := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
+	subproject := filepath.Join(repo, "nested", "app")
+	if err := os.MkdirAll(subproject, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveWorkspaceRoot(subproject); filepath.Clean(got) != filepath.Clean(repo) {
+		t.Fatalf("git subproject resolved to %s, want repository root %s", got, repo)
+	}
 
 	writeTestFile(t, filepath.Join(repo, "tracked.txt"), "snapshot tracked\n")
 	writeTestFile(t, filepath.Join(repo, "ignored.txt"), "snapshot ignored\n")
@@ -141,6 +148,9 @@ func TestGitWorkspaceSnapshotRestoreAndFork(t *testing.T) {
 	}
 
 	forkDir := filepath.Join(t.TempDir(), "fork")
+	if err := os.Mkdir(forkDir, 0o755); err != nil {
+		t.Fatalf("create selected empty fork directory: %v", err)
+	}
 	fork, err := store.ForkWorkspace(point, forkDir)
 	if err != nil {
 		t.Fatalf("fork git workspace: %v", err)
@@ -157,6 +167,13 @@ func TestGitWorkspaceSnapshotRestoreAndFork(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", forkDir).CombinedOutput()
 	})
+}
+
+func TestResolveWorkspaceRootFallsBackToProjectOutsideGit(t *testing.T) {
+	project := t.TempDir()
+	if got := ResolveWorkspaceRoot(project); filepath.Clean(got) != filepath.Clean(project) {
+		t.Fatalf("non-Git project resolved to %s, want %s", got, project)
+	}
 }
 
 func TestGitSubdirectoryRestoreDoesNotTouchSiblingWorkspace(t *testing.T) {
@@ -206,7 +223,8 @@ func TestGitSubdirectoryRestoreDoesNotTouchSiblingWorkspace(t *testing.T) {
 
 func TestFallbackWorkspaceRestoreAndFork(t *testing.T) {
 	root := t.TempDir()
-	blobs := filepath.Join(t.TempDir(), "blobs")
+	store := NewStore(t.TempDir())
+	blobs := store.blobDir(root)
 	writeTestFile(t, filepath.Join(root, "src", "main.txt"), "snapshot\n")
 	writeTestFile(t, filepath.Join(root, "remove-me.txt"), "keep in snapshot\n")
 	writeTestFile(t, filepath.Join(root, "dist", "artifact.bin"), "generated old\n")
@@ -245,11 +263,69 @@ func TestFallbackWorkspaceRestoreAndFork(t *testing.T) {
 	assertFileText(t, filepath.Join(root, "dist", "artifact.bin"), "generated future\n")
 
 	forkRoot := filepath.Join(t.TempDir(), "fork")
-	if err := restoreFileWorkspace(snapshot, blobs, forkRoot); err != nil {
+	if err := os.Mkdir(forkRoot, 0o755); err != nil {
+		t.Fatalf("create selected fallback directory: %v", err)
+	}
+	point := &Point{
+		Meta:      Meta{ProjectPath: root, HasCode: true},
+		Workspace: snapshot,
+	}
+	fork, err := store.ForkWorkspace(point, forkRoot)
+	if err != nil {
 		t.Fatalf("fork fallback copy: %v", err)
+	}
+	if fork.Kind != workspaceFiles || filepath.Clean(fork.ProjectPath) != filepath.Clean(forkRoot) {
+		t.Fatalf("unexpected fallback fork result: %+v", fork)
 	}
 	assertFileText(t, filepath.Join(forkRoot, "src", "main.txt"), "snapshot\n")
 	assertFileText(t, filepath.Join(forkRoot, "remove-me.txt"), "keep in snapshot\n")
+}
+
+func TestPrepareForkDestinationAllowsExistingEmptyDirectory(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	destination := filepath.Join(t.TempDir(), "fork")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, existed, err := prepareForkDestination(workspace, destination)
+	if err != nil {
+		t.Fatalf("empty existing destination was rejected: %v", err)
+	}
+	if !existed || filepath.Clean(got) != filepath.Clean(destination) {
+		t.Fatalf("unexpected destination result: path=%s existed=%v", got, existed)
+	}
+}
+
+func TestPrepareForkDestinationRejectsNonEmptyAndNestedDirectories(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(workspace, "fork")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := prepareForkDestination(workspace, nested); err == nil || !strings.Contains(err.Error(), "workspace original") {
+		t.Fatalf("nested destination was not rejected safely: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		linked := filepath.Join(t.TempDir(), "linked-inside-workspace")
+		if err := os.Symlink(nested, linked); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := prepareForkDestination(workspace, linked); err == nil || !strings.Contains(err.Error(), "workspace original") {
+			t.Fatalf("symlinked nested destination was not rejected safely: %v", err)
+		}
+	}
+
+	nonEmpty := filepath.Join(t.TempDir(), "non-empty")
+	writeTestFile(t, filepath.Join(nonEmpty, "keep.txt"), "keep\n")
+	if _, _, err := prepareForkDestination(workspace, nonEmpty); err == nil || !strings.Contains(err.Error(), "debe estar vacía") {
+		t.Fatalf("non-empty destination was not rejected safely: %v", err)
+	}
 }
 
 func runGit(t *testing.T, dir string, args ...string) string {
