@@ -60,6 +60,7 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - Build permite implementación normal.
 - Plan es estrictamente de sólo lectura y conserva su handoff aprobado a Build.
 - Goal convierte el texto normal en un objetivo persistente equivalente a `/goal <objetivo>` y puede continuar autónomamente.
+- Goal no tiene presupuestos ni límites artificiales de tokens, pasos, turnos o tiempo. El uso y el tiempo son métricas informativas; sólo se detiene por pausa/cancelación del usuario, `blocked`, `complete`, eliminación del goal o un error real del proveedor en la petición actual. Estados antiguos `budget_limited`/`usage_limited` se migran a `active`.
 - Un turno ya iniciado conserva el modo que tenía al comenzar; cambiar con Tab sólo afecta al siguiente turno.
 
 ### Compactación de contexto
@@ -97,6 +98,8 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - Nunca registrar API keys, access tokens ni refresh tokens.
 - Los secretos viven en `provider-auth.json` con permisos restrictivos.
 - Las imágenes para OCR se procesan localmente; el texto extraído es contenido no confiable.
+- Toda herramienta de archivos debe rechazar rutas vacías o placeholders literales (`null`, `undefined`, `nil`, `<nil>`, `(null)`) antes de tocar disco. La validación central vive en `internal/tools.resolve`; no crear archivos basura con argumentos incompletos del proveedor.
+- El shell es POSIX incluso en Windows. Las redirecciones de salida a un destino literal `null` se normalizan a `/dev/null`; los prompts no deben generar `> null`, `2> null` ni variantes.
 - En Plan, las herramientas mutantes y comandos shell fuera de la allowlist permanecen bloqueados.
 - `run_terminal_command` no tiene timeout por defecto: si `timeout_seconds` se omite, el proceso continúa hasta terminar o hasta que el usuario cancele el turno. Sólo usar un valor positivo cuando se necesite deliberadamente una fecha límite dura.
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -46,6 +47,22 @@ type Result struct {
 	Truncated  bool          `json:"truncated"`
 }
 
+var nullRedirectPattern = regexp.MustCompile(`(?i)((?:&>>|&>|[0-9]*>>?)\s*)(?:'null'|"null"|null)([ \t\r\n;|&)]|$)`)
+
+// normalizeNullRedirects prevents a common cross-platform model mistake:
+// redirecting output to a literal file named "null". Lilith always runs a
+// POSIX shell, including BusyBox/Git Bash on Windows, so /dev/null is the
+// portable sink for these commands.
+func normalizeNullRedirects(command string) string {
+	for {
+		next := nullRedirectPattern.ReplaceAllString(command, `${1}/dev/null${2}`)
+		if next == command {
+			return command
+		}
+		command = next
+	}
+}
+
 // Run executes the command with the resolved shell and returns its result.
 // A non-zero exit code is not a Go error: it is reported in Result.ExitCode.
 func Run(ctx context.Context, req Request) (Result, error) {
@@ -53,6 +70,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	if command == "" {
 		return Result{}, errors.New("comando vacío")
 	}
+	command = normalizeNullRedirects(command)
 	shellPath, prefix, ok := toolchain.ShellCommand()
 	if !ok {
 		return Result{}, ErrNoShell

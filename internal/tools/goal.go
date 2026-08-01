@@ -10,18 +10,14 @@ import (
 )
 
 func init() {
-	register(Definition{Name: "create_goal", Description: "Create or replace the durable objective for this long-running session. Use when the user explicitly asks for sustained autonomous work or invokes /goal.", PromptSnippet: "Create a durable long-running objective", Parameters: map[string]any{"type": "object", "properties": map[string]any{"objective": map[string]any{"type": "string"}, "token_budget": map[string]any{"type": "integer", "minimum": 1}}, "required": []string{"objective"}}, Available: func(env Env) bool { return env.Goal != nil }, Run: func(_ context.Context, args map[string]any, env Env) (string, error) {
-		var b *int64
-		if v, ok := numberInt64(args["token_budget"]); ok {
-			b = &v
-		}
-		s, e := env.Goal.Set(str(args, "objective"), b)
+	register(Definition{Name: "create_goal", Description: "Create or replace the durable objective for this long-running session. Goal execution has no artificial token, step, turn, or time budget. Use when the user explicitly asks for sustained autonomous work or invokes /goal.", PromptSnippet: "Create an unlimited durable long-running objective", Parameters: map[string]any{"type": "object", "properties": map[string]any{"objective": map[string]any{"type": "string"}}, "required": []string{"objective"}}, Available: func(env Env) bool { return env.Goal != nil }, Run: func(_ context.Context, args map[string]any, env Env) (string, error) {
+		s, e := env.Goal.Set(str(args, "objective"))
 		if e != nil {
 			return "", e
 		}
 		return goalJSON(s), nil
 	}})
-	register(Definition{Name: "get_goal", Description: "Get the current durable long-running goal and its status, token budget, usage and elapsed time.", PromptSnippet: "Inspect the durable session goal", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}, Available: func(env Env) bool { return env.Goal != nil }, Run: func(_ context.Context, _ map[string]any, env Env) (string, error) {
+	register(Definition{Name: "get_goal", Description: "Get the current durable long-running goal, status, approximate usage and elapsed time. Usage is diagnostic only and never stops execution.", PromptSnippet: "Inspect the durable session goal", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}, Available: func(env Env) bool { return env.Goal != nil }, Run: func(_ context.Context, _ map[string]any, env Env) (string, error) {
 		s := env.Goal.Snapshot()
 		if s == nil {
 			return `{"goal":null}`, nil
@@ -40,14 +36,3 @@ func init() {
 	}})
 }
 func goalJSON(s *ligoal.State) string { b, _ := json.Marshal(s); return string(b) }
-func numberInt64(v any) (int64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return int64(n), true
-	case int:
-		return int64(n), true
-	case int64:
-		return n, true
-	}
-	return 0, false
-}

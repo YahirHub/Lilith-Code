@@ -38,6 +38,7 @@ func init() {
 		PromptSnippet: "Execute shell commands in the project directory",
 		PromptGuidelines: []string{
 			"Use run_terminal_command for builds, tests, git and shell inspection; prefer non-interactive commands. Omit timeout_seconds for long builds, installs and test suites unless a hard deadline is explicitly needed.",
+			"When discarding shell output use /dev/null. Never redirect to a literal file named null; Lilith normalizes common accidental null redirections defensively.",
 		},
 		Mutating: true,
 		Parameters: map[string]any{

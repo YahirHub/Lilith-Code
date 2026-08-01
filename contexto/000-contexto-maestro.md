@@ -89,6 +89,7 @@ Los modelos nuevos de proveedores custom se guardan en `providers.json`. Los de 
 - **Build:** implementación normal y herramientas mutantes.
 - **Plan:** sólo lectura; puede investigar, preguntar decisiones y entregar un plan. El cambio Plan → Build puede consumir una vez el plan aprobado.
 - **Goal:** el texto introducido se convierte en objetivo persistente, igual que `/goal <objetivo>`, y arranca o reorienta una ejecución autónoma.
+  Goal no aplica límites artificiales de tokens, pasos, turnos o tiempo. Los contadores de tokens/tiempo son sólo diagnósticos; los estados antiguos por presupuesto/cuota se reactivan al cargar.
 
 Los estados se persisten en la sesión. Goal comparte las capacidades de implementación de Build; Plan conserva su política restrictiva.
 
@@ -97,6 +98,8 @@ Los estados se persisten en la sesión. Goal comparte las capacidades de impleme
 - Streaming SSE/Responses con normalización por proveedor.
 - Reasoning separado del mensaje final, incluidos campos estructurados y etiquetas inline como `<think>`.
 - Tool calls con paneles en vivo y persistentes.
+- Las rutas de herramientas de archivos se validan centralmente; valores placeholder como `null`, `undefined`, `nil`, `<nil>` o `(null)` se rechazan y nunca se convierten en archivos físicos.
+- El shell normaliza redirecciones accidentales como `> null` o `2> null` a `/dev/null`, porque Lilith ejecuta un shell POSIX también en Windows.
 - `run_terminal_command` no impone límite de ejecución cuando `timeout_seconds` no está presente. Los builds, instalaciones y pruebas largas siguen ejecutándose hasta completar o hasta una cancelación explícita; un timeout positivo conserva el corte y la limpieza del árbol de procesos.
 - Cola de steering y follow-up sin abrir turnos paralelos.
 - Cancelación con Esc; `/exit` es la salida explícita.

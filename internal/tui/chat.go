@@ -2436,10 +2436,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			if cmd := m.recoverFromContextOverflow(v.err); cmd != nil {
 				return m, cmd
 			}
-			usageLimited := m.markGoalUsageLimited(v.err)
-			if !usageLimited {
-				m.accountGoalRequest()
-			}
+			m.accountGoalRequest()
 			m.checkpointPartialAssistantHistory()
 			m.finishThinkingPanel()
 			for _, p := range m.livePanels {
@@ -2457,11 +2454,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			m.working = false
 			m.assistantActive = -1
 			m.endTurn()
-			if usageLimited {
-				m.AddError("Error del proveedor: " + v.err.Error() + "\nGoal pausado por límite de uso del proveedor.")
-			} else {
-				m.AddError("Error del proveedor: " + v.err.Error())
-			}
+			m.AddError("Error del proveedor: " + v.err.Error())
 			m.persist()
 			return m, nil
 		}

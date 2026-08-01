@@ -35,7 +35,7 @@ func Commands() []SlashCommand {
 			},
 		},
 		{
-			Name: "goal", Usage: "[--tokens N] <objetivo>|status|pause|resume|complete|clear",
+			Name: "goal", Usage: "<objetivo>|status|pause|resume|complete|clear",
 			Description: "Define o administra un objetivo persistente para trabajo autónomo de larga duración.",
 			Run: func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd {
 				return chat.runGoalCommand(args)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -22,8 +23,23 @@ const MaxFileBytes = 128 << 10
 // under ~/.li/skills) and relative paths are anchored to the project root.
 // We only block obviously sensitive prefixes to keep foot-guns off the table.
 func resolve(root, p string) (string, error) {
-	if strings.TrimSpace(p) == "" {
+	p = strings.TrimSpace(p)
+	if p == "" {
 		return "", errors.New("empty path")
+	}
+	if strings.IndexByte(p, 0) >= 0 {
+		return "", errors.New("path contains a NUL byte")
+	}
+	// Some providers occasionally serialize a missing path as the literal text
+	// "null" (or an equivalent placeholder). Treating that as a real filename
+	// silently creates junk in the project root, so reject it centrally before
+	// any read, write, edit, diff or OCR tool reaches the filesystem.
+	logical := strings.ReplaceAll(strings.ToLower(p), `\`, "/")
+	logical = path.Clean(logical)
+	logical = strings.TrimPrefix(logical, "./")
+	switch logical {
+	case "null", "undefined", "nil", "<nil>", "(null)":
+		return "", fmt.Errorf("invalid placeholder path %q: provide a real file path", p)
 	}
 	var clean string
 	if filepath.IsAbs(p) {

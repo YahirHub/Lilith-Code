@@ -20,6 +20,9 @@ func init() {
 			if path == "" {
 				path = "MEMORY.md"
 			}
+			if _, err := resolve(env.MemoryDir, path); err != nil {
+				return "", err
+			}
 			out, err := limemory.ReadFile(env.MemoryDir, path)
 			if err != nil {
 				return "", err
@@ -38,6 +41,9 @@ func init() {
 			path := strings.TrimSpace(str(args, "path"))
 			if path == "" {
 				path = "MEMORY.md"
+			}
+			if _, err := resolve(env.MemoryDir, path); err != nil {
+				return "", err
 			}
 			content := str(args, "content")
 			if err := limemory.WriteFile(env.MemoryDir, path, content); err != nil {

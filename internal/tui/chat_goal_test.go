@@ -9,7 +9,7 @@ import (
 
 func TestCompletedGoalDoesNotStopLaterUserTurn(t *testing.T) {
 	m := newInputTestChat(t)
-	if _, err := m.goals.Set("crear el proyecto", nil); err != nil {
+	if _, err := m.goals.Set("crear el proyecto"); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.goals.UpdateStatus(ligoal.Complete); err != nil {
@@ -31,7 +31,7 @@ func TestCompletedGoalDoesNotStopLaterUserTurn(t *testing.T) {
 
 func TestGoalManagedTurnStopsOnlyAfterItsGoalChangesState(t *testing.T) {
 	m := newInputTestChat(t)
-	if _, err := m.goals.Set("terminar la implementación", nil); err != nil {
+	if _, err := m.goals.Set("terminar la implementación"); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.beginTurn(); err != nil {
@@ -117,4 +117,14 @@ func TestGoalModeTurnsPlainInputIntoDurableGoal(t *testing.T) {
 		t.Fatalf("la instrucción goal debe permanecer visible en el transcript: %#v", m.messages)
 	}
 	m.endTurn()
+}
+
+func TestDeprecatedGoalBudgetIsIgnored(t *testing.T) {
+	objective, deprecated, err := parseGoalArgs("--tokens 10 terminar la migración")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deprecated || objective != "terminar la migración" {
+		t.Fatalf("objective=%q deprecated=%v", objective, deprecated)
+	}
 }

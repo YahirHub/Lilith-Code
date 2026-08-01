@@ -78,6 +78,26 @@ func TestWriteReadAndReplace(t *testing.T) {
 	}
 }
 
+func TestPlaceholderPathsNeverCreateFiles(t *testing.T) {
+	root := t.TempDir()
+	env := Env{Root: root}
+	for _, path := range []string{"null", "./null", `.\null`, "NULL", "undefined", "nil", "<nil>", "(null)"} {
+		_, err := Execute(context.Background(), "create_file", map[string]any{
+			"path": path, "content": "must not be written",
+		}, env)
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "placeholder path") {
+			t.Fatalf("path %q should be rejected explicitly, err=%v", path, err)
+		}
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("placeholder calls created project files: %v", entries)
+	}
+}
+
 func TestPreflightCreateFileDetectsExistingWithoutWriting(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "existing.txt")
@@ -269,5 +289,22 @@ func TestPromptInfoOnlyIncludesActiveTools(t *testing.T) {
 	}
 	if len(guidelines) == 0 {
 		t.Fatal("expected str_replace prompt guidelines")
+	}
+}
+
+func TestMemoryWriteRejectsPlaceholderPath(t *testing.T) {
+	root := t.TempDir()
+	_, err := Execute(context.Background(), "memory_write", map[string]any{
+		"path": "null", "content": "must not be written",
+	}, Env{MemoryDir: root})
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "placeholder path") {
+		t.Fatalf("memory placeholder path should be rejected, err=%v", err)
+	}
+	entries, readErr := os.ReadDir(root)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("memory placeholder created files: %v", entries)
 	}
 }

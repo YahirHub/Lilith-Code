@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -35,10 +34,6 @@ func goalStatusLabel(status ligoal.Status) string {
 		return "pausado"
 	case ligoal.Blocked:
 		return "bloqueado"
-	case ligoal.UsageLimited:
-		return "límite de uso"
-	case ligoal.BudgetLimited:
-		return "presupuesto agotado"
 	case ligoal.Complete:
 		return "completado"
 	default:
@@ -50,11 +45,7 @@ func formatGoalState(s *ligoal.State) string {
 	if s == nil {
 		return "No hay un objetivo persistente. Usa /goal <objetivo>."
 	}
-	budget := "sin límite"
-	if s.TokenBudget != nil {
-		budget = fmt.Sprintf("%d", *s.TokenBudget)
-	}
-	return fmt.Sprintf("Goal · %s\n%s\nTokens: %d/%s · Tiempo: %s", goalStatusLabel(s.Status), s.Objective, s.TokensUsed, budget, (time.Duration(s.TimeUsedSeconds) * time.Second).String())
+	return fmt.Sprintf("Goal · %s\n%s\nTokens usados: %d · Tiempo: %s · Sin límites artificiales", goalStatusLabel(s.Status), s.Objective, s.TokensUsed, (time.Duration(s.TimeUsedSeconds) * time.Second).String())
 }
 
 // runGoalCommand implements the user-controlled half of Codex-style durable
@@ -111,17 +102,20 @@ func (m *ChatModel) runGoalCommand(args string) uikit.Cmd {
 		}
 	}
 
-	budget, objective, err := parseGoalArgs(args)
+	objective, deprecatedBudget, err := parseGoalArgs(args)
 	if err != nil {
 		m.AddError(err.Error())
 		return nil
 	}
-	if _, err := mgr.Set(objective, budget); err != nil {
+	if _, err := mgr.Set(objective); err != nil {
 		m.AddError(err.Error())
 		return nil
 	}
 	m.invalidateContextUsage()
 	m.persistGoalState()
+	if deprecatedBudget {
+		m.AddSystem("Los presupuestos de Goal fueron eliminados. El objetivo continuará sin límite artificial de tokens, pasos, turnos ni tiempo.")
+	}
 	m.AddSystem("Goal activo: " + objective)
 
 	// /goal is available while a task is in progress in current Codex. Updating
@@ -135,35 +129,30 @@ func (m *ChatModel) runGoalCommand(args string) uikit.Cmd {
 	return m.startGoalContinuation("Empieza a trabajar ahora en el goal persistente. Continúa autónomamente hasta completarlo o quedar bloqueado por una decisión material del usuario.")
 }
 
-func parseGoalArgs(args string) (*int64, string, error) {
+func parseGoalArgs(args string) (string, bool, error) {
 	args = strings.TrimSpace(args)
 	if args == "" {
-		return nil, "", fmt.Errorf("uso: /goal [--tokens N] <objetivo>")
+		return "", false, fmt.Errorf("uso: /goal <objetivo>")
 	}
 	fields := strings.Fields(args)
-	var budget *int64
-	var objective []string
+	objective := make([]string, 0, len(fields))
+	deprecatedBudget := false
 	for i := 0; i < len(fields); i++ {
 		f := fields[i]
 		if f == "--tokens" || f == "--token-budget" {
-			if i+1 >= len(fields) {
-				return nil, "", fmt.Errorf("%s requiere un número", f)
+			deprecatedBudget = true
+			if i+1 < len(fields) {
+				i++
 			}
-			n, err := strconv.ParseInt(fields[i+1], 10, 64)
-			if err != nil || n <= 0 {
-				return nil, "", fmt.Errorf("presupuesto de tokens inválido: %s", fields[i+1])
-			}
-			budget = &n
-			i++
 			continue
 		}
 		objective = append(objective, f)
 	}
 	text := strings.TrimSpace(strings.Join(objective, " "))
 	if text == "" {
-		return nil, "", fmt.Errorf("el objetivo de /goal está vacío")
+		return "", deprecatedBudget, fmt.Errorf("el objetivo de /goal está vacío")
 	}
-	return budget, text, nil
+	return text, deprecatedBudget, nil
 }
 
 func (m *ChatModel) persistGoalState() {
@@ -240,39 +229,6 @@ func (m *ChatModel) resumeActiveGoalCmd() uikit.Cmd {
 		return nil
 	}
 	return m.startGoalContinuation("La sesión se reanudó con un goal activo. Continúa trabajando autónomamente desde el estado persistido hasta completarlo o quedar realmente bloqueado.")
-}
-
-func (m *ChatModel) markGoalUsageLimited(err error) bool {
-	if err == nil || m == nil || m.goals == nil || !m.goals.Active() {
-		return false
-	}
-	text := strings.ToLower(err.Error())
-	// Only hard account/quota failures stop a durable goal. Transient 429/rate
-	// limits are intentionally excluded because the provider retry path may
-	// recover and Codex reserves usageLimited for unavailable usage.
-	hard := []string{
-		"insufficient_quota",
-		"insufficient quota",
-		"usage limit reached",
-		"usage limit exceeded",
-		"hard usage limit",
-		"billing hard limit",
-		"quota exceeded",
-		"credit balance",
-		"credits exhausted",
-		"out of credits",
-	}
-	for _, marker := range hard {
-		if !strings.Contains(text, marker) {
-			continue
-		}
-		_ = m.goals.UpdateStatus(ligoal.UsageLimited)
-		m.goalRequestTokens = 0
-		m.invalidateContextUsage()
-		m.forceLivePersist()
-		return true
-	}
-	return false
 }
 
 func (m *ChatModel) goalPromptBlock() string {
