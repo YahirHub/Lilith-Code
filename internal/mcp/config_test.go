@@ -33,7 +33,7 @@ func TestScopePluginConfigsNamespacesAndExpandsPaths(t *testing.T) {
 	if !ok {
 		t.Fatalf("scoped configs=%#v", got)
 	}
-	if cfg.Type != "stdio" || cfg.Command != filepath.Join(root, "bin", "server") {
+	if cfg.Type != "stdio" || filepath.Clean(cfg.Command) != filepath.Clean(filepath.Join(root, "bin", "server")) {
 		t.Fatalf("config=%#v", cfg)
 	}
 	joined := strings.Join(cfg.Args, " ")

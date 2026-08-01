@@ -62,6 +62,9 @@ func TestGitWorkspaceSnapshotRestoreAndFork(t *testing.T) {
 	runGit(t, repo, "init", "-b", "main")
 	runGit(t, repo, "config", "user.name", "Lilith Test")
 	runGit(t, repo, "config", "user.email", "lilith@example.invalid")
+	// Simula la configuración común de Windows que puede convertir LF a CRLF.
+	// Rewind debe restaurar los bytes capturados, no la preferencia global de Git.
+	runGit(t, repo, "config", "core.autocrlf", "true")
 	writeTestFile(t, filepath.Join(repo, ".gitignore"), "ignored.txt\n")
 	writeTestFile(t, filepath.Join(repo, "tracked.txt"), "base\n")
 	writeTestFile(t, filepath.Join(repo, "ignored.txt"), "ignored base\n")

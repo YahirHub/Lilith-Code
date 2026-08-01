@@ -133,6 +133,7 @@ Lilith mantiene puntos de restauración por proyecto y sesión bajo el directori
 - se conservan como máximo 80 puntos por sesión. Los puntos anteriores a la introducción de esta función no pueden reconstruirse retroactivamente.
 
 En Git, el snapshot usa un índice temporal separado del índice real, crea un commit interno y lo fija bajo `refs/lilith/rewind/<sesión>/<punto>`. El staging del usuario no se altera. Al restaurar se materializa únicamente el path del proyecto activo y se eliminan dentro de ese scope los archivos tracked o untracked no ignorados que no existían en el punto. En monorepos, directorios hermanos quedan intactos. Los archivos ignorados generados quedan fuera salvo que ya estuvieran tracked.
+Las operaciones que introducen o extraen contenido del índice temporal desactivan explícitamente el `core.autocrlf` global. Así un checkpoint capturado con LF no reaparece como CRLF sólo por ejecutarse en Windows, y un fork materializa los mismos bytes del snapshot. Los atributos propios del repositorio siguen siendo autoritativos.
 
 Fuera de Git, se usa un manifiesto con blobs SHA-256. Se excluyen `.git`, `.lilith`, `.cache`, `node_modules`, `.next`, `dist`, `build` y `target`; cada archivo está limitado a 32 MiB y el snapshot a 512 MiB. Un punto parcial sigue permitiendo restaurar lo capturado, pero la UI debe advertirlo.
 
@@ -189,3 +190,5 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `086-rendimiento-streaming-y-render-tview.md`
 - `087-auto-compactacion-y-comando-compact.md`
 - `088-rewind-y-fork-conversacion-codigo.md`
+- `089-goal-sin-limites-y-rutas-placeholder.md`
+- `090-tests-windows-mcp-y-rewind-eol.md`

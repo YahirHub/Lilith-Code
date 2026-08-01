@@ -56,7 +56,7 @@ func captureGitWorkspace(projectPath, tempDir, sessionID, pointID string) (Works
 	if scope == "" {
 		scope = "."
 	}
-	if _, err := gitOutput(repoRoot, env, gitPath, "add", "-A", "--", scope); err != nil {
+	if _, err := gitOutput(repoRoot, env, gitPath, gitExactContentArgs("add", "-A", "--", scope)...); err != nil {
 		return WorkspaceSnapshot{}, fmt.Errorf("snapshot working tree: %w", err)
 	}
 	tree, err := gitOutput(repoRoot, env, gitPath, "write-tree")
@@ -226,7 +226,7 @@ func restoreGitWorkspace(snapshot WorkspaceSnapshot) error {
 	// directories before checkout-index so Git can materialize that file.
 	removeEmptyParents(snapshot.Root, current)
 	if len(targetRaw) > 0 {
-		if _, err := gitOutputWithInput(snapshot.Root, env, string(targetRaw), gitPath, "checkout-index", "--force", "-z", "--stdin"); err != nil {
+		if _, err := gitOutputWithInput(snapshot.Root, env, string(targetRaw), gitPath, gitExactContentArgs("checkout-index", "--force", "-z", "--stdin")...); err != nil {
 			return fmt.Errorf("restore rewind tree: %w", err)
 		}
 	}
@@ -241,7 +241,7 @@ func forkGitWorkspace(snapshot WorkspaceSnapshot, destination string) (ForkResul
 	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 		return ForkResult{}, err
 	}
-	out, err := gitOutput(snapshot.Root, nil, gitPath, "worktree", "add", "--detach", destination, snapshot.GitCommit)
+	out, err := gitOutput(snapshot.Root, nil, gitPath, gitExactContentArgs("worktree", "add", "--detach", destination, snapshot.GitCommit)...)
 	if err != nil {
 		return ForkResult{}, fmt.Errorf("git worktree add: %w: %s", err, strings.TrimSpace(out))
 	}
@@ -318,6 +318,15 @@ func removeEmptyParents(root string, paths []string) {
 			_ = os.Remove(path)
 		}
 	}
+}
+
+// gitExactContentArgs disables Git's global core.autocrlf conversion for
+// snapshot materialization. Rewind checkpoints must restore the exact bytes
+// captured from the workspace, regardless of the user's platform-level Git
+// configuration. Repository attributes remain authoritative.
+func gitExactContentArgs(args ...string) []string {
+	prefix := []string{"-c", "core.autocrlf=false", "-c", "core.safecrlf=false"}
+	return append(prefix, args...)
 }
 
 func gitOutput(dir string, extraEnv []string, gitPath string, args ...string) (string, error) {
