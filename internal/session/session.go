@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	compactctx "github.com/lilith/li/internal/compaction"
 	ligoal "github.com/lilith/li/internal/goal"
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/providers/openai"
@@ -139,20 +140,38 @@ type LiveCheckpoint struct {
 	Goal                *ligoal.State     `json:"goal,omitempty"`
 }
 
+// CompactionRecord preserves the exact provider history removed from the active
+// context. The transcript stays visually complete, while this archive makes
+// compaction reversible/auditable instead of deleting the original protocol
+// messages from the session file.
+type CompactionRecord struct {
+	ID               string           `json:"id"`
+	CreatedAt        time.Time        `json:"createdAt"`
+	Auto             bool             `json:"auto"`
+	Instructions     string           `json:"instructions,omitempty"`
+	Summary          string           `json:"summary"`
+	TokensBefore     int              `json:"tokensBefore"`
+	TokensAfter      int              `json:"tokensAfter"`
+	SplitTurn        bool             `json:"splitTurn,omitempty"`
+	FullCompaction   bool             `json:"fullCompaction,omitempty"`
+	ArchivedMessages []openai.Message `json:"archivedMessages,omitempty"`
+}
+
 // Session is one persisted conversation.
 type Session struct {
-	ID          string            `json:"id"`
-	Title       string            `json:"title"`
-	ProjectPath string            `json:"projectPath"`
-	CreatedAt   time.Time         `json:"createdAt"`
-	UpdatedAt   time.Time         `json:"updatedAt"`
-	Messages    []openai.Message  `json:"messages"`
-	Transcript  []TranscriptEntry `json:"transcript,omitempty"`
-	Revision    uint64            `json:"revision,omitempty"`
-	Todo        *litodo.State     `json:"todo,omitempty"`
-	Plan        *planstate.State  `json:"plan,omitempty"`
-	Goal        *ligoal.State     `json:"goal,omitempty"`
-	Live        *LiveCheckpoint   `json:"-"`
+	ID          string             `json:"id"`
+	Title       string             `json:"title"`
+	ProjectPath string             `json:"projectPath"`
+	CreatedAt   time.Time          `json:"createdAt"`
+	UpdatedAt   time.Time          `json:"updatedAt"`
+	Messages    []openai.Message   `json:"messages"`
+	Transcript  []TranscriptEntry  `json:"transcript,omitempty"`
+	Compactions []CompactionRecord `json:"compactions,omitempty"`
+	Revision    uint64             `json:"revision,omitempty"`
+	Todo        *litodo.State      `json:"todo,omitempty"`
+	Plan        *planstate.State   `json:"plan,omitempty"`
+	Goal        *ligoal.State      `json:"goal,omitempty"`
+	Live        *LiveCheckpoint    `json:"-"`
 }
 
 // Meta is the lightweight row shown in `/history`.
@@ -229,22 +248,40 @@ func randomSuffix() string {
 	return hex.EncodeToString(b[:])
 }
 
-// Touch refreshes the title (from the first user message) and timestamp.
+func firstUserTitle(messages []openai.Message) string {
+	for _, message := range messages {
+		if message.Role != "user" || strings.TrimSpace(message.Content) == "" {
+			continue
+		}
+		if _, summary := compactctx.SummaryFromMessage(message); summary {
+			continue
+		}
+		title := strings.TrimSpace(strings.ReplaceAll(message.Content, "\n", " "))
+		if len([]rune(title)) > maxTitle {
+			title = string([]rune(title)[:maxTitle]) + "…"
+		}
+		return title
+	}
+	return ""
+}
+
+// Touch refreshes the title (from the first real user message) and timestamp.
+// A full-context compaction may leave only a summary in Messages, so archives
+// are consulted as a fallback instead of turning a valid session anonymous.
 func (c *Session) Touch() {
 	c.UpdatedAt = time.Now()
 	if c.Title != "" && c.Title != "Sin título" {
 		return
 	}
-	for _, m := range c.Messages {
-		if m.Role != "user" || strings.TrimSpace(m.Content) == "" {
-			continue
-		}
-		t := strings.TrimSpace(strings.ReplaceAll(m.Content, "\n", " "))
-		if len([]rune(t)) > maxTitle {
-			t = string([]rune(t)[:maxTitle]) + "…"
-		}
-		c.Title = t
+	if title := firstUserTitle(c.Messages); title != "" {
+		c.Title = title
 		return
+	}
+	for _, record := range c.Compactions {
+		if title := firstUserTitle(record.ArchivedMessages); title != "" {
+			c.Title = title
+			return
+		}
 	}
 }
 
@@ -373,6 +410,20 @@ func (s *Store) Load(projectPath, id string) (*Session, error) {
 	return &c, nil
 }
 
+func countUserTurns(messages []openai.Message) int {
+	turns := 0
+	for _, message := range messages {
+		if message.Role != "user" {
+			continue
+		}
+		if _, summary := compactctx.SummaryFromMessage(message); summary {
+			continue
+		}
+		turns++
+	}
+	return turns
+}
+
 // List returns the sessions of a project, most recently updated first.
 func (s *Store) List(projectPath string) ([]Meta, error) {
 	dir, err := s.ChatsDir(projectPath)
@@ -393,11 +444,12 @@ func (s *Store) List(projectPath string) ([]Meta, error) {
 		if err != nil {
 			continue
 		}
-		turns := 0
-		for _, m := range c.Messages {
-			if m.Role == "user" {
-				turns++
-			}
+		turns := countUserTurns(c.Messages)
+		for _, record := range c.Compactions {
+			turns += countUserTurns(record.ArchivedMessages)
+		}
+		if c.Live != nil {
+			turns += countUserTurns(c.Live.History)
 		}
 		updatedAt := c.UpdatedAt
 		if c.Live != nil && c.Live.UpdatedAt.After(updatedAt) {

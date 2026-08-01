@@ -84,6 +84,7 @@ func chatRuntimeMsg(msg uikit.Msg) bool {
 		livePersistTickMsg,
 		cmdElapsedTickMsg,
 		chatStreamMsg,
+		compactionResultMsg,
 		toolResultsMsg,
 		manualAgentResultMsg,
 		agentEventBatchMsg,

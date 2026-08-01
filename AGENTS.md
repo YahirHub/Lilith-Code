@@ -20,6 +20,7 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - `internal/tui/uikit/`: mensajes, comandos, textarea, textinput, viewport, estilos y ANSI propios.
 - `internal/providers/`: configuración de proveedores, conexión, catálogos de modelos y persistencia.
 - `internal/providers/openai/`: transportes OpenAI-compatible, Codex y normalización de reasoning.
+- `internal/compaction/`: selección del corte, estimación, resumen iterativo y reconstrucción del contexto activo.
 - `internal/tools/`: herramientas del agente, incluidas shell, archivos, búsqueda, skills, subagentes y OCR.
 - `internal/plan/`, `internal/goal/`, `internal/todo/`: estados persistentes de Plan, Goal y tareas.
 - `contexto/`: decisiones y continuidad técnica numeradas.
@@ -59,6 +60,17 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - Plan es estrictamente de sólo lectura y conserva su handoff aprobado a Build.
 - Goal convierte el texto normal en un objetivo persistente equivalente a `/goal <objetivo>` y puede continuar autónomamente.
 - Un turno ya iniciado conserva el modo que tenía al comenzar; cambiar con Tab sólo afecta al siguiente turno.
+
+### Compactación de contexto
+
+- La auto compactación se evalúa antes de cada request del proveedor y se activa cuando mensajes + schemas de herramientas alcanzan `ventana - reserva`.
+- Reserva predeterminada: 16,384 tokens; si una ventana declarada es menor que la reserva se usa un fallback seguro. El tail exacto usa hasta 20,000 tokens y se reduce a `contextWindow/4` en modelos pequeños. Conservar dos turnos recientes completos cuando caben.
+- `/compact [instrucciones opcionales]` fuerza la misma compactación cuando el agente está en reposo; si el historial completo cabe en la cola normal, resume todos los turnos anteriores y conserva exacta la solicitud más reciente.
+- El resumen anterior se entrega como contexto iterativo en compactaciones posteriores; nunca resumir el resumen como una conversación ordinaria.
+- El transcript visual no se recorta. Los mensajes eliminados del contexto activo se archivan exactamente en `Session.Compactions` para auditoría y conteo de turnos.
+- No dividir pares assistant tool-call / tool result. El tail empieza normalmente en un usuario; un turno individual enorme puede empezar en una frontera de assistant, nunca en un resultado `tool`. Si no cabe ninguna frontera segura, resumir el contexto activo completo y archivar los originales.
+- Si el proveedor devuelve overflow de contexto, compactar y reintentar sobre ese estado. Tras una compactación exitosa volver a evaluar una vez: la sobrecarga de system prompt/schemas puede exigir reducir de dos turnos exactos a uno. Detenerse cuando ya no exista historial anterior reducible.
+- La solicitud de resumen no expone herramientas ni continúa la tarea: debe devolver sólo un handoff estructurado. Acotar tool outputs y también el prompt total para que una cantidad patológica de mensajes pequeños no exceda la ventana.
 
 ### Layout del chat
 

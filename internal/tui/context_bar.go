@@ -6,6 +6,7 @@ import (
 
 	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 
+	"github.com/lilith/li/internal/compaction"
 	"github.com/lilith/li/internal/providers/openai"
 )
 
@@ -14,14 +15,7 @@ import (
 // mensaje y por llamada a herramienta; es suficiente para decidir cuándo
 // compactar sin añadir dependencias de tokenizadores.
 func EstimateTokens(msgs []openai.Message) int {
-	total := 0
-	for _, msg := range msgs {
-		total += 4 + (len(msg.Content)+len(msg.ReasoningContent))/4
-		for _, call := range msg.ToolCalls {
-			total += 8 + (len(call.Function.Name)+len(call.Function.Arguments))/4
-		}
-	}
-	return total
+	return compaction.EstimateTokens(msgs)
 }
 
 // contextLevel clasifica el uso: 0 normal, 1 advertencia (≥75 %), 2 crítico (≥90 %).

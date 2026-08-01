@@ -18,6 +18,7 @@ import (
 	"github.com/lilith/li/internal/tui/uikit/viewport"
 
 	"github.com/lilith/li/internal/agents"
+	compactctx "github.com/lilith/li/internal/compaction"
 	"github.com/lilith/li/internal/config"
 	ligoal "github.com/lilith/li/internal/goal"
 	"github.com/lilith/li/internal/hooks"
@@ -273,6 +274,15 @@ type ChatModel struct {
 	contextCacheProvider string
 	contextCacheModel    string
 	contextCacheToolSig  string
+
+	// Compaction runs as a one-off provider request outside the normal tool
+	// stream. Auto compaction resumes the same active turn; manual /compact runs
+	// while idle. IDs make late results harmless after Escape/cancellation.
+	compacting                   bool
+	compactionSeq                uint64
+	activeCompactionID           uint64
+	compactionCancel             context.CancelFunc
+	autoCompactionSkipHistoryLen int
 
 	// Persistencia incremental del turno activo. El historial API se guarda
 	// completo en fronteras semánticas; entre ellas sólo escribimos un sidecar
@@ -646,6 +656,7 @@ func (m *ChatModel) beginTurnMode(mode planstate.Mode) error {
 // endTurn releases the root context after a normal completion/error and makes
 // any message still in flight from the old turn stale.
 func (m *ChatModel) endTurn() {
+	m.stopCompactionState()
 	// Invalidar IDs antes de cancelar evita que cualquier evento que ya estaba
 	// encolado en el runtime TUI pueda confundirse con trabajo aún vigente.
 	m.activeRequestID = 0
@@ -688,6 +699,7 @@ func (m *ChatModel) cancelTurn() string {
 	if m.activeTurnID == 0 {
 		return ""
 	}
+	m.stopCompactionState()
 	// Preserve any text already received from the current provider request in
 	// the protocol history before invalidating the turn. Partial tool arguments
 	// remain transcript-only because sending an unfinished call back to the API
@@ -1464,6 +1476,7 @@ func (m *ChatModel) Clear() {
 		m.goals.Clear()
 	}
 	m.goalRequestTokens = 0
+	m.autoCompactionSkipHistoryLen = 0
 	m.planQuestion.resetPresentation()
 	m.syncAgentModePresentation()
 	m.liveBaseMessageCount = 0
@@ -2042,7 +2055,9 @@ func (m *ChatModel) pinnedActivityView(w int) string {
 		return ""
 	}
 	var body string
-	if m.working {
+	if m.compacting {
+		body = RenderCompacting(m.thinkingFrame)
+	} else if m.working {
 		body = RenderWorking(m.thinkingFrame)
 	} else {
 		body = RenderThinking(m.thinkingFrame)
@@ -2392,6 +2407,9 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 		m.refreshTranscript(true)
 		return m, uikit.Batch(m.chatMouseModeCmd(), m.drainFollowUp())
 
+	case compactionResultMsg:
+		return m, m.applyCompactionResult(v)
+
 	case chatStreamMsg:
 		// Todo chunk de proveedor debe pertenecer tanto al turno como al request
 		// HTTP/SSE actualmente activo. Esto evita que el cierre tardío de un
@@ -2402,6 +2420,9 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			return m, nil
 		}
 		if v.err != nil {
+			if cmd := m.recoverFromContextOverflow(v.err); cmd != nil {
+				return m, cmd
+			}
 			usageLimited := m.markGoalUsageLimited(v.err)
 			if !usageLimited {
 				m.accountGoalRequest()
@@ -2955,7 +2976,9 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			// abortar vuelve al editor para poder corregirla o reenviarla.
 			m.pendingEnter = false
 			m.pendingEnterSeq++
-			if m.streaming && m.activeTurnID != 0 {
+			if m.compacting && m.activeTurnID == 0 {
+				m.cancelManualCompaction()
+			} else if m.streaming && m.activeTurnID != 0 {
 				m.cancelTurn()
 			}
 			restored := m.restoreQueuedToEditor()
@@ -3302,6 +3325,15 @@ func (m *ChatModel) runTurn() uikit.Cmd {
 		m.AddError("No hay un proveedor activo. Usa /login o /providers.")
 		return nil
 	}
+	// Any completion produced by a detached worker belongs to this request and
+	// must participate in the threshold calculation. Dynamic tools are filtered
+	// first for the same reason: prepareRequestMessages must estimate the exact
+	// mode/prompt state that the provider will receive.
+	m.activeTools = tools.FilterAvailable(m.activeTools, m.toolEnv("", m.turnAgentMode))
+	m.deliverBackgroundAgentMessages()
+	if plan, ok := m.shouldAutoCompact(); ok {
+		return m.startAutoCompaction(plan)
+	}
 	m.livePanels = nil
 	m.panelByCall = nil
 	m.cmdPanels = nil
@@ -3321,24 +3353,13 @@ func (m *ChatModel) runTurn() uikit.Cmd {
 	m.userScrolled = false
 	m.refreshTranscript(true)
 
-	// Dynamic tools (notably web_search) may become unavailable while the chat
-	// is open if their configuration changes in /config. Filter them before
-	// both the prompt and wire schemas so hidden tools never leak to the model.
-	m.activeTools = tools.FilterAvailable(m.activeTools, m.toolEnv("", m.turnAgentMode))
-	m.deliverBackgroundAgentMessages()
-
 	msgs := m.prepareRequestMessages(m.turnAgentMode)
+	schemas := m.requestToolSchemas(m.turnAgentMode)
 	if m.goals != nil && m.goals.Active() {
-		m.goalRequestTokens = int64(EstimateTokens(msgs))
+		m.goalRequestTokens = int64(compactctx.EstimateRequestTokens(msgs, schemas))
 	} else {
 		m.goalRequestTokens = 0
 	}
-
-	var schemas []any
-	for _, s := range tools.Schemas(m.activeTools) {
-		schemas = append(schemas, s)
-	}
-	schemas = append(schemas, m.mcpSchemas(m.turnAgentMode)...)
 
 	req := openai.Request{
 		Provider:        *provider,
@@ -3384,8 +3405,9 @@ func (m *ChatModel) contextUsage() (int, int) {
 		m.contextCacheToolSig == toolSig {
 		return m.contextUsedCache, m.contextMaxCache
 	}
-	msgs := m.prepareRequestMessages(m.effectiveAgentMode())
-	used := EstimateTokens(msgs)
+	mode := m.effectiveAgentMode()
+	msgs := m.prepareRequestMessages(mode)
+	used := compactctx.EstimateRequestTokens(msgs, m.requestToolSchemas(mode))
 	maxCtx := 0
 	if provider := m.ctx.Providers.FindProvider(active.ProviderID); provider != nil {
 		maxCtx = provider.ContextWindow(active.ModelID)

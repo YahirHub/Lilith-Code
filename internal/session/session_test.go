@@ -2,6 +2,7 @@ package session
 
 import (
 	"testing"
+	"time"
 
 	"github.com/lilith/li/internal/providers/openai"
 	litodo "github.com/lilith/li/internal/todo"
@@ -18,6 +19,7 @@ func TestSaveListLoadAndDelete(t *testing.T) {
 		{Role: "assistant", Content: "Listo."},
 	}
 	s.Todo = &litodo.State{SchemaVersion: litodo.SchemaVersion, Revision: 1, Tasks: []litodo.Task{{Key: "verify", Subject: "Verify result", Status: litodo.Pending}}}
+	s.Compactions = []CompactionRecord{{ID: "compact-1", Summary: "estado anterior", TokensBefore: 90000, TokensAfter: 18000, ArchivedMessages: []openai.Message{{Role: "user", Content: "viejo"}}}}
 	if err := st.Save(s); err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -26,7 +28,7 @@ func TestSaveListLoadAndDelete(t *testing.T) {
 	}
 
 	metas, err := st.List(project)
-	if err != nil || len(metas) != 1 || metas[0].Turns != 1 {
+	if err != nil || len(metas) != 1 || metas[0].Turns != 2 {
 		t.Fatalf("list inesperado: %+v err=%v", metas, err)
 	}
 
@@ -36,6 +38,9 @@ func TestSaveListLoadAndDelete(t *testing.T) {
 	}
 	if loaded.Todo == nil || loaded.Todo.Revision != 1 || len(loaded.Todo.Tasks) != 1 || loaded.Todo.Tasks[0].Key != "verify" {
 		t.Fatalf("todo no persistido: %+v", loaded.Todo)
+	}
+	if len(loaded.Compactions) != 1 || loaded.Compactions[0].Summary != "estado anterior" || len(loaded.Compactions[0].ArchivedMessages) != 1 {
+		t.Fatalf("compactación no persistida: %+v", loaded.Compactions)
 	}
 
 	latest, err := st.Latest(project)
@@ -128,5 +133,62 @@ func TestLiveCheckpointRoundTripAndRevisionGuard(t *testing.T) {
 	}
 	if loaded.Live != nil {
 		t.Fatalf("un checkpoint rev2 no puede revivir sobre snapshot rev3: %+v", loaded.Live)
+	}
+}
+
+func TestTouchIgnoresCompactionSummaryForTitle(t *testing.T) {
+	s := New(t.TempDir())
+	s.Messages = []openai.Message{
+		{Role: "user", Content: "<conversation_summary>\nold handoff\n</conversation_summary>"},
+		{Role: "user", Content: "Implementa la siguiente etapa"},
+	}
+	s.Touch()
+	if s.Title != "Implementa la siguiente etapa" {
+		t.Fatalf("summary became title: %q", s.Title)
+	}
+}
+
+func TestListCountsArchivedAndLiveTurnsWithoutSummaryMarkers(t *testing.T) {
+	cfg := t.TempDir()
+	project := t.TempDir()
+	st := NewStore(cfg)
+	s := New(project)
+	s.Messages = []openai.Message{
+		{Role: "user", Content: "<conversation_summary>\nsummary\n</conversation_summary>"},
+		{Role: "user", Content: "turno actual"},
+	}
+	s.Compactions = []CompactionRecord{{
+		ID: "compact-1", Summary: "summary", ArchivedMessages: []openai.Message{
+			{Role: "user", Content: "turno archivado 1"},
+			{Role: "assistant", Content: "respuesta"},
+			{Role: "user", Content: "turno archivado 2"},
+		},
+	}}
+	s.Revision = 1
+	if err := st.Save(s); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := st.SaveLive(project, s.ID, &LiveCheckpoint{
+		Revision: 2, BaseHistoryCount: len(s.Messages), UpdatedAt: time.Now(),
+		History: []openai.Message{{Role: "user", Content: "turno live"}},
+	}); err != nil {
+		t.Fatalf("save live: %v", err)
+	}
+	metas, err := st.List(project)
+	if err != nil || len(metas) != 1 {
+		t.Fatalf("list: %+v err=%v", metas, err)
+	}
+	if metas[0].Turns != 4 {
+		t.Fatalf("turn count must include archive/current/live, got %d", metas[0].Turns)
+	}
+}
+
+func TestTouchFallsBackToArchivedUserAfterFullCompaction(t *testing.T) {
+	s := New(t.TempDir())
+	s.Messages = []openai.Message{{Role: "user", Content: "<conversation_summary>\nhandoff\n</conversation_summary>"}}
+	s.Compactions = []CompactionRecord{{ArchivedMessages: []openai.Message{{Role: "user", Content: "Corrige el compilador"}}}}
+	s.Touch()
+	if s.Title != "Corrige el compilador" {
+		t.Fatalf("archived user title not restored: %q", s.Title)
 	}
 }

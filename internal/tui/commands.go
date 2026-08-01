@@ -79,6 +79,13 @@ func Commands() []SlashCommand {
 			},
 		},
 		{
+			Name: "compact", Usage: "[instrucciones opcionales]",
+			Description: "Resume el historial antiguo, conserva los turnos recientes y libera contexto sin borrar el transcript.",
+			Run: func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd {
+				return chat.runCompactCommand(args)
+			},
+		},
+		{
 			Name: "memory", Usage: "[on|off|status]",
 			Description: "Muestra instrucciones/memoria Claude-compatible y permite activar o desactivar auto memory.",
 			Run:         func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd { return chat.runMemoryCommand(args) },

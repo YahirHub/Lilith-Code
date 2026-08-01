@@ -28,6 +28,7 @@ internal/config/              ajustes persistentes
 internal/secrets/             API keys y OAuth
 internal/providers/           proveedores, conexión y catálogos
 internal/providers/openai/    chat completions, Responses/Codex, reasoning
+internal/compaction/           auto compactación y resumen iterativo del contexto
 internal/tui/                 chat y pantallas interactivas
 internal/tui/uikit/           componentes TUI propios
 internal/tools/               herramientas del agente
@@ -102,7 +103,21 @@ Los estados se persisten en la sesión. Goal comparte las capacidades de impleme
 - Skills y agentes pueden usar modelo heredado, explícito o lista de preferencias.
 - MCP y plugins siguen ejecutándose aunque una pantalla auxiliar esté abierta.
 
-## 8. OCR estructural
+## 8. Compactación automática de contexto
+
+Lilith compacta el contexto activo antes de agotar la ventana del modelo:
+
+- umbral predeterminado: `contextWindow - 16,384` tokens, contando mensajes y schemas de herramientas; para ventanas menores a la reserva se usa un fallback proporcional;
+- conserva una cola exacta de hasta 20,000 tokens, adaptada a `contextWindow/4` en modelos pequeños, y mantiene dos turnos recientes completos cuando caben; si el system prompt o los schemas disparan el umbral aunque todo el historial quepa en esa cola, resume los turnos anteriores y conserva exacta la solicitud más reciente;
+- selecciona el corte con la misma poda de tool outputs que usa el request real, pero resume y archiva los mensajes originales exactos; un turno único enorme puede cortarse en una frontera segura de assistant, nunca en un resultado de herramienta;
+- reutiliza el resumen previo como contexto iterativo en compactaciones posteriores y limita el tamaño total de la solicitud de resumen;
+- reconstruye el historial enviado al proveedor como `resumen + cola exacta`;
+- si el proveedor devuelve un error reconocible de overflow, compacta y reintenta el turno;
+- `/compact [instrucciones opcionales]` fuerza la operación manualmente cuando no hay un turno activo; las instrucciones opcionales enfocan el handoff y el turno más reciente permanece exacto.
+
+La compactación no elimina la experiencia visible ni los datos originales. El transcript permanece completo y cada prefijo retirado del contexto se guarda en `Session.Compactions` con resumen, tokens aproximados y mensajes archivados. `/history` cuenta también esos turnos archivados. Esc puede cancelar una compactación manual; una compactación automática pertenece al contexto cancelable del turno.
+
+## 9. OCR estructural
 
 `extract_image_text` permite a modelos sin visión procesar capturas y documentos sin subir la imagen:
 
@@ -111,7 +126,7 @@ Los estados se persisten en la sesión. Goal comparte las capacidades de impleme
 - Salidas: texto, layout monoespaciado, regiones, separadores, coordenadas y JSON.
 - Mantiene `CGO_ENABLED=0` porque no enlaza una biblioteca OCR al binario.
 
-## 9. Persistencia y seguridad
+## 10. Persistencia y seguridad
 
 - Directorios y archivos sensibles usan permisos restrictivos.
 - Secretos nunca deben aparecer en logs ni documentos.
@@ -119,7 +134,7 @@ Los estados se persisten en la sesión. Goal comparte las capacidades de impleme
 - En Plan se bloquean mutaciones y shell no seguro.
 - El OCR marca el texto de imágenes como contenido no confiable.
 
-## 10. Flujo de trabajo
+## 11. Flujo de trabajo
 
 1. Leer `AGENTS.md`, este documento y el último MD de `contexto/`.
 2. Revisar `git status` y preservar cambios ajenos a la tarea.
@@ -129,7 +144,7 @@ Los estados se persisten en la sesión. Goal comparte las capacidades de impleme
 6. Documentar el cambio en un MD numerado.
 7. Commit en español con el autor Git del usuario.
 
-## 11. Validación objetivo
+## 12. Validación objetivo
 
 ```bash
 gofmt -w <archivos>
@@ -143,7 +158,7 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/li
 
 El entorno de entrega puede usar stubs locales sólo para comprobar la arquitectura cuando no tenga acceso a módulos o Go 1.24; nunca presentar esa comprobación como sustituto de una prueba final con las dependencias oficiales en Windows/Linux.
 
-## 12. Documentos recientes clave
+## 13. Documentos recientes clave
 
 - `081-fix-viewport-config-tview.md`
 - `082-compatibilidad-reasoning-inline-y-ocr-estructural.md`
@@ -151,3 +166,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `084-catalogos-manuales-sin-endpoint-models.md`
 - `085-timeout-shell-solo-explicito.md`
 - `086-rendimiento-streaming-y-render-tview.md`
+- `087-auto-compactacion-y-comando-compact.md`

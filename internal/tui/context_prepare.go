@@ -7,6 +7,7 @@ import (
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/providers/openai"
 	"github.com/lilith/li/internal/subagents"
+	"github.com/lilith/li/internal/tools"
 )
 
 const (
@@ -45,6 +46,17 @@ func (m *ChatModel) prepareRequestMessages(mode planstate.Mode) []openai.Message
 	}
 	msgs = append(msgs, history...)
 	return msgs
+}
+
+// requestToolSchemas builds exactly the tool-schema payload sent with a model
+// request. Keeping this in one helper prevents auto-compaction/context usage
+// from estimating a different request than runTurn eventually submits.
+func (m *ChatModel) requestToolSchemas(mode planstate.Mode) []any {
+	var schemas []any
+	for _, schema := range tools.Schemas(m.activeTools) {
+		schemas = append(schemas, schema)
+	}
+	return append(schemas, m.mcpSchemas(mode)...)
 }
 
 // forkContextMessages returns a protocol-valid snapshot for Claude-compatible

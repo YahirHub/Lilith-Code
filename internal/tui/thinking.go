@@ -60,3 +60,9 @@ func RenderThinking(frame int) string {
 func RenderWorking(frame int) string {
 	return renderShimmer(frame, "Trabajando", workingPalette)
 }
+
+// RenderCompacting distinguishes the one-off context summarization request from
+// normal model reasoning and tool execution.
+func RenderCompacting(frame int) string {
+	return renderShimmer(frame, "Compactando contexto", thinkingPalette)
+}
