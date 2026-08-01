@@ -25,6 +25,7 @@ import (
 	"github.com/lilith/li/internal/mcp"
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/providers/openai"
+	"github.com/lilith/li/internal/rewind"
 	"github.com/lilith/li/internal/session"
 	"github.com/lilith/li/internal/skills"
 	"github.com/lilith/li/internal/subagents"
@@ -153,6 +154,13 @@ type ChatModel struct {
 	store   *session.Store
 	sess    *session.Session
 	project string
+
+	// /rewind stores a cheap conversation checkpoint at each user boundary and
+	// captures the workspace lazily before the first mutating tool. The mutable
+	// turn state is behind a pointer because ChatModel is intentionally copied by
+	// the framework-neutral model API; copying a sync.Mutex would be unsafe.
+	rewindStore *rewind.Store
+	rewindTurn  *rewindTurnState
 
 	// Agent definitions are session-scoped like Claude Code: discover once at
 	// startup so repeated turns do not rescan multiple compatibility trees.
@@ -592,6 +600,8 @@ func NewChat(ctx *AppContext) ChatModel {
 		textarea:          ta,
 		mode:              ModeDefault,
 		store:             session.NewStore(ctx.ConfigDir),
+		rewindStore:       rewind.NewStore(ctx.ConfigDir),
+		rewindTurn:        &rewindTurnState{},
 		project:           project,
 		sess:              session.New(project),
 		todos:             litodo.NewManager(nil),
@@ -1192,6 +1202,8 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 	}
 	m.Clear()
 	m.sess = s
+	m.project = filepath.Clean(s.ProjectPath)
+	m.clearActiveRewindPoint()
 	m.history = s.Messages
 	m.todoExpanded = false
 	if m.todos == nil {
@@ -1457,6 +1469,7 @@ func (m *ChatModel) Clear() {
 	m.thinkingActive = nil
 	m.assistantActive = -1
 	m.reasoningBuf.Reset()
+	m.clearActiveRewindPoint()
 	m.todoExpanded = false
 	m.userScrolled = false
 	m.sess = session.New(m.project)
@@ -2781,6 +2794,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 		return m, uikit.Batch(m.runTurn(), todoMouseCmd)
 
 	case bashResultMsg:
+		m.endRewindExternalOperation()
 		m.messages = append(m.messages, ChatMessage{Kind: MsgTool, Content: v.output, Time: time.Now()})
 		m.refreshTranscript(true)
 		return m, nil
@@ -3199,6 +3213,9 @@ func (m *ChatModel) submit(val string) (uikit.Model, uikit.Cmd) {
 	trimmedVal := strings.TrimSpace(val)
 	if strings.EqualFold(trimmedVal, "/goal") || strings.HasPrefix(strings.ToLower(trimmedVal), "/goal ") {
 		args := strings.TrimSpace(trimmedVal[len("/goal"):])
+		if m.activeTurnID == 0 && goalCommandNeedsCheckpoint(args) {
+			m.beginRewindPoint(trimmedVal)
+		}
 		return m, m.runGoalCommand(args)
 	}
 
@@ -3208,6 +3225,7 @@ func (m *ChatModel) submit(val string) (uikit.Model, uikit.Cmd) {
 	// the active parent instead of opening a parallel turn.
 	if m.selectedAgentMode() == planstate.Goal && trimmedVal != "" &&
 		!strings.HasPrefix(trimmedVal, "/") && !strings.HasPrefix(trimmedVal, "!") && !strings.HasPrefix(trimmedVal, "@") {
+		m.beginRewindPoint(val)
 		m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: val, Time: time.Now()})
 		m.refreshTranscript(true)
 		return m, m.runGoalCommand(trimmedVal)
@@ -3258,6 +3276,7 @@ func (m *ChatModel) submit(val string) (uikit.Model, uikit.Cmd) {
 			m.AddError("Plan mode bloquea este comando: cambia a Build con Tab para ejecutar comandos que puedan modificar el sistema.")
 			return m, nil
 		}
+		m.beginRewindPoint("!" + cmd)
 		m.messages = append(m.messages, ChatMessage{Kind: MsgTool, Content: "$ " + cmd, Time: time.Now()})
 		m.refreshTranscript(true)
 		return m, m.runBash(cmd)
@@ -3276,6 +3295,14 @@ func (m *ChatModel) submit(val string) (uikit.Model, uikit.Cmd) {
 		}
 	}
 
+	// UserPromptSubmit hooks are external commands and may mutate files before
+	// the provider sees the turn. Establish the boundary first and capture the
+	// workspace whenever hooks are enabled, so their side effects are rewindable
+	// too. A blocked hook keeps the checkpoint because it may already have run.
+	m.beginRewindPoint(val)
+	if m.hookRunner().Count() > 0 {
+		_ = m.ensureActiveRewindWorkspace()
+	}
 	modelPrompt, hookErr := m.runUserPromptHooks(val)
 	if hookErr != nil {
 		m.AddError(hookErr.Error())
@@ -3760,13 +3787,18 @@ func toolMessage(c openai.ToolCall, content string) openai.Message {
 // runBash ejecuta el modo `!comando` directamente, sin pasar por el modelo.
 func (m *ChatModel) runBash(command string) uikit.Cmd {
 	root, _ := os.Getwd()
+	m.beginRewindExternalOperation()
 	return func() uikit.Msg {
+		warning := ""
+		if err := m.ensureActiveRewindWorkspace(); err != nil {
+			warning = "aviso: el comando continuará sin snapshot de código para /rewind: " + err.Error() + "\n"
+		}
 		out, err := tools.Execute(context.Background(), "run_terminal_command",
 			map[string]any{"command": command}, tools.Env{Root: root})
 		if err != nil {
 			out = "error: " + err.Error()
 		}
-		return bashResultMsg{output: out}
+		return bashResultMsg{output: warning + out}
 	}
 }
 
@@ -3938,6 +3970,7 @@ func (m *ChatModel) invokeAgentDefinitionWithOptions(a agents.Agent, prompt, vis
 	// delegated prompt is added once by the child runtime and does not appear
 	// twice in the inherited branch.
 	selectedMode := m.selectedAgentMode()
+	m.beginRewindPoint(visible)
 	env := m.toolEnvWithAgentEvents("", selectedMode, m.agentEventSink())
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: visible, Time: time.Now()})
 	m.appendHistory(openai.Message{Role: "user", Content: visible})
@@ -3945,6 +3978,7 @@ func (m *ChatModel) invokeAgentDefinitionWithOptions(a agents.Agent, prompt, vis
 	if background && backgroundTasksAllowed() {
 		m.persist()
 		return m, func() uikit.Msg {
+			_ = m.ensureActiveRewindWorkspace()
 			result, err := env.RunAgent(m.sessionCtx, request)
 			if err != nil {
 				return systemMsg{text: "No se pudo iniciar @" + a.Name + " en background: " + err.Error()}
@@ -3968,6 +4002,7 @@ func (m *ChatModel) invokeAgentDefinitionWithOptions(a agents.Agent, prompt, vis
 	m.persistTurnStart()
 	m.refreshTranscript(true)
 	execCmd := func() uikit.Msg {
+		_ = m.ensureActiveRewindWorkspace()
 		result, err := env.RunAgent(runCtx, request)
 		return manualAgentResultMsg{turnID: turnID, agent: a.Name, taskID: result.TaskID, text: result.Text, err: err}
 	}
@@ -4154,6 +4189,7 @@ func (m *ChatModel) invokeSkill(name, args string) uikit.Cmd {
 		_, cmd := m.invokeForkDefinitionWithBackground(clone, payload, visible, "skill "+sk.Name, background, "")
 		return cmd
 	}
+	m.beginRewindPoint(visible)
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: visible, Time: time.Now()})
 	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: "Skill cargada: " + sk.Name + " (" + sk.Source + ")", Time: time.Now()})
 	m.appendHistory(openai.Message{Role: "user", Content: payload})

@@ -206,6 +206,9 @@ func (m RootModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 		m.chat.LoadSession(v.sess)
 		m.current = m.chat
 		return m, uikit.Batch(m.mouseModeCmd(), m.chat.connectMCP(), m.chat.resumeActiveGoalCmd())
+	case forkSessionResultMsg:
+		m.current = m.chat
+		return m, uikit.Batch(m.chat.applyForkResult(v), m.mouseModeCmd())
 	}
 
 	// Chat work is long-lived and independent of the visible screen. The root

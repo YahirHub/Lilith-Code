@@ -138,6 +138,14 @@ func (m *ChatModel) toolEnvWithAgentEvents(root string, mode planstate.Mode, eve
 	}
 	env.BeforeTool = func(ctx context.Context, name string, args map[string]any) (map[string]any, error) {
 		runner := m.toolHookRunner()
+		// Capture before either the tool or any Pre/PostToolUse hook can mutate
+		// the workspace. Hooks are external commands, so even a nominally
+		// read-only tool needs a checkpoint when hooks are configured. A capture
+		// failure is recorded but does not block the user's work; /rewind still
+		// offers conversation-only restoration.
+		if m.rewindToolMayMutate(name) || runner.Count() > 0 {
+			_ = m.ensureActiveRewindWorkspace()
+		}
 		if runner.Count() == 0 {
 			return args, nil
 		}

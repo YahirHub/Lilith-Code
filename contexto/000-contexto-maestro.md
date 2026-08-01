@@ -29,6 +29,7 @@ internal/secrets/             API keys y OAuth
 internal/providers/           proveedores, conexión y catálogos
 internal/providers/openai/    chat completions, Responses/Codex, reasoning
 internal/compaction/           auto compactación y resumen iterativo del contexto
+internal/rewind/               checkpoints, restauración de código y forks de workspace
 internal/tui/                 chat y pantallas interactivas
 internal/tui/uikit/           componentes TUI propios
 internal/tools/               herramientas del agente
@@ -117,7 +118,24 @@ Lilith compacta el contexto activo antes de agotar la ventana del modelo:
 
 La compactación no elimina la experiencia visible ni los datos originales. El transcript permanece completo y cada prefijo retirado del contexto se guarda en `Session.Compactions` con resumen, tokens aproximados y mensajes archivados. `/history` cuenta también esos turnos archivados. Esc puede cancelar una compactación manual; una compactación automática pertenece al contexto cancelable del turno.
 
-## 9. OCR estructural
+## 9. Rewind y forks de sesión
+
+Lilith mantiene puntos de restauración por proyecto y sesión bajo el directorio de configuración:
+
+- al iniciar una nueva acción del usuario guarda el estado exacto de la conversación, transcript, Todo, Plan, Goal y compactaciones;
+- el snapshot de código se toma de forma perezosa justo antes de la primera herramienta, hook o subagente potencialmente mutante, evitando escanear el proyecto en turnos de sólo lectura;
+- `/rewind` abre un selector de mensajes y permite restaurar código + conversación, sólo conversación o sólo código; se bloquea mientras exista un turno, comando directo o subagente background activo;
+- al restaurar la conversación se mantiene el ID de la sesión activa, se recorta al checkpoint y el mensaje seleccionado vuelve al editor;
+- antes de efectuar el rewind se crea un punto de seguridad del estado actual, de modo que la propia restauración pueda revertirse desde `/rewind`;
+- se conservan como máximo 80 puntos por sesión. Los puntos anteriores a la introducción de esta función no pueden reconstruirse retroactivamente.
+
+En Git, el snapshot usa un índice temporal separado del índice real, crea un commit interno y lo fija bajo `refs/lilith/rewind/<sesión>/<punto>`. El staging del usuario no se altera. Al restaurar se materializa únicamente el path del proyecto activo y se eliminan dentro de ese scope los archivos tracked o untracked no ignorados que no existían en el punto. En monorepos, directorios hermanos quedan intactos. Los archivos ignorados generados quedan fuera salvo que ya estuvieran tracked.
+
+Fuera de Git, se usa un manifiesto con blobs SHA-256. Se excluyen `.git`, `.lilith`, `.cache`, `node_modules`, `.next`, `dist`, `build` y `target`; cada archivo está limitado a 32 MiB y el snapshot a 512 MiB. Un punto parcial sigue permitiendo restaurar lo capturado, pero la UI debe advertirlo.
+
+`/fork [título opcional]` captura el estado actual y crea una sesión independiente con nuevo ID y `ForkedFrom`. Se rechaza mientras haya un turno, comando directo o subagente background activo. Para Git materializa un worktree separado en el commit del snapshot; en fallback reconstruye una copia independiente desde los blobs. Lilith cambia al nuevo directorio y reconecta MCP. La sesión original, sus archivos y su historial de rewind permanecen intactos; el fork no hereda checkpoints antiguos.
+
+## 10. OCR estructural
 
 `extract_image_text` permite a modelos sin visión procesar capturas y documentos sin subir la imagen:
 
@@ -126,7 +144,7 @@ La compactación no elimina la experiencia visible ni los datos originales. El t
 - Salidas: texto, layout monoespaciado, regiones, separadores, coordenadas y JSON.
 - Mantiene `CGO_ENABLED=0` porque no enlaza una biblioteca OCR al binario.
 
-## 10. Persistencia y seguridad
+## 11. Persistencia y seguridad
 
 - Directorios y archivos sensibles usan permisos restrictivos.
 - Secretos nunca deben aparecer en logs ni documentos.
@@ -134,7 +152,7 @@ La compactación no elimina la experiencia visible ni los datos originales. El t
 - En Plan se bloquean mutaciones y shell no seguro.
 - El OCR marca el texto de imágenes como contenido no confiable.
 
-## 11. Flujo de trabajo
+## 12. Flujo de trabajo
 
 1. Leer `AGENTS.md`, este documento y el último MD de `contexto/`.
 2. Revisar `git status` y preservar cambios ajenos a la tarea.
@@ -144,7 +162,7 @@ La compactación no elimina la experiencia visible ni los datos originales. El t
 6. Documentar el cambio en un MD numerado.
 7. Commit en español con el autor Git del usuario.
 
-## 12. Validación objetivo
+## 13. Validación objetivo
 
 ```bash
 gofmt -w <archivos>
@@ -158,7 +176,7 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/li
 
 El entorno de entrega puede usar stubs locales sólo para comprobar la arquitectura cuando no tenga acceso a módulos o Go 1.24; nunca presentar esa comprobación como sustituto de una prueba final con las dependencias oficiales en Windows/Linux.
 
-## 13. Documentos recientes clave
+## 14. Documentos recientes clave
 
 - `081-fix-viewport-config-tview.md`
 - `082-compatibilidad-reasoning-inline-y-ocr-estructural.md`
@@ -167,3 +185,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `085-timeout-shell-solo-explicito.md`
 - `086-rendimiento-streaming-y-render-tview.md`
 - `087-auto-compactacion-y-comando-compact.md`
+- `088-rewind-y-fork-conversacion-codigo.md`

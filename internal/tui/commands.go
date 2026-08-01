@@ -86,6 +86,25 @@ func Commands() []SlashCommand {
 			},
 		},
 		{
+			Name:        "rewind",
+			Description: "Restaura código, conversación o ambos al punto anterior a un mensaje del usuario.",
+			Run: func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd {
+				if chat != nil && chat.rewindSessionBusy() {
+					chat.AddError("/rewind sólo puede ejecutarse cuando el agente, los comandos directos y las tareas en background están inactivos. Cancela o espera a que terminen y vuelve a intentarlo.")
+					return nil
+				}
+				return switchTo(NewRewindScreen(ctx, chat))
+			},
+		},
+		{
+			Name:        "fork",
+			Usage:       "[título opcional]",
+			Description: "Crea una conversación y copia de archivos independientes; usa un git worktree cuando es posible.",
+			Run: func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd {
+				return chat.runForkSessionCommand(args)
+			},
+		},
+		{
 			Name: "memory", Usage: "[on|off|status]",
 			Description: "Muestra instrucciones/memoria Claude-compatible y permite activar o desactivar auto memory.",
 			Run:         func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd { return chat.runMemoryCommand(args) },
@@ -101,7 +120,7 @@ func Commands() []SlashCommand {
 			Run:         func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd { return chat.runTasksCommand() },
 		},
 		{
-			Name: "subtask", Aliases: []string{"fork"}, Usage: "[--foreground] [--worktree] <tarea>",
+			Name: "subtask", Usage: "[--foreground] [--worktree] <tarea>",
 			Description: "Crea un fork Claude-compatible que hereda la conversación, modelo, instrucciones y tools activos.",
 			Run:         func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd { return chat.runForkCommand(args) },
 		},

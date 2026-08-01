@@ -21,6 +21,7 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - `internal/providers/`: configuración de proveedores, conexión, catálogos de modelos y persistencia.
 - `internal/providers/openai/`: transportes OpenAI-compatible, Codex y normalización de reasoning.
 - `internal/compaction/`: selección del corte, estimación, resumen iterativo y reconstrucción del contexto activo.
+- `internal/rewind/`: checkpoints de conversación, snapshots de workspace, restauración y forks aislados.
 - `internal/tools/`: herramientas del agente, incluidas shell, archivos, búsqueda, skills, subagentes y OCR.
 - `internal/plan/`, `internal/goal/`, `internal/todo/`: estados persistentes de Plan, Goal y tareas.
 - `contexto/`: decisiones y continuidad técnica numeradas.
@@ -71,6 +72,17 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - No dividir pares assistant tool-call / tool result. El tail empieza normalmente en un usuario; un turno individual enorme puede empezar en una frontera de assistant, nunca en un resultado `tool`. Si no cabe ninguna frontera segura, resumir el contexto activo completo y archivar los originales.
 - Si el proveedor devuelve overflow de contexto, compactar y reintentar sobre ese estado. Tras una compactación exitosa volver a evaluar una vez: la sobrecarga de system prompt/schemas puede exigir reducir de dos turnos exactos a uno. Detenerse cuando ya no exista historial anterior reducible.
 - La solicitud de resumen no expone herramientas ni continúa la tarea: debe devolver sólo un handoff estructurado. Acotar tool outputs y también el prompt total para que una cantidad patológica de mensajes pequeños no exceda la ventana.
+
+### Rewind y forks
+
+- Antes de cada nueva acción del usuario se crea un checkpoint de conversación. El workspace se captura de forma perezosa inmediatamente antes de la primera herramienta, hook o subagente que pueda mutarlo.
+- `/rewind` ofrece tres restauraciones: código + conversación, sólo conversación o sólo código. Restaurar conversación mantiene el ID de la línea temporal activa y devuelve el prompt elegido al editor. Sólo se permite cuando no hay turno, comando directo ni subagente background en ejecución.
+- Antes de una restauración destructiva se crea un punto de seguridad con conversación y archivos actuales, para poder deshacer el propio rewind.
+- En repositorios Git, los snapshots usan un índice temporal, un commit interno y `refs/lilith/rewind/...`; nunca modificar el índice/staging real del usuario. En monorepos, la restauración se limita al subdirectorio de proyecto activo y no toca workspaces hermanos.
+- Fuera de Git, usar blobs por SHA-256 y manifiestos. Los snapshots parciales deben advertirlo y nunca prometer restauración exacta de rutas excluidas o archivos omitidos.
+- `/fork [título]` crea una sesión con ID y procedencia nuevos y una copia independiente del workspace: worktree Git cuando sea posible, copia por blobs en fallback. Sólo se permite sin trabajo foreground/background activo. No compartir slices/estados mutables ni copiar el historial de rewind de la sesión origen.
+- Un fork exitoso cambia el proyecto activo a la copia; la conversación y el workspace originales permanecen intactos.
+- Los checkpoints se limitan y podan por sesión. No eliminar refs Git de un punto aún vigente ni reutilizar snapshots de otra ruta/proyecto.
 
 ### Layout del chat
 

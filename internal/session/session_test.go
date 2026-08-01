@@ -192,3 +192,37 @@ func TestTouchFallsBackToArchivedUserAfterFullCompaction(t *testing.T) {
 		t.Fatalf("archived user title not restored: %q", s.Title)
 	}
 }
+
+func TestForkCreatesIndependentSessionAndPreservesProvenance(t *testing.T) {
+	sourceProject := t.TempDir()
+	forkProject := t.TempDir()
+	source := New(sourceProject)
+	source.Title = "Implementar parser"
+	source.Messages = []openai.Message{{Role: "user", Content: "haz el cambio"}}
+	source.Transcript = []TranscriptEntry{{Kind: "user", Content: "haz el cambio"}}
+	source.Todo = &litodo.State{SchemaVersion: litodo.SchemaVersion, Revision: 1, Tasks: []litodo.Task{{Key: "one", Subject: "Primero", Status: litodo.Pending}}}
+
+	forked := Fork(source, forkProject, "Alternativa segura", "point-123")
+	if forked == nil {
+		t.Fatal("fork returned nil")
+	}
+	if forked.ID == source.ID {
+		t.Fatal("fork must have a new session ID")
+	}
+	if forked.ProjectPath != forkProject || forked.Title != "Alternativa segura" {
+		t.Fatalf("unexpected fork identity: %+v", forked)
+	}
+	if forked.ForkedFrom == nil || forked.ForkedFrom.SessionID != source.ID || forked.ForkedFrom.ProjectPath != sourceProject || forked.ForkedFrom.PointID != "point-123" {
+		t.Fatalf("fork provenance missing: %+v", forked.ForkedFrom)
+	}
+	if forked.Live != nil || forked.Revision != 0 {
+		t.Fatalf("fork must start from stable state: live=%+v revision=%d", forked.Live, forked.Revision)
+	}
+
+	forked.Messages[0].Content = "cambiado en fork"
+	forked.Transcript[0].Content = "transcript cambiado"
+	forked.Todo.Tasks[0].Subject = "Fork"
+	if source.Messages[0].Content != "haz el cambio" || source.Transcript[0].Content != "haz el cambio" || source.Todo.Tasks[0].Subject != "Primero" {
+		t.Fatalf("fork shares mutable state with source: source=%+v fork=%+v", source, forked)
+	}
+}

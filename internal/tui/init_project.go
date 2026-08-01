@@ -45,6 +45,7 @@ Create or update exactly this native project-instructions file:
 
 The resulting LILITH.md must be concise, durable context for future coding-agent sessions, preferably under 200 lines. Include only project-specific information that is useful repeatedly: purpose, architecture/layout, build/test/lint commands, coding conventions, important workflows, generated/vendor areas to avoid, and non-obvious pitfalls. Do not copy large README sections, do not include generic advice, do not invent commands, and do not create CLAUDE.md. If Claude/AGENTS instructions exist, use them as evidence but preserve Lilith-native wording. Verify the final file against the repository before finishing.`, state, filepath.ToSlash(target))
 
+	m.beginRewindPoint("/init")
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: "/init", Time: time.Now()})
 	m.appendHistory(openai.Message{Role: "user", Content: prompt})
 	m.activeTools = m.selectToolsForPrompt(prompt, planstate.Build)

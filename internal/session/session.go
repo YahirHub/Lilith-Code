@@ -157,6 +157,15 @@ type CompactionRecord struct {
 	ArchivedMessages []openai.Message `json:"archivedMessages,omitempty"`
 }
 
+// ForkOrigin records the parent conversation and workspace used to create an
+// independent /fork session.
+type ForkOrigin struct {
+	SessionID   string    `json:"sessionId"`
+	ProjectPath string    `json:"projectPath"`
+	PointID     string    `json:"pointId,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
 // Session is one persisted conversation.
 type Session struct {
 	ID          string             `json:"id"`
@@ -172,6 +181,7 @@ type Session struct {
 	Plan        *planstate.State   `json:"plan,omitempty"`
 	Goal        *ligoal.State      `json:"goal,omitempty"`
 	Live        *LiveCheckpoint    `json:"-"`
+	ForkedFrom  *ForkOrigin        `json:"forkedFrom,omitempty"`
 }
 
 // Meta is the lightweight row shown in `/history`.
@@ -235,6 +245,53 @@ func New(projectPath string) *Session {
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+}
+
+// Clone returns a detached deep copy suitable for rewind checkpoints and
+// session forks. Live sidecars are intentionally excluded because they may
+// represent an in-flight turn rather than a stable protocol state.
+func Clone(c *Session) *Session {
+	if c == nil {
+		return nil
+	}
+	data, err := json.Marshal(c)
+	if err != nil {
+		return nil
+	}
+	var out Session
+	if json.Unmarshal(data, &out) != nil {
+		return nil
+	}
+	out.Live = nil
+	return &out
+}
+
+// Fork creates an independent session with the same conversation state but a
+// new ID/project path. Rewind history is deliberately not copied because it is
+// stored outside Session and belongs to the source timeline.
+func Fork(c *Session, projectPath, title, pointID string) *Session {
+	out := Clone(c)
+	if out == nil {
+		out = New(projectPath)
+	}
+	now := time.Now()
+	sourceID := out.ID
+	sourceProject := out.ProjectPath
+	out.ID = now.Format("20060102-150405") + "-" + randomSuffix()
+	out.ProjectPath = filepath.Clean(projectPath)
+	out.CreatedAt = now
+	out.UpdatedAt = now
+	out.Revision = 0
+	out.Live = nil
+	if strings.TrimSpace(title) != "" {
+		out.Title = strings.TrimSpace(title)
+	} else if strings.TrimSpace(out.Title) == "" || out.Title == "Sin título" {
+		out.Title = "Fork de " + sourceID
+	} else {
+		out.Title = out.Title + " (fork)"
+	}
+	out.ForkedFrom = &ForkOrigin{SessionID: sourceID, ProjectPath: sourceProject, PointID: pointID, CreatedAt: now}
+	return out
 }
 
 func randomSuffix() string {
