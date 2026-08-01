@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -27,17 +29,21 @@ const (
 	rewindWorking
 )
 
+const rewindOperationTimeout = 10 * time.Minute
+
 // RewindModel mirrors Claude Code's two-step selector: choose a previous user
 // boundary, then choose whether to restore code, conversation, or both.
 type RewindModel struct {
-	ctx      *AppContext
-	chat     *ChatModel
-	points   []rewind.Meta
-	cursor   int
-	stage    rewindStage
-	selected rewind.Meta
-	option   int
-	err      string
+	ctx             *AppContext
+	chat            *ChatModel
+	points          []rewind.Meta
+	cursor          int
+	stage           rewindStage
+	selected        rewind.Meta
+	option          int
+	err             string
+	operationID     uint64
+	operationCancel context.CancelFunc
 }
 
 func NewRewindScreen(ctx *AppContext, chat *ChatModel) *RewindModel {
@@ -66,9 +72,25 @@ func (m *RewindModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 		m.ctx.Width, m.ctx.Height = v.Width, v.Height
 		return m, nil
 	case rewindOperationResultMsg:
+		if v.operationID != m.operationID {
+			// The user canceled this operation or started another one. Its worker
+			// may still be unwinding, but it must never apply a stale rewind.
+			return m, nil
+		}
+		if m.operationCancel != nil {
+			m.operationCancel()
+			m.operationCancel = nil
+		}
 		m.stage = rewindConfirm
 		if v.err != nil {
-			m.err = v.err.Error()
+			switch {
+			case errors.Is(v.err, context.DeadlineExceeded):
+				m.err = "La restauración excedió 10 minutos y fue cancelada. Si incluía código, revisa el workspace antes de intentarlo de nuevo."
+			case errors.Is(v.err, context.Canceled):
+				m.err = "Restauración cancelada. Si incluía código, revisa el workspace: una operación de archivos ya iniciada puede haber quedado parcial."
+			default:
+				m.err = v.err.Error()
+			}
 			return m, nil
 		}
 		m.chat.applyRewindPoint(v.point, v.mode)
@@ -137,6 +159,20 @@ func (m *RewindModel) updateKey(key uikit.KeyMsg) (uikit.Model, uikit.Cmd) {
 			}
 			return m, m.startRestore(mode)
 		}
+	case rewindWorking:
+		switch key.String() {
+		case "esc", "q":
+			if m.operationCancel != nil {
+				m.operationCancel()
+				m.operationCancel = nil
+			}
+			// Invalidate the worker result before returning control to confirmation.
+			// Even if an OS operation takes a moment to unwind, it can no longer
+			// apply code/conversation after the user canceled.
+			m.operationID++
+			m.stage = rewindConfirm
+			m.err = "Restauración cancelada. Si incluía código, revisa el workspace antes de volver a intentarlo."
+		}
 	}
 	return m, nil
 }
@@ -146,6 +182,13 @@ func (m *RewindModel) startRestore(mode rewindRestoreMode) uikit.Cmd {
 		m.err = "El historial de rewind no está disponible."
 		return nil
 	}
+	if m.operationCancel != nil {
+		m.operationCancel()
+	}
+	m.operationID++
+	operationID := m.operationID
+	opCtx, cancel := context.WithTimeout(context.Background(), rewindOperationTimeout)
+	m.operationCancel = cancel
 	m.stage = rewindWorking
 	m.err = ""
 	store := m.chat.rewindStore
@@ -155,31 +198,53 @@ func (m *RewindModel) startRestore(mode rewindRestoreMode) uikit.Cmd {
 	// Capture the current state on the TUI goroutine. The async command may then
 	// create a safety checkpoint without reading mutable ChatModel fields.
 	safetyConversation := m.chat.snapshotSessionForRewind()
-	return func() uikit.Msg {
-		// A safety point makes an accidental rewind reversible by simply opening
-		// /rewind again and selecting "Estado antes de rewind".
+	return func() (msg uikit.Msg) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				msg = rewindOperationResultMsg{operationID: operationID, err: fmt.Errorf("panic durante rewind: %v", recovered)}
+			}
+		}()
+		defer cancel()
+		if err := opCtx.Err(); err != nil {
+			return rewindOperationResultMsg{operationID: operationID, err: err}
+		}
+
+		// A safety point makes an accidental rewind reversible. Conversation-only
+		// rewind does not modify files, so capturing the entire workspace here was
+		// unnecessary and could leave the UI waiting on a large Git repository.
+		// Code/both modes still preserve the current files before restoring them.
 		if safetyConversation != nil {
-			if safety, err := store.CreateSafety(project, sessionID, "Estado antes de rewind", safetyConversation); err == nil {
-				_, _ = store.CaptureWorkspace(project, sessionID, safety.ID)
+			safety, safetyErr := store.CreateSafetyContext(opCtx, project, sessionID, "Estado antes de rewind", safetyConversation)
+			if safetyErr != nil {
+				return rewindOperationResultMsg{operationID: operationID, err: fmt.Errorf("crear punto de seguridad: %w", safetyErr)}
+			}
+			if mode == rewindBoth || mode == rewindCode {
+				if _, captureErr := store.CaptureWorkspaceContext(opCtx, project, sessionID, safety.ID); captureErr != nil {
+					return rewindOperationResultMsg{operationID: operationID, err: fmt.Errorf("crear punto de seguridad de código: %w", captureErr)}
+				}
 			}
 		}
 		point, err := store.Load(project, sessionID, pointID)
 		if err != nil {
-			return rewindOperationResultMsg{err: err}
+			return rewindOperationResultMsg{operationID: operationID, err: err}
 		}
 		if mode == rewindBoth || mode == rewindCode {
-			if err := store.RestoreWorkspace(point); err != nil {
-				return rewindOperationResultMsg{err: err}
+			if err := store.RestoreWorkspaceContext(opCtx, point); err != nil {
+				return rewindOperationResultMsg{operationID: operationID, err: err}
 			}
 		}
-		return rewindOperationResultMsg{point: point, mode: mode}
+		if err := opCtx.Err(); err != nil {
+			return rewindOperationResultMsg{operationID: operationID, err: err}
+		}
+		return rewindOperationResultMsg{operationID: operationID, point: point, mode: mode}
 	}
 }
 
 type rewindOperationResultMsg struct {
-	point *rewind.Point
-	mode  rewindRestoreMode
-	err   error
+	operationID uint64
+	point       *rewind.Point
+	mode        rewindRestoreMode
+	err         error
 }
 
 func (m *RewindModel) View() string {
@@ -272,7 +337,7 @@ func (m *RewindModel) confirmView() string {
 		b.WriteString("\n\n")
 	}
 	if m.stage == rewindWorking {
-		b.WriteString(s.Muted.Render("Restaurando…"))
+		b.WriteString(s.Muted.Render("Restaurando… · Esc cancelar"))
 	} else {
 		b.WriteString(s.Muted.Render("↑↓ elegir · Enter confirmar · Esc volver"))
 	}

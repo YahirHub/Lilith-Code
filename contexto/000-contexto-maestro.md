@@ -89,7 +89,7 @@ Los modelos nuevos de proveedores custom se guardan en `providers.json`. Los de 
 - **Build:** implementación normal y herramientas mutantes.
 - **Plan:** sólo lectura; puede investigar, preguntar decisiones y entregar un plan. El cambio Plan → Build puede consumir una vez el plan aprobado.
 - **Goal:** el texto introducido se convierte en objetivo persistente, igual que `/goal <objetivo>`, y arranca o reorienta una ejecución autónoma.
-  Goal no aplica límites artificiales de tokens, pasos, turnos o tiempo. Los contadores de tokens/tiempo son sólo diagnósticos; los estados antiguos por presupuesto/cuota se reactivan al cargar.
+  Goal no aplica límites artificiales de tokens, pasos, turnos o tiempo. Los contadores de tokens/tiempo son sólo diagnósticos; los estados antiguos por presupuesto/cuota se reactivan al cargar. Mientras existe un goal activo, pausado o bloqueado, `create_goal` deja de exponerse al modelo: debe continuar o reanudarlo con `get_goal`/`update_goal`. Repetir exactamente el mismo objetivo activo es idempotente y no reinicia tiempos ni contadores.
 
 Los estados se persisten en la sesión. Goal comparte las capacidades de implementación de Build; Plan conserva su política restrictiva.
 
@@ -129,7 +129,8 @@ Lilith mantiene puntos de restauración por proyecto y sesión bajo el directori
 - el snapshot de código se toma de forma perezosa justo antes de la primera herramienta, hook o subagente potencialmente mutante, evitando escanear el proyecto en turnos de sólo lectura;
 - `/rewind` abre un selector de mensajes y permite restaurar código + conversación, sólo conversación o sólo código; se bloquea mientras exista un turno, comando directo o subagente background activo;
 - al restaurar la conversación se mantiene el ID de la sesión activa, se recorta al checkpoint y el mensaje seleccionado vuelve al editor;
-- antes de efectuar el rewind se crea un punto de seguridad del estado actual, de modo que la propia restauración pueda revertirse desde `/rewind`;
+- antes de efectuar el rewind se crea un punto de seguridad del estado actual, de modo que la propia restauración pueda revertirse desde `/rewind`; en modo sólo conversación ese punto no captura el workspace porque ningún archivo va a cambiar;
+- las operaciones de código de `/rewind` son cancelables con `Esc`/`Q`, tienen timeout y descartan resultados tardíos. Los procesos Git se ejecutan sin prompts interactivos ocultos; una cancelación durante una restauración de archivos puede dejar una aplicación parcial y la UI debe advertir que se revise el workspace;
 - se conservan como máximo 80 puntos por sesión. Los puntos anteriores a la introducción de esta función no pueden reconstruirse retroactivamente.
 
 En Git, el snapshot usa un índice temporal separado del índice real, crea un commit interno y lo fija bajo `refs/lilith/rewind/<sesión>/<punto>`. El staging del usuario no se altera. Al restaurar se materializa únicamente el path del proyecto activo y se eliminan dentro de ese scope los archivos tracked o untracked no ignorados que no existían en el punto. En monorepos, directorios hermanos quedan intactos. Los archivos ignorados generados quedan fuera salvo que ya estuvieran tracked.
@@ -195,3 +196,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `089-goal-sin-limites-y-rutas-placeholder.md`
 - `090-tests-windows-mcp-y-rewind-eol.md`
 - `091-selector-interactivo-destino-fork.md`
+- `092-corregir-loop-goal-y-rewind-bloqueado.md`

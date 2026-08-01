@@ -1,6 +1,7 @@
 package rewind
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -29,6 +30,10 @@ var fallbackExcludedDirs = map[string]bool{
 }
 
 func captureFileWorkspace(projectPath, blobDir string) (WorkspaceSnapshot, error) {
+	return captureFileWorkspaceContext(context.Background(), projectPath, blobDir)
+}
+
+func captureFileWorkspaceContext(ctx context.Context, projectPath, blobDir string) (WorkspaceSnapshot, error) {
 	root, err := filepath.Abs(projectPath)
 	if err != nil {
 		return WorkspaceSnapshot{}, err
@@ -46,6 +51,9 @@ func captureFileWorkspace(projectPath, blobDir string) (WorkspaceSnapshot, error
 	snapshot := WorkspaceSnapshot{Kind: workspaceFiles, Root: root, WorkingRel: "."}
 	var total int64
 	err = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			rel, _ := filepath.Rel(root, path)
 			snapshot.Skipped = append(snapshot.Skipped, SkippedEntry{Path: filepath.ToSlash(rel), Reason: walkErr.Error()})
@@ -94,8 +102,11 @@ func captureFileWorkspace(projectPath, blobDir string) (WorkspaceSnapshot, error
 			snapshot.Skipped = append(snapshot.Skipped, SkippedEntry{Path: relSlash, Reason: fmt.Sprintf("snapshot excede %d MiB", fallbackMaxTotalBytes>>20)})
 			return nil
 		}
-		hash, err := storeBlob(path, blobDir)
+		hash, err := storeBlobContext(ctx, path, blobDir)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			snapshot.Skipped = append(snapshot.Skipped, SkippedEntry{Path: relSlash, Reason: err.Error()})
 			return nil
 		}
@@ -111,13 +122,17 @@ func captureFileWorkspace(projectPath, blobDir string) (WorkspaceSnapshot, error
 }
 
 func storeBlob(path, blobDir string) (string, error) {
+	return storeBlobContext(context.Background(), path, blobDir)
+}
+
+func storeBlobContext(ctx context.Context, path, blobDir string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	if _, err := io.Copy(h, contextReader{ctx: ctx, reader: f}); err != nil {
 		return "", err
 	}
 	sum := hex.EncodeToString(h.Sum(nil))
@@ -130,13 +145,17 @@ func storeBlob(path, blobDir string) (string, error) {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return "", err
 	}
-	if err := copyTo(dst, f); err != nil {
+	if err := copyTo(dst, contextReader{ctx: ctx, reader: f}); err != nil {
 		return "", err
 	}
 	return sum, nil
 }
 
 func restoreFileWorkspace(snapshot WorkspaceSnapshot, blobDir, destinationRoot string) error {
+	return restoreFileWorkspaceContext(context.Background(), snapshot, blobDir, destinationRoot)
+}
+
+func restoreFileWorkspaceContext(ctx context.Context, snapshot WorkspaceSnapshot, blobDir, destinationRoot string) error {
 	root, err := filepath.Abs(destinationRoot)
 	if err != nil {
 		return err
@@ -148,11 +167,14 @@ func restoreFileWorkspace(snapshot WorkspaceSnapshot, blobDir, destinationRoot s
 	for _, entry := range snapshot.Files {
 		target[filepath.ToSlash(entry.Path)] = entry
 	}
-	current, err := fallbackCurrentFiles(root)
+	current, err := fallbackCurrentFilesContext(ctx, root)
 	if err != nil {
 		return err
 	}
 	for _, rel := range current {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if _, ok := target[rel]; ok {
 			continue
 		}
@@ -165,6 +187,9 @@ func restoreFileWorkspace(snapshot WorkspaceSnapshot, blobDir, destinationRoot s
 		}
 	}
 	for _, entry := range snapshot.Files {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		path, err := safeJoin(root, entry.Path)
 		if err != nil {
 			return err
@@ -196,7 +221,7 @@ func restoreFileWorkspace(snapshot WorkspaceSnapshot, blobDir, destinationRoot s
 			_ = f.Close()
 			return err
 		}
-		_, copyErr := io.Copy(out, f)
+		_, copyErr := io.Copy(out, contextReader{ctx: ctx, reader: f})
 		closeOutErr := out.Close()
 		closeInErr := f.Close()
 		if copyErr != nil {
@@ -214,8 +239,15 @@ func restoreFileWorkspace(snapshot WorkspaceSnapshot, blobDir, destinationRoot s
 }
 
 func fallbackCurrentFiles(root string) ([]string, error) {
+	return fallbackCurrentFilesContext(context.Background(), root)
+}
+
+func fallbackCurrentFilesContext(ctx context.Context, root string) ([]string, error) {
 	var out []string
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -236,6 +268,20 @@ func fallbackCurrentFiles(root string) ([]string, error) {
 		return nil
 	})
 	return out, err
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if r.ctx != nil {
+		if err := r.ctx.Err(); err != nil {
+			return 0, err
+		}
+	}
+	return r.reader.Read(p)
 }
 
 func formatSkipped(snapshot WorkspaceSnapshot) string {

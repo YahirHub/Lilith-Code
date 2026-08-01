@@ -2,6 +2,7 @@ package rewind
 
 import (
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -35,6 +36,26 @@ type Store struct {
 
 func NewStore(configDir string) *Store {
 	return &Store{root: filepath.Join(configDir, "rewind")}
+}
+
+func lockMutexContext(ctx context.Context, mu *sync.Mutex) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		if mu.TryLock() {
+			return nil
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func projectSlug(projectPath string) string {
@@ -115,16 +136,28 @@ func (s *Store) gitIndexDir(projectPath string) string {
 // Create records a conversation checkpoint. Workspace capture is intentionally
 // lazy and may be attached later by CaptureWorkspace.
 func (s *Store) Create(projectPath, sessionID, prompt string, conversation *session.Session) (Meta, error) {
-	return s.create(projectPath, sessionID, prompt, "turn", conversation)
+	return s.createContext(context.Background(), projectPath, sessionID, prompt, "turn", conversation)
 }
 
 // CreateSafety records an internal recovery point. Safety points are visible in
 // /rewind but do not repopulate the input editor when restored.
 func (s *Store) CreateSafety(projectPath, sessionID, label string, conversation *session.Session) (Meta, error) {
-	return s.create(projectPath, sessionID, label, "safety", conversation)
+	return s.CreateSafetyContext(context.Background(), projectPath, sessionID, label, conversation)
 }
 
-func (s *Store) create(projectPath, sessionID, prompt, kind string, conversation *session.Session) (Meta, error) {
+// CreateSafetyContext creates a cancelable safety point. This matters when a
+// previous workspace capture is still releasing the store lock after Escape.
+func (s *Store) CreateSafetyContext(ctx context.Context, projectPath, sessionID, label string, conversation *session.Session) (Meta, error) {
+	return s.createContext(ctx, projectPath, sessionID, label, "safety", conversation)
+}
+
+func (s *Store) createContext(ctx context.Context, projectPath, sessionID, prompt, kind string, conversation *session.Session) (Meta, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Meta{}, err
+	}
 	if conversation == nil {
 		return Meta{}, errors.New("checkpoint conversation is nil")
 	}
@@ -139,8 +172,13 @@ func (s *Store) create(projectPath, sessionID, prompt, kind string, conversation
 	}
 	point := &Point{Meta: meta, Conversation: conversation}
 
-	s.mu.Lock()
+	if err := lockMutexContext(ctx, &s.mu); err != nil {
+		return Meta{}, err
+	}
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Meta{}, err
+	}
 	if err := s.writePointLocked(point); err != nil {
 		return Meta{}, err
 	}
@@ -327,8 +365,26 @@ func (s *Store) pruneLocked(projectPath, sessionID string, max int) error {
 // CaptureWorkspace attaches a code snapshot to an existing point. It is safe
 // to call repeatedly; once a snapshot exists it is returned unchanged.
 func (s *Store) CaptureWorkspace(projectPath, sessionID, pointID string) (Meta, error) {
-	s.mu.Lock()
+	return s.CaptureWorkspaceContext(context.Background(), projectPath, sessionID, pointID)
+}
+
+// CaptureWorkspaceContext is the cancelable form used by interactive rewind.
+// A canceled Git/filter process must release the store lock instead of leaving
+// the Rewind screen stuck forever in "Restaurando…".
+func (s *Store) CaptureWorkspaceContext(ctx context.Context, projectPath, sessionID, pointID string) (Meta, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Meta{}, err
+	}
+	if err := lockMutexContext(ctx, &s.mu); err != nil {
+		return Meta{}, err
+	}
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Meta{}, err
+	}
 	point, err := s.loadUnlocked(projectPath, sessionID, pointID)
 	if err != nil {
 		return Meta{}, err
@@ -337,7 +393,7 @@ func (s *Store) CaptureWorkspace(projectPath, sessionID, pointID string) (Meta, 
 		return point.Meta, nil
 	}
 
-	workspace, captureErr := s.captureWorkspaceLocked(projectPath, sessionID, pointID)
+	workspace, captureErr := s.captureWorkspaceLocked(ctx, projectPath, sessionID, pointID)
 	if captureErr != nil {
 		point.Meta.CodeError = captureErr.Error()
 		if writeErr := s.writePointLocked(point); writeErr != nil {
@@ -354,9 +410,12 @@ func (s *Store) CaptureWorkspace(projectPath, sessionID, pointID string) (Meta, 
 		point.Meta.TotalBytes += entry.Size
 	}
 	if workspace.Kind == workspaceGit {
-		if count, countErr := gitFileCount(workspace.Root, workspace.GitCommit, workspace.WorkingRel); countErr == nil {
+		if count, countErr := gitFileCountContext(ctx, workspace.Root, workspace.GitCommit, workspace.WorkingRel); countErr == nil {
 			point.Meta.FileCount = count
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return point.Meta, err
 	}
 	if err := s.writePointLocked(point); err != nil {
 		return point.Meta, err
@@ -364,24 +423,38 @@ func (s *Store) CaptureWorkspace(projectPath, sessionID, pointID string) (Meta, 
 	return point.Meta, nil
 }
 
-func (s *Store) captureWorkspaceLocked(projectPath, sessionID, pointID string) (WorkspaceSnapshot, error) {
-	if snapshot, err := captureGitWorkspace(projectPath, s.gitIndexDir(projectPath), sessionID, pointID); err == nil {
+func (s *Store) captureWorkspaceLocked(ctx context.Context, projectPath, sessionID, pointID string) (WorkspaceSnapshot, error) {
+	if snapshot, err := captureGitWorkspaceContext(ctx, projectPath, s.gitIndexDir(projectPath), sessionID, pointID); err == nil {
 		return snapshot, nil
+	} else if ctx.Err() != nil {
+		return WorkspaceSnapshot{}, ctx.Err()
 	}
-	return captureFileWorkspace(projectPath, s.blobDir(projectPath))
+	return captureFileWorkspaceContext(ctx, projectPath, s.blobDir(projectPath))
 }
 
 // RestoreWorkspace restores only code/files. Conversation restoration is
 // handled by the TUI after this operation succeeds.
 func (s *Store) RestoreWorkspace(point *Point) error {
+	return s.RestoreWorkspaceContext(context.Background(), point)
+}
+
+// RestoreWorkspaceContext is cancelable so interactive rewind can be aborted
+// with Escape and can terminate a Git filter/process that stops responding.
+func (s *Store) RestoreWorkspaceContext(ctx context.Context, point *Point) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if point == nil || !point.Meta.HasCode {
 		return errors.New("el checkpoint no contiene un snapshot de código")
 	}
 	switch point.Workspace.Kind {
 	case workspaceGit:
-		return restoreGitWorkspace(point.Workspace)
+		return restoreGitWorkspaceContext(ctx, point.Workspace)
 	case workspaceFiles:
-		return restoreFileWorkspace(point.Workspace, s.blobDir(point.Meta.ProjectPath), point.Meta.ProjectPath)
+		return restoreFileWorkspaceContext(ctx, point.Workspace, s.blobDir(point.Meta.ProjectPath), point.Meta.ProjectPath)
 	default:
 		return errors.New("tipo de snapshot de código no soportado")
 	}

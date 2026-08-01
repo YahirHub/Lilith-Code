@@ -7,11 +7,11 @@ import (
 	"sort"
 	"strings"
 
-	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
-
+	ligoal "github.com/lilith/li/internal/goal"
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/subagents"
 	"github.com/lilith/li/internal/tools"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 )
 
 func (m *ChatModel) selectedAgentMode() planstate.Mode {
@@ -273,10 +273,21 @@ func (m *ChatModel) selectToolsForPrompt(text string, mode planstate.Mode) []str
 	if !tools.IsDirectChat(text) && m.skillsEnabled() {
 		selected = tools.WithSkillTools(selected, len(m.loadSkills()) > 0)
 	}
-	if !tools.IsDirectChat(text) && m.goals != nil && m.goals.Snapshot() != nil {
-		for _, name := range []string{"create_goal", "get_goal", "update_goal"} {
-			if _, ok := tools.Get(name); ok {
-				selected = appendUniqueTool(selected, name)
+	if !tools.IsDirectChat(text) && m.goals != nil {
+		if state := m.goals.Snapshot(); state != nil {
+			for _, name := range []string{"get_goal", "update_goal"} {
+				if _, ok := tools.Get(name); ok {
+					selected = appendUniqueTool(selected, name)
+				}
+			}
+			// Recreating an already-active objective was the source of a provider
+			// loop where create_goal appeared on every continuation. Only expose it
+			// again after the previous goal is complete; /goal remains the explicit
+			// user-controlled way to replace an active objective.
+			if state.Status == ligoal.Complete {
+				if _, ok := tools.Get("create_goal"); ok {
+					selected = appendUniqueTool(selected, "create_goal")
+				}
 			}
 		}
 	}

@@ -71,8 +71,16 @@ func (m *Manager) Set(objective string) (*State, error) {
 		return nil, errors.New("goal objective is empty")
 	}
 	now := time.Now()
-	s := &State{Objective: objective, Status: Active, CreatedAt: now.Unix(), UpdatedAt: now.Unix()}
 	m.mu.Lock()
+	if m.state != nil && m.state.Status == Active && m.state.Objective == objective {
+		// A provider may retry a tool call after a transport hiccup. Treat the
+		// exact same active goal as idempotent so usage/timing are not reset and a
+		// duplicate create_goal cannot manufacture apparent progress.
+		c := *m.state
+		m.mu.Unlock()
+		return &c, nil
+	}
+	s := &State{Objective: objective, Status: Active, CreatedAt: now.Unix(), UpdatedAt: now.Unix()}
 	m.state = s
 	m.activeSince = now
 	m.mu.Unlock()

@@ -1,7 +1,9 @@
 package rewind
 
 import (
+	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lilith/li/internal/providers/openai"
 	"github.com/lilith/li/internal/session"
@@ -325,6 +328,56 @@ func TestPrepareForkDestinationRejectsNonEmptyAndNestedDirectories(t *testing.T)
 	writeTestFile(t, filepath.Join(nonEmpty, "keep.txt"), "keep\n")
 	if _, _, err := prepareForkDestination(workspace, nonEmpty); err == nil || !strings.Contains(err.Error(), "debe estar vacía") {
 		t.Fatalf("non-empty destination was not rejected safely: %v", err)
+	}
+}
+
+func TestCaptureWorkspaceTimeoutWhileStoreIsBusy(t *testing.T) {
+	project := t.TempDir()
+	store := NewStore(t.TempDir())
+	conversation := session.New(project)
+	meta, err := store.Create(project, conversation.ID, "checkpoint", conversation)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store.mu.Lock()
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	start := time.Now()
+	_, err = store.CaptureWorkspaceContext(ctx, project, conversation.ID, meta.ID)
+	elapsed := time.Since(start)
+	cancel()
+	store.mu.Unlock()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("busy store returned %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("busy store ignored context for %s", elapsed)
+	}
+}
+
+func TestCanceledWorkspaceOperationsReturnPromptly(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "state.txt"), []byte("state\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(t.TempDir())
+	conversation := session.New(project)
+	meta, err := store.Create(project, conversation.ID, "checkpoint", conversation)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := store.CaptureWorkspaceContext(ctx, project, conversation.ID, meta.ID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled capture returned %v, want context.Canceled", err)
+	}
+	point, err := store.Load(project, conversation.ID, meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RestoreWorkspaceContext(ctx, point); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled restore returned %v, want context.Canceled", err)
 	}
 }
 

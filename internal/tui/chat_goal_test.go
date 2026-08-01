@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	ligoal "github.com/lilith/li/internal/goal"
@@ -126,5 +127,23 @@ func TestDeprecatedGoalBudgetIsIgnored(t *testing.T) {
 	}
 	if !deprecated || objective != "terminar la migración" {
 		t.Fatalf("objective=%q deprecated=%v", objective, deprecated)
+	}
+}
+
+func TestActiveGoalRemovesCreateGoalFromCachedToolSurface(t *testing.T) {
+	m := newInputTestChat(t)
+	if _, err := m.goals.Set("crear el recolector"); err != nil {
+		t.Fatal(err)
+	}
+	m.buildToolCache = []string{"create_goal", "get_goal", "update_goal"}
+	got := m.selectToolsForPrompt("implementa y prueba el recolector", planstate.Build)
+	for _, name := range got {
+		if name == "create_goal" {
+			t.Fatalf("create_goal remained visible after activation: %v", got)
+		}
+	}
+	joined := strings.Join(got, ",")
+	if !strings.Contains(joined, "get_goal") || !strings.Contains(joined, "update_goal") {
+		t.Fatalf("goal status controls missing: %v", got)
 	}
 }

@@ -43,12 +43,12 @@ func ResolveWorkspaceRoot(projectPath string) string {
 	return repoAbs
 }
 
-func captureGitWorkspace(projectPath, tempDir, sessionID, pointID string) (WorkspaceSnapshot, error) {
+func captureGitWorkspaceContext(ctx context.Context, projectPath, tempDir, sessionID, pointID string) (WorkspaceSnapshot, error) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		return WorkspaceSnapshot{}, err
 	}
-	repoRoot, err := gitOutput(projectPath, nil, gitPath, "rev-parse", "--show-toplevel")
+	repoRoot, err := gitOutputContext(ctx, projectPath, nil, gitPath, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return WorkspaceSnapshot{}, err
 	}
@@ -80,26 +80,26 @@ func captureGitWorkspace(projectPath, tempDir, sessionID, pointID string) (Works
 	_ = os.Remove(indexPath)
 	defer os.Remove(indexPath)
 	env := []string{"GIT_INDEX_FILE=" + indexPath}
-	if err := seedTemporaryIndex(repoRoot, indexPath, gitPath, env); err != nil {
+	if err := seedTemporaryIndexContext(ctx, repoRoot, indexPath, gitPath, env); err != nil {
 		return WorkspaceSnapshot{}, fmt.Errorf("prepare rewind index: %w", err)
 	}
 	scope := filepath.ToSlash(filepath.Clean(workingRel))
 	if scope == "" {
 		scope = "."
 	}
-	if _, err := gitOutput(repoRoot, env, gitPath, gitExactContentArgs("add", "-A", "--", scope)...); err != nil {
+	if _, err := gitOutputContext(ctx, repoRoot, env, gitPath, gitExactContentArgs("add", "-A", "--", scope)...); err != nil {
 		return WorkspaceSnapshot{}, fmt.Errorf("snapshot working tree: %w", err)
 	}
-	tree, err := gitOutput(repoRoot, env, gitPath, "write-tree")
+	tree, err := gitOutputContext(ctx, repoRoot, env, gitPath, "write-tree")
 	if err != nil {
 		return WorkspaceSnapshot{}, fmt.Errorf("write rewind tree: %w", err)
 	}
 	tree = strings.TrimSpace(tree)
 	commitArgs := []string{"commit-tree", tree}
-	if head, headErr := gitOutput(repoRoot, nil, gitPath, "rev-parse", "--verify", "HEAD"); headErr == nil && strings.TrimSpace(head) != "" {
+	if head, headErr := gitOutputContext(ctx, repoRoot, nil, gitPath, "rev-parse", "--verify", "HEAD"); headErr == nil && strings.TrimSpace(head) != "" {
 		commitArgs = append(commitArgs, "-p", strings.TrimSpace(head))
 	}
-	commit, err := gitOutputWithInput(repoRoot, append(env,
+	commit, err := gitOutputWithInputContext(ctx, repoRoot, append(env,
 		"GIT_AUTHOR_NAME=Lilith Rewind",
 		"GIT_AUTHOR_EMAIL=rewind@localhost",
 		"GIT_COMMITTER_NAME=Lilith Rewind",
@@ -110,7 +110,7 @@ func captureGitWorkspace(projectPath, tempDir, sessionID, pointID string) (Works
 	}
 	commit = strings.TrimSpace(commit)
 	ref := "refs/lilith/rewind/" + cleanGitRefPart(sessionID) + "/" + cleanGitRefPart(pointID)
-	if _, err := gitOutput(repoRoot, nil, gitPath, "update-ref", ref, commit); err != nil {
+	if _, err := gitOutputContext(ctx, repoRoot, nil, gitPath, "update-ref", ref, commit); err != nil {
 		return WorkspaceSnapshot{}, fmt.Errorf("pin rewind commit: %w", err)
 	}
 	return WorkspaceSnapshot{
@@ -122,8 +122,8 @@ func captureGitWorkspace(projectPath, tempDir, sessionID, pointID string) (Works
 	}, nil
 }
 
-func seedTemporaryIndex(repoRoot, indexPath, gitPath string, env []string) error {
-	indexLocation, err := gitOutput(repoRoot, nil, gitPath, "rev-parse", "--git-path", "index")
+func seedTemporaryIndexContext(ctx context.Context, repoRoot, indexPath, gitPath string, env []string) error {
+	indexLocation, err := gitOutputContext(ctx, repoRoot, nil, gitPath, "rev-parse", "--git-path", "index")
 	if err == nil {
 		indexLocation = strings.TrimSpace(indexLocation)
 		if indexLocation != "" && !filepath.IsAbs(indexLocation) {
@@ -136,11 +136,11 @@ func seedTemporaryIndex(repoRoot, indexPath, gitPath string, env []string) error
 			}
 		}
 	}
-	if _, headErr := gitOutput(repoRoot, nil, gitPath, "rev-parse", "--verify", "HEAD"); headErr == nil {
-		_, err = gitOutput(repoRoot, env, gitPath, "read-tree", "HEAD")
+	if _, headErr := gitOutputContext(ctx, repoRoot, nil, gitPath, "rev-parse", "--verify", "HEAD"); headErr == nil {
+		_, err = gitOutputContext(ctx, repoRoot, env, gitPath, "read-tree", "HEAD")
 		return err
 	}
-	_, err = gitOutput(repoRoot, env, gitPath, "read-tree", "--empty")
+	_, err = gitOutputContext(ctx, repoRoot, env, gitPath, "read-tree", "--empty")
 	return err
 }
 
@@ -166,7 +166,7 @@ func deleteGitRef(repoRoot, ref string) error {
 	return err
 }
 
-func gitFileCount(repoRoot, commit, workingRel string) (int, error) {
+func gitFileCountContext(ctx context.Context, repoRoot, commit, workingRel string) (int, error) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		return 0, err
@@ -175,7 +175,7 @@ func gitFileCount(repoRoot, commit, workingRel string) (int, error) {
 	if scope := filepath.ToSlash(filepath.Clean(workingRel)); scope != "." && scope != "" {
 		args = append(args, "--", scope)
 	}
-	out, err := gitOutputBytes(repoRoot, nil, nil, gitPath, args...)
+	out, err := gitOutputBytesContext(ctx, repoRoot, nil, nil, gitPath, args...)
 	if err != nil {
 		return 0, err
 	}
@@ -185,7 +185,7 @@ func gitFileCount(repoRoot, commit, workingRel string) (int, error) {
 	return bytes.Count(out, []byte{0}), nil
 }
 
-func restoreGitWorkspace(snapshot WorkspaceSnapshot) error {
+func restoreGitWorkspaceContext(ctx context.Context, snapshot WorkspaceSnapshot) error {
 	if snapshot.GitCommit == "" || snapshot.Root == "" {
 		return errors.New("invalid git rewind snapshot")
 	}
@@ -193,7 +193,7 @@ func restoreGitWorkspace(snapshot WorkspaceSnapshot) error {
 	if err != nil {
 		return err
 	}
-	if _, err := gitOutput(snapshot.Root, nil, gitPath, "cat-file", "-e", snapshot.GitCommit+"^{commit}"); err != nil {
+	if _, err := gitOutputContext(ctx, snapshot.Root, nil, gitPath, "cat-file", "-e", snapshot.GitCommit+"^{commit}"); err != nil {
 		return fmt.Errorf("rewind commit is unavailable: %w", err)
 	}
 	tempDir, err := os.MkdirTemp("", "lilith-rewind-index-*")
@@ -210,7 +210,7 @@ func restoreGitWorkspace(snapshot WorkspaceSnapshot) error {
 	_ = os.Remove(indexPath)
 	defer os.Remove(indexPath)
 	env := []string{"GIT_INDEX_FILE=" + indexPath}
-	if _, err := gitOutput(snapshot.Root, env, gitPath, "read-tree", snapshot.GitCommit); err != nil {
+	if _, err := gitOutputContext(ctx, snapshot.Root, env, gitPath, "read-tree", snapshot.GitCommit); err != nil {
 		return fmt.Errorf("read rewind tree: %w", err)
 	}
 
@@ -221,17 +221,20 @@ func restoreGitWorkspace(snapshot WorkspaceSnapshot) error {
 		targetArgs = append(targetArgs, "--", scope)
 		currentArgs = append(currentArgs, "--", scope)
 	}
-	targetRaw, err := gitOutputBytes(snapshot.Root, nil, nil, gitPath, targetArgs...)
+	targetRaw, err := gitOutputBytesContext(ctx, snapshot.Root, nil, nil, gitPath, targetArgs...)
 	if err != nil {
 		return fmt.Errorf("list rewind tree: %w", err)
 	}
-	currentRaw, err := gitOutputBytes(snapshot.Root, nil, nil, gitPath, currentArgs...)
+	currentRaw, err := gitOutputBytesContext(ctx, snapshot.Root, nil, nil, gitPath, currentArgs...)
 	if err != nil {
 		return fmt.Errorf("list current workspace: %w", err)
 	}
 	target := nulSet(targetRaw)
 	current := nulList(currentRaw)
 	for _, rel := range current {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if _, ok := target[rel]; ok {
 			continue
 		}
@@ -256,8 +259,11 @@ func restoreGitWorkspace(snapshot WorkspaceSnapshot) error {
 	// A snapshot may replace a directory with a file. Remove empty parent
 	// directories before checkout-index so Git can materialize that file.
 	removeEmptyParents(snapshot.Root, current)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if len(targetRaw) > 0 {
-		if _, err := gitOutputWithInput(snapshot.Root, env, string(targetRaw), gitPath, gitExactContentArgs("checkout-index", "--force", "-z", "--stdin")...); err != nil {
+		if _, err := gitOutputWithInputContext(ctx, snapshot.Root, env, string(targetRaw), gitPath, gitExactContentArgs("checkout-index", "--force", "-z", "--stdin")...); err != nil {
 			return fmt.Errorf("restore rewind tree: %w", err)
 		}
 	}
@@ -361,19 +367,41 @@ func gitExactContentArgs(args ...string) []string {
 }
 
 func gitOutput(dir string, extraEnv []string, gitPath string, args ...string) (string, error) {
-	out, err := gitOutputBytes(dir, extraEnv, nil, gitPath, args...)
+	return gitOutputContext(context.Background(), dir, extraEnv, gitPath, args...)
+}
+
+func gitOutputContext(ctx context.Context, dir string, extraEnv []string, gitPath string, args ...string) (string, error) {
+	out, err := gitOutputBytesContext(ctx, dir, extraEnv, nil, gitPath, args...)
 	return string(out), err
 }
 
 func gitOutputWithInput(dir string, extraEnv []string, input string, gitPath string, args ...string) (string, error) {
-	out, err := gitOutputBytes(dir, extraEnv, strings.NewReader(input), gitPath, args...)
+	return gitOutputWithInputContext(context.Background(), dir, extraEnv, input, gitPath, args...)
+}
+
+func gitOutputWithInputContext(ctx context.Context, dir string, extraEnv []string, input string, gitPath string, args ...string) (string, error) {
+	out, err := gitOutputBytesContext(ctx, dir, extraEnv, strings.NewReader(input), gitPath, args...)
 	return string(out), err
 }
 
 func gitOutputBytes(dir string, extraEnv []string, input *strings.Reader, gitPath string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(context.Background(), gitPath, args...)
+	return gitOutputBytesContext(context.Background(), dir, extraEnv, input, gitPath, args...)
+}
+
+func gitOutputBytesContext(ctx context.Context, dir string, extraEnv []string, input *strings.Reader, gitPath string, args ...string) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, gitPath, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), extraEnv...)
+	// Rewind is non-interactive even when Lilith itself runs in a terminal or
+	// over SSH. Disable credential-manager prompts so a Git/filter failure is
+	// returned instead of silently waiting behind the TUI forever.
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=Never")
+	cmd.Env = append(cmd.Env, extraEnv...)
 	if input != nil {
 		cmd.Stdin = input
 	}
@@ -381,6 +409,9 @@ func gitOutputBytes(dir string, extraEnv []string, input *strings.Reader, gitPat
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return stdout.Bytes(), ctxErr
+		}
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
 			message = strings.TrimSpace(stdout.String())

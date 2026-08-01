@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/lilith/li/internal/providers/openai"
 	"github.com/lilith/li/internal/rewind"
 	"github.com/lilith/li/internal/session"
+	"github.com/lilith/li/internal/tui/uikit"
 )
 
 func TestRewindAndForkCommandsAreRegisteredSeparately(t *testing.T) {
@@ -276,5 +278,97 @@ func TestRewindCodeRestoreCreatesReversibleSafetyPoint(t *testing.T) {
 	}
 	if !foundSafety {
 		t.Fatalf("rewind did not create a reversible safety point: %+v", points)
+	}
+}
+
+func TestConversationOnlyRewindSkipsWorkspaceSafetyCapture(t *testing.T) {
+	project := t.TempDir()
+	path := filepath.Join(project, "state.txt")
+	if err := os.WriteFile(path, []byte("current\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := &AppContext{ConfigDir: t.TempDir(), Styles: NewStyles(DefaultTheme())}
+	model := NewChat(ctx)
+	model.project = project
+	model.sess = session.New(project)
+	model.history = []openai.Message{{Role: "user", Content: "mensaje actual"}}
+	model.messages = []ChatMessage{{Kind: MsgUser, Content: "mensaje actual"}}
+
+	checkpoint := model.snapshotSessionForRewind()
+	meta, err := model.rewindStore.Create(project, model.sess.ID, "mensaje actual", checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen := &RewindModel{ctx: ctx, chat: &model, selected: meta}
+	cmd := screen.startRestore(rewindConversation)
+	if cmd == nil {
+		t.Fatal("conversation-only rewind did not start")
+	}
+	result, ok := cmd().(rewindOperationResultMsg)
+	if !ok || result.err != nil {
+		t.Fatalf("conversation-only rewind failed: %+v", result)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "current\n" {
+		t.Fatalf("conversation-only rewind touched workspace: data=%q err=%v", got, err)
+	}
+	points, err := model.rewindStore.List(project, model.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundSafetyWithoutCode := false
+	for _, point := range points {
+		if point.Kind == "safety" && point.Prompt == "Estado antes de rewind" {
+			if point.HasCode {
+				t.Fatalf("conversation-only safety point unexpectedly captured code: %+v", point)
+			}
+			foundSafetyWithoutCode = true
+		}
+	}
+	if !foundSafetyWithoutCode {
+		t.Fatalf("conversation-only rewind did not create a conversation safety point: %+v", points)
+	}
+}
+
+func TestEscapeCancelsRewindAndIgnoresStaleResult(t *testing.T) {
+	ctx := &AppContext{ConfigDir: t.TempDir(), Styles: NewStyles(DefaultTheme())}
+	model := NewChat(ctx)
+	model.project = t.TempDir()
+	model.sess = session.New(model.project)
+
+	canceled := false
+	_, cancel := context.WithCancel(context.Background())
+	screen := &RewindModel{
+		ctx:         ctx,
+		chat:        &model,
+		stage:       rewindWorking,
+		selected:    &rewind.Meta{ID: "point"},
+		operationID: 7,
+		operationCancel: func() {
+			canceled = true
+			cancel()
+		},
+	}
+	oldOperationID := screen.operationID
+	updated, cmd := screen.Update(uikit.KeyMsg{Type: uikit.KeyEsc})
+	if cmd != nil {
+		t.Fatal("canceling rewind should stay on the confirmation screen")
+	}
+	gotScreen, ok := updated.(*RewindModel)
+	if !ok {
+		t.Fatalf("unexpected model type after cancel: %T", updated)
+	}
+	if !canceled || gotScreen.stage != rewindConfirm || gotScreen.operationID == oldOperationID {
+		t.Fatalf("rewind was not canceled safely: canceled=%v stage=%v old=%d new=%d", canceled, gotScreen.stage, oldOperationID, gotScreen.operationID)
+	}
+
+	stalePoint := &rewind.Point{Meta: rewind.Meta{ID: "stale"}}
+	updated, cmd = gotScreen.Update(rewindOperationResultMsg{operationID: oldOperationID, point: stalePoint, mode: rewindConversation})
+	if cmd != nil {
+		t.Fatal("stale rewind result must not switch back to chat")
+	}
+	if updated.(*RewindModel).stage != rewindConfirm {
+		t.Fatal("stale rewind result changed the screen state")
 	}
 }

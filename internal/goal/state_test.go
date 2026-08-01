@@ -36,3 +36,20 @@ func TestGoalComplete(t *testing.T) {
 		t.Fatal("complete goal active")
 	}
 }
+
+func TestSettingSameActiveGoalIsIdempotent(t *testing.T) {
+	m := NewManager(nil)
+	first, err := m.Set("ship the project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.AddUsage(1234)
+	before := m.Snapshot()
+	second, err := m.Set("ship the project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.CreatedAt != first.CreatedAt || second.TokensUsed != before.TokensUsed || second.Status != Active {
+		t.Fatalf("duplicate active goal reset state: first=%+v before=%+v second=%+v", first, before, second)
+	}
+}
