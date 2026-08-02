@@ -343,7 +343,7 @@ func TestEscapeCancelsRewindAndIgnoresStaleResult(t *testing.T) {
 		ctx:         ctx,
 		chat:        &model,
 		stage:       rewindWorking,
-		selected:    &rewind.Meta{ID: "point"},
+		selected:    rewind.Meta{ID: "point"},
 		operationID: 7,
 		operationCancel: func() {
 			canceled = true

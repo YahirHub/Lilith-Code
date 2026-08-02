@@ -207,3 +207,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `092-corregir-loop-goal-y-rewind-bloqueado.md`
 - `093-vps-red-resiliente-y-releases-manuales.md`
 - `094-nombre-codex-ctrl-c-y-autor-git.md`
+- `095-corregir-prueba-rewind-en-workflow.md`

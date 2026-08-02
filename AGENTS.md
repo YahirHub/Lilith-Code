@@ -123,7 +123,7 @@ También probar manualmente la ruta o pantalla afectada en Windows Terminal y Li
 
 ## Commits y documentación
 
-- Autor Git local: `ThowiLabs <217099863+YahirHub@users.noreply.github.com>`.
+- Autor Git local: `YahirHub <217099863+YahirHub@users.noreply.github.com>`.
 - Commits en español, detallados y sin mencionar IA.
 - Cada cambio importante debe añadir o actualizar un MD numerado en `contexto/`.
 - No inventar URLs, repositorios, resultados de pruebas ni compatibilidad no ejecutada.
