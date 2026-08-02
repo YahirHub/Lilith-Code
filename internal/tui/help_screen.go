@@ -120,7 +120,8 @@ func (m *HelpScreen) content(width int) string {
 		{"Ctrl+B / Ctrl+F", "Desplazar una página atrás / adelante."},
 		{"!comando", "Ejecutar shell directamente. En Plan sólo se permite la allowlist de inspección."},
 		{"/skills:nombre", "Invocar explícitamente una skill compatible."},
-		{"Ctrl+C / Ctrl+Z", "No cierran ni suspenden Lilith. Usa /exit."},
+		{"Ctrl+C", "Limpiar todo el texto escrito en el editor sin cancelar el turno activo ni borrar la cola."},
+		{"Ctrl+Z", "No suspende Lilith. Usa /exit para cerrar la aplicación."},
 	}
 	for _, item := range shortcuts {
 		b.WriteString(key.Render(item[0]))

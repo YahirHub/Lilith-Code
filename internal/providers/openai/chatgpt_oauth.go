@@ -28,7 +28,7 @@ import (
 // Constantes OAuth (mismo cliente oficial usado por Codex CLI).
 const (
 	ChatGPTCodexProviderID   = "openai-codex"
-	ChatGPTCodexProviderName = "ChatGPT Plus/Pro (Codex)"
+	ChatGPTCodexProviderName = "ChatGPT Codex"
 
 	ChatGPTOAuthClientID     = "app_EMoamEEZ73f0CkXaXp7hrann"
 	ChatGPTOAuthAuthorizeURL = "https://auth.openai.com/oauth/authorize"

@@ -55,3 +55,18 @@ func TestReconcileActiveMovesAwayFromDisconnectedProvider(t *testing.T) {
 		t.Fatalf("selección reconciliada = %s/%s", cfg.ActiveProviderID, cfg.ActiveModelID)
 	}
 }
+
+func TestChatGPTCodexUsesCompactDisplayName(t *testing.T) {
+	if ChatGPTCodexName != "ChatGPT Codex" {
+		t.Fatalf("nombre visible de Codex = %q", ChatGPTCodexName)
+	}
+	for _, provider := range BundledProviders() {
+		if provider.ID == ChatGPTCodexID {
+			if provider.Name != "ChatGPT Codex" {
+				t.Fatalf("nombre bundled de Codex = %q", provider.Name)
+			}
+			return
+		}
+	}
+	t.Fatal("no se encontró el proveedor ChatGPT Codex")
+}

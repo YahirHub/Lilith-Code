@@ -46,6 +46,7 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
   - `env`: requiere la variable definida;
   - `oauth`: requiere sesión OAuth guardada.
 - Nunca se puede activar un proveedor desconectado.
+- El proveedor OAuth integrado usa el nombre visible corto `ChatGPT Codex`; no volver a mostrar `ChatGPT Plus/Pro (Codex)` como nombre del proveedor.
 - Al abrir `/models`, se refresca en segundo plano el endpoint `/models` de todos los proveedores conectados. `Ctrl+R` fuerza otra actualización sin impedir escribir la letra `r` en el filtro.
 - Los catálogos custom se persisten en `providers.json`.
 - Los catálogos bundled se guardan en `provider-model-cache.json`; así los modelos descubiertos sobreviven a reinicios y trabajo sin red.
@@ -94,6 +95,7 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - El input, status, cola, paleta, actividad y TodoWrite no deben ocupar la columna reservada ni desbordarse por la derecha.
 - No volver a usar `textarea.MaxHeight` como límite visual: en implementaciones anteriores también recortaba el contenido pegado. El límite de contenido y la altura visible deben permanecer separados.
 - Mantener pegado atómico, espacios, CRLF, textos multilinea largos y selección nativa de terminal.
+- `Ctrl+C` limpia únicamente el borrador del input; no cancela el turno ni borra la cola. `Esc` conserva la cancelación explícita de la tarea.
 
 ### Seguridad
 

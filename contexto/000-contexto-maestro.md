@@ -60,6 +60,7 @@ Reglas críticas:
 - el transcript conserva el historial estable como segmentos de líneas y sólo vuelve a procesar la cola mutable, evitando trabajo proporcional a toda la conversación por cada token;
 - Return recibido como `Ctrl+M` por ciertos PTY/SSH se normaliza a Enter, por lo que enviar no depende de cómo el terminal codifique CR;
 - una petición de proveedor nunca bloquea el loop de teclado: conexión, streaming, reintentos y watchdog corren fuera del estado TUI.
+- `Ctrl+C` vacía el borrador visible y cierra su paleta sin cancelar el turno activo ni tocar la cola; `Esc` sigue siendo la interrupción de la tarea.
 
 ## 5. Proveedores, autenticación y catálogos
 
@@ -82,6 +83,8 @@ Tipos de autenticación:
 
 Al abrir `/models`, Lilith consulta en segundo plano el catálogo de cada proveedor conectado. `Ctrl+R` repite la consulta sin bloquear la escritura de la letra `r` en el filtro. Los endpoints OpenAI-compatible usan `GET {baseURL}/models`; Codex usa su catálogo autenticado de cuenta. Los proveedores se actualizan en paralelo y un fallo conserva la caché anterior sin impedir los demás.
 Si el endpoint de catálogo responde 404, 405 o 501, el proveedor se considera compatible sólo con catálogo manual: no se presenta un error, no se eliminan modelos configurados y futuras aperturas de `/models` pueden volver a intentar el descubrimiento. Los fallos reales de red, autenticación o respuestas inválidas sí se reportan de forma no bloqueante.
+
+El proveedor OAuth integrado se muestra como **ChatGPT Codex** en onboarding, login, selectores y estado activo; Plus/Pro describe la suscripción requerida, no el nombre visible.
 
 Los modelos nuevos de proveedores custom se guardan en `providers.json`. Los de proveedores bundled se guardan en `provider-model-cache.json`, por lo que permanecen disponibles tras cambiar de pantalla, reiniciar o perder temporalmente la conexión.
 
@@ -171,7 +174,7 @@ Después de elegir el destino, `/fork` captura el estado actual y crea una sesi�
 4. Añadir pruebas de regresión.
 5. Ejecutar formato, tests, race, vet y builds estáticos/multiplataforma cuando el entorno lo permita.
 6. Documentar el cambio en un MD numerado.
-7. Commit en español con el autor Git del usuario.
+7. Commit en español con el autor Git `YahirHub <217099863+YahirHub@users.noreply.github.com>`.
 8. Para publicar, cambiar únicamente `internal/version/version.go` y ejecutar manualmente el workflow **Publicar release**; éste prueba, compila `cmd/build`, crea checksums, tag y GitHub Release.
 
 ## 13. Validación objetivo
@@ -203,3 +206,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `091-selector-interactivo-destino-fork.md`
 - `092-corregir-loop-goal-y-rewind-bloqueado.md`
 - `093-vps-red-resiliente-y-releases-manuales.md`
+- `094-nombre-codex-ctrl-c-y-autor-git.md`

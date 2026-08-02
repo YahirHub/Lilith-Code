@@ -46,8 +46,8 @@ Al primer arranque, Lilith crea `~/.li/` con:
 Desde la TUI:
 
 - **OpenCode Free**: seleccionable en el onboarding, sin login.
-- **Suscripción ChatGPT (Codex)**: `/login` → *ChatGPT Plus/Pro*. Se abre el
-  navegador para el flujo OAuth con PKCE. Si estás en un entorno headless,
+- **ChatGPT Codex**: `/login` → *ChatGPT Codex*. Usa una suscripción
+  ChatGPT Plus/Pro y abre el navegador para el flujo OAuth con PKCE. Si estás en un entorno headless,
   pulsa `D` para usar código de dispositivo.
 - **Proveedor personalizado**: `/login` → *Proveedor personalizado* e
   introduce nombre, base URL (OpenAI-compatible) y API key.

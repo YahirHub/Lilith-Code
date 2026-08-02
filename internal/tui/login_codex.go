@@ -245,7 +245,7 @@ func (m *CodexLoginModel) layout() (string, []settingsHit) {
 	s := m.ctx.Styles
 	w := settingsContentWidth(m.ctx.Width)
 	c := newSettingsCanvas(w)
-	c.block(settingsHeader(s, "Suscripción ChatGPT / Codex", "Flujo OAuth con controles reutilizables y soporte de clic."))
+	c.block(settingsHeader(s, "ChatGPT Codex", "Inicia sesión con tu suscripción ChatGPT Plus/Pro mediante OAuth."))
 	c.blank()
 
 	switch m.step {

@@ -23,7 +23,7 @@ type onboardingCard struct {
 }
 
 var onboardingCards = []onboardingCard{
-	{"Suscripción ChatGPT", "Inicia sesión con tu cuenta ChatGPT Plus/Pro (OAuth device).", "SUSCRIPCIÓN", OptionCodex},
+	{"ChatGPT Codex", "Inicia sesión con tu cuenta ChatGPT Plus/Pro mediante OAuth.", "SUSCRIPCIÓN", OptionCodex},
 	{"Proveedor personalizado", "Conecta cualquier endpoint OpenAI-compatible con tu API key.", "API KEY", OptionCustom},
 	{"OpenCode Free", "Modelos gratuitos incluidos (Grok, Qwen3, Kimi).", "GRATIS", OptionOpenCodeFree},
 }

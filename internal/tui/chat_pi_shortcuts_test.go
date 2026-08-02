@@ -8,7 +8,40 @@ import (
 	"github.com/lilith/li/internal/tui/uikit"
 )
 
-func TestCtrlCAndCtrlZAreIgnoredAndNeverExit(t *testing.T) {
+func TestCtrlCClearsEditorWithoutCancelingTurn(t *testing.T) {
+	m := newInputTestChat(t)
+	if err := m.beginTurn(); err != nil {
+		t.Fatalf("beginTurn: %v", err)
+	}
+	done := m.turnCtx.Done()
+	m.enqueue("sigue con esta corrección", queueSteer)
+	m.textarea.SetValue("/borrador")
+	m.updatePalette()
+
+	_, cmd := m.Update(uikit.KeyMsg{Type: uikit.KeyCtrlC})
+	if cmd != nil {
+		t.Fatal("Ctrl+C no debe programar trabajo adicional")
+	}
+	select {
+	case <-done:
+		t.Fatal("Ctrl+C no debe cancelar el turno activo")
+	default:
+	}
+	if !m.streaming || m.activeTurnID == 0 {
+		t.Fatal("Ctrl+C debe dejar viva la tarea actual")
+	}
+	if len(m.queue) != 1 || m.queue[0].Text != "sigue con esta corrección" {
+		t.Fatalf("Ctrl+C no debe tocar la cola: %#v", m.queue)
+	}
+	if got := m.textarea.Value(); got != "" {
+		t.Fatalf("Ctrl+C debe limpiar el editor, obtuvo %q", got)
+	}
+	if m.paletteOpen {
+		t.Fatal("Ctrl+C debe cerrar la paleta asociada al borrador")
+	}
+}
+
+func TestCtrlZIsIgnoredAndNeverSuspends(t *testing.T) {
 	m := newInputTestChat(t)
 	if err := m.beginTurn(); err != nil {
 		t.Fatalf("beginTurn: %v", err)
@@ -17,25 +50,23 @@ func TestCtrlCAndCtrlZAreIgnoredAndNeverExit(t *testing.T) {
 	m.enqueue("sigue con esta corrección", queueSteer)
 	m.textarea.SetValue("borrador")
 
-	for _, key := range []uikit.KeyType{uikit.KeyCtrlC, uikit.KeyCtrlZ} {
-		_, cmd := m.Update(uikit.KeyMsg{Type: key})
-		if cmd != nil {
-			t.Fatalf("%v no debe ejecutar salida ni suspensión", key)
-		}
-		select {
-		case <-done:
-			t.Fatalf("%v no debe cancelar el turno activo", key)
-		default:
-		}
+	_, cmd := m.Update(uikit.KeyMsg{Type: uikit.KeyCtrlZ})
+	if cmd != nil {
+		t.Fatal("Ctrl+Z no debe ejecutar salida ni suspensión")
+	}
+	select {
+	case <-done:
+		t.Fatal("Ctrl+Z no debe cancelar el turno activo")
+	default:
 	}
 	if !m.streaming || m.activeTurnID == 0 {
-		t.Fatal("Ctrl+C/Ctrl+Z deben dejar viva la tarea actual")
+		t.Fatal("Ctrl+Z debe dejar viva la tarea actual")
 	}
 	if len(m.queue) != 1 || m.queue[0].Text != "sigue con esta corrección" {
-		t.Fatalf("Ctrl+C/Ctrl+Z no deben tocar la cola: %#v", m.queue)
+		t.Fatalf("Ctrl+Z no debe tocar la cola: %#v", m.queue)
 	}
 	if got := m.textarea.Value(); got != "borrador" {
-		t.Fatalf("Ctrl+C/Ctrl+Z no deben modificar el editor, obtuvo %q", got)
+		t.Fatalf("Ctrl+Z no debe modificar el editor, obtuvo %q", got)
 	}
 }
 

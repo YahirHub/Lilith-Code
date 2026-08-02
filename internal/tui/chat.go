@@ -3003,9 +3003,22 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			m.pendingEnterSeq++
 			m.restoreQueuedToEditor()
 			return m, nil
-		case "ctrl+z", "ctrl+c":
-			// No hay atajos de teclado para cerrar/suspender Lilith. Esto evita
-			// salidas accidentales y deja /exit como única salida explícita.
+		case "ctrl+c":
+			// Ctrl+C limpia únicamente el borrador del editor. El turno activo y
+			// cualquier steering/follow-up ya encolado continúan sin cambios; Esc
+			// sigue siendo la interrupción explícita de la tarea.
+			m.returnToInteractionBottom()
+			m.resetPasteFallback()
+			if m.textarea.Value() == "" {
+				return m, nil
+			}
+			m.textarea.Reset()
+			m.updatePalette()
+			m.syncInputHeight()
+			return m, nil
+		case "ctrl+z":
+			// No suspender Lilith desde el runtime interactivo. /exit conserva la
+			// salida explícita y evita dejar la terminal en un estado inconsistente.
 			return m, nil
 		case "alt+enter":
 			m.returnToInteractionBottom()

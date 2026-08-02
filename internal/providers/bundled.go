@@ -10,7 +10,7 @@ const (
 
 	// ChatGPTCodexID identifica el proveedor OAuth de la suscripción ChatGPT.
 	ChatGPTCodexID      = "openai-codex"
-	ChatGPTCodexName    = "ChatGPT Plus/Pro (Codex)"
+	ChatGPTCodexName    = "ChatGPT Codex"
 	ChatGPTCodexBaseURL = "https://chatgpt.com/backend-api/codex"
 )
 
