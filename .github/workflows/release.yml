@@ -1,0 +1,70 @@
+name: Publicar release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lilith-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configurar Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Leer versión del proyecto
+        id: version
+        shell: bash
+        run: |
+          VERSION="$(go run ./cmd/build version)"
+          TAG="v${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Publicando Lilith $TAG"
+
+      - name: Verificar que la versión sea nueva
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          if git rev-parse "$TAG" >/dev/null 2>&1 || gh release view "$TAG" >/dev/null 2>&1; then
+            echo "La versión $TAG ya existe. Cambia internal/version/version.go antes de publicar." >&2
+            exit 1
+          fi
+
+      - name: Ejecutar pruebas
+        run: go test ./...
+
+      - name: Compilar binarios
+        run: go run ./cmd/build build
+
+      - name: Generar sumas SHA-256
+        shell: bash
+        run: |
+          cd dist
+          sha256sum li-* > SHA256SUMS.txt
+
+      - name: Crear tag y release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          gh release create "$TAG" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "Lilith $TAG" \
+            --generate-notes

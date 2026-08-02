@@ -2456,7 +2456,10 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			m.endTurn()
 			m.AddError("Error del proveedor: " + v.err.Error())
 			m.persist()
-			return m, nil
+			// A message typed while the failed request was active is steering for
+			// the next safe boundary. An error is also a boundary: consume the
+			// queue now instead of leaving the user's Enter apparently ignored.
+			return m, m.drainFollowUp()
 		}
 		var refreshCmd uikit.Cmd
 		liveDirty := false
@@ -2680,7 +2683,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			m.endTurn()
 			m.AddError(v.err.Error())
 			m.persist()
-			return m, nil
+			return m, m.drainFollowUp()
 		}
 		m.runningCalls = nil
 		if len(v.materialized) > 0 {

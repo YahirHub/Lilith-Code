@@ -27,11 +27,12 @@ cmd/li/                       entrada CLI
 internal/config/              ajustes persistentes
 internal/secrets/             API keys y OAuth
 internal/providers/           proveedores, conexión y catálogos
-internal/providers/openai/    chat completions, Responses/Codex, reasoning
+internal/providers/openai/    chat completions, Responses/Codex, reasoning y transporte resiliente
 internal/compaction/           auto compactación y resumen iterativo del contexto
 internal/rewind/               checkpoints, restauración de código y forks de workspace
 internal/tui/                 chat y pantallas interactivas
 internal/tui/uikit/           componentes TUI propios
+internal/version/             versión SemVer única para binarios y releases
 internal/tools/               herramientas del agente
 internal/plan/                estado y políticas Plan
 internal/goal/                objetivos persistentes
@@ -56,7 +57,9 @@ Reglas críticas:
 - `Style.Width` es ancho de contenido: bordes y padding se suman aparte;
 - el input tiene límite de caracteres independiente de sus ocho filas visibles;
 - el loop que consume mensajes, SSE y timers no espera el dibujo físico de `tview`; publica el frame más reciente en una cola independiente con cadencia limitada;
-- el transcript conserva el historial estable como segmentos de líneas y sólo vuelve a procesar la cola mutable, evitando trabajo proporcional a toda la conversación por cada token.
+- el transcript conserva el historial estable como segmentos de líneas y sólo vuelve a procesar la cola mutable, evitando trabajo proporcional a toda la conversación por cada token;
+- Return recibido como `Ctrl+M` por ciertos PTY/SSH se normaliza a Enter, por lo que enviar no depende de cómo el terminal codifique CR;
+- una petición de proveedor nunca bloquea el loop de teclado: conexión, streaming, reintentos y watchdog corren fuera del estado TUI.
 
 ## 5. Proveedores, autenticación y catálogos
 
@@ -101,7 +104,8 @@ Los estados se persisten en la sesión. Goal comparte las capacidades de impleme
 - Las rutas de herramientas de archivos se validan centralmente; valores placeholder como `null`, `undefined`, `nil`, `<nil>` o `(null)` se rechazan y nunca se convierten en archivos físicos.
 - El shell normaliza redirecciones accidentales como `> null` o `2> null` a `/dev/null`, porque Lilith ejecuta un shell POSIX también en Windows.
 - `run_terminal_command` no impone límite de ejecución cuando `timeout_seconds` no está presente. Los builds, instalaciones y pruebas largas siguen ejecutándose hasta completar o hasta una cancelación explícita; un timeout positivo conserva el corte y la limpieza del árbol de procesos.
-- Cola de steering y follow-up sin abrir turnos paralelos.
+- Cola de steering y follow-up sin abrir turnos paralelos. Si el proveedor falla, el siguiente mensaje en cola se consume en esa frontera de error y no queda varado como si Enter se hubiera ignorado.
+- El cliente de proveedor no usa un timeout HTTP total: limita dial, TLS y espera de headers, usa TCP keepalive y corta sólo un stream que permanezca sin bytes durante cuatro minutos. Los fallos transitorios se reintentan cuando todavía no se emitió contenido.
 - Cancelación con Esc; `/exit` es la salida explícita.
 - TodoWrite, planes y goals se guardan en la sesión.
 - Skills y agentes pueden usar modelo heredado, explícito o lista de preferencias.
@@ -168,6 +172,7 @@ Después de elegir el destino, `/fork` captura el estado actual y crea una sesi�
 5. Ejecutar formato, tests, race, vet y builds estáticos/multiplataforma cuando el entorno lo permita.
 6. Documentar el cambio en un MD numerado.
 7. Commit en español con el autor Git del usuario.
+8. Para publicar, cambiar únicamente `internal/version/version.go` y ejecutar manualmente el workflow **Publicar release**; éste prueba, compila `cmd/build`, crea checksums, tag y GitHub Release.
 
 ## 13. Validación objetivo
 
@@ -197,3 +202,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `090-tests-windows-mcp-y-rewind-eol.md`
 - `091-selector-interactivo-destino-fork.md`
 - `092-corregir-loop-goal-y-rewind-bloqueado.md`
+- `093-vps-red-resiliente-y-releases-manuales.md`

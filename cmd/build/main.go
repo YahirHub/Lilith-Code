@@ -4,6 +4,7 @@
 //
 //	go run ./cmd/build             build all li binaries
 //	go run ./cmd/build build       build all li binaries
+//	go run ./cmd/build version     print the release version
 //	go run ./cmd/build check       show external toolchain status
 //	go run ./cmd/build install     install missing external tools
 //	go run ./cmd/build install -f  reinstall external tools
@@ -16,9 +17,11 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/lilith/li/internal/toolchain"
+	buildversion "github.com/lilith/li/internal/version"
 )
 
 type target struct {
@@ -50,6 +53,15 @@ func main() {
 		if err := buildAll(); err != nil {
 			fatal(err)
 		}
+	case "version":
+		if len(args) != 0 {
+			fatal(fmt.Errorf("version no acepta argumentos: %s", strings.Join(args, " ")))
+		}
+		version, err := projectVersion()
+		if err != nil {
+			fatal(err)
+		}
+		fmt.Println(version)
 	case "check", "install":
 		if err := runToolchainAction(action, args); err != nil {
 			fatal(err)
@@ -64,11 +76,22 @@ func parseAction(args []string) (string, []string, error) {
 		return "build", nil, nil
 	}
 	switch args[0] {
-	case "build", "check", "install":
+	case "build", "version", "check", "install":
 		return args[0], args[1:], nil
 	default:
-		return "", nil, fmt.Errorf("argumento desconocido: %s (usa build, check o install)", args[0])
+		return "", nil, fmt.Errorf("argumento desconocido: %s (usa build, version, check o install)", args[0])
 	}
+}
+
+var semanticVersionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+
+func projectVersion() (string, error) {
+	version := strings.TrimSpace(buildversion.Current)
+	version = strings.TrimPrefix(version, "v")
+	if !semanticVersionPattern.MatchString(version) {
+		return "", fmt.Errorf("versión inválida en internal/version/version.go: %q; usa SemVer, por ejemplo 1.2.3", buildversion.Current)
+	}
+	return version, nil
 }
 
 func buildAll() error {
@@ -85,9 +108,9 @@ func buildAll() error {
 		return fmt.Errorf("crear dist: %w", err)
 	}
 
-	version := gitValue(root, "describe", "--tags", "--always")
-	if version == "" {
-		version = "dev"
+	version, err := projectVersion()
+	if err != nil {
+		return err
 	}
 	commit := gitValue(root, "rev-parse", "--short", "HEAD")
 	if commit == "" {

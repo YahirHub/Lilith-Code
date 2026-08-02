@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -57,14 +58,52 @@ type Request struct {
 type Client struct {
 	HTTP *http.Client
 	Dir  string // config dir (to load secrets)
+
+	// StreamIdleTimeout limits only periods without any bytes from an SSE
+	// response. It is not a total request timeout, so long active generations
+	// remain valid. Zero uses the production default; a negative value disables
+	// the watchdog (useful for specialized providers/tests).
+	StreamIdleTimeout time.Duration
 }
 
-// NewClient returns a client with a sane default HTTP timeout.
+const defaultStreamIdleTimeout = 4 * time.Minute
+
+// NewClient returns a streaming-safe client. A global http.Client timeout is
+// intentionally avoided because it kills healthy long responses. Instead the
+// transport bounds connection setup and uses aggressive TCP keepalive so a dead
+// VPS route is detected while the TUI remains responsive.
 func NewClient(dir string) *Client {
-	return &Client{
-		HTTP: &http.Client{Timeout: 5 * time.Minute},
-		Dir:  dir,
+	dialer := &net.Dialer{
+		Timeout: 15 * time.Second,
+		KeepAliveConfig: net.KeepAliveConfig{
+			Enable:   true,
+			Idle:     30 * time.Second,
+			Interval: 15 * time.Second,
+			Count:    4,
+		},
 	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = dialer.DialContext
+	transport.ForceAttemptHTTP2 = true
+	transport.MaxIdleConns = 100
+	transport.MaxIdleConnsPerHost = 10
+	transport.IdleConnTimeout = 90 * time.Second
+	transport.TLSHandshakeTimeout = 15 * time.Second
+	transport.ResponseHeaderTimeout = 2 * time.Minute
+	transport.ExpectContinueTimeout = time.Second
+
+	return &Client{
+		HTTP:              &http.Client{Transport: transport},
+		Dir:               dir,
+		StreamIdleTimeout: defaultStreamIdleTimeout,
+	}
+}
+
+func (c *Client) streamIdleTimeout() time.Duration {
+	if c == nil || c.StreamIdleTimeout == 0 {
+		return defaultStreamIdleTimeout
+	}
+	return c.StreamIdleTimeout
 }
 
 type chatChoice struct {
@@ -173,6 +212,89 @@ type Chunk struct {
 	Err          error
 }
 
+var errSSEDone = errors.New("sse done")
+
+type responseLine struct {
+	line []byte
+	err  error
+	done bool
+}
+
+// scanResponseLines reads the network on its own goroutine and resets the idle
+// watchdog for every received line, including SSE keepalive comments. Closing
+// the body on timeout/cancellation unblocks the scanner, preventing a half-open
+// connection from pinning a provider request indefinitely.
+func scanResponseLines(ctx context.Context, body io.ReadCloser, idle time.Duration, consume func([]byte) error) error {
+	if body == nil {
+		return errors.New("respuesta del proveedor sin body")
+	}
+	scanCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	lines := make(chan responseLine, 1)
+	go func() {
+		scanner := bufio.NewScanner(body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			line := bytes.Clone(scanner.Bytes())
+			select {
+			case lines <- responseLine{line: line}:
+			case <-scanCtx.Done():
+				return
+			}
+		}
+		result := responseLine{err: scanner.Err(), done: true}
+		select {
+		case lines <- result:
+		case <-scanCtx.Done():
+		}
+	}()
+
+	var timer *time.Timer
+	var timeout <-chan time.Time
+	if idle > 0 {
+		timer = time.NewTimer(idle)
+		timeout = timer.C
+		defer timer.Stop()
+	}
+	resetTimer := func() {
+		if timer == nil {
+			return
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(idle)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			cancel()
+			_ = body.Close()
+			return ctx.Err()
+		case <-timeout:
+			cancel()
+			_ = body.Close()
+			return fmt.Errorf("stream sin actividad durante %s", idle.Round(time.Second))
+		case result := <-lines:
+			if result.done {
+				return result.err
+			}
+			resetTimer()
+			if consume != nil {
+				if err := consume(result.line); err != nil {
+					cancel()
+					return err
+				}
+			}
+		}
+	}
+}
+
 // resolveAPIKey returns the effective bearer token for a provider.
 func (c *Client) resolveAPIKey(p providers.Provider) (string, error) {
 	switch p.Auth {
@@ -269,7 +391,7 @@ func isTransient(err error) bool {
 	}
 	// Errores de transporte: timeouts, EOF, conexión reiniciada.
 	low := strings.ToLower(msg)
-	for _, frag := range []string{"timeout", "eof", "connection reset", "connection refused", "temporary", "broken pipe", "no such host", "tls"} {
+	for _, frag := range []string{"timeout", "i/o timeout", "eof", "connection reset", "connection refused", "network is unreachable", "temporary", "broken pipe", "no such host", "tls", "stream sin actividad"} {
 		if strings.Contains(low, frag) {
 			return true
 		}
@@ -371,25 +493,22 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 		return nil
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	pending := map[int]*ToolCall{}
 	var pendingOrder []int
 	var parser reasoningStreamParser
 	thinkingActive := false
 	structuredSeen := false
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	err = scanResponseLines(ctx, resp.Body, c.streamIdleTimeout(), func(line []byte) error {
 		if len(line) == 0 || !bytes.HasPrefix(line, []byte("data:")) {
-			continue
+			return nil
 		}
 		payload := bytes.TrimSpace(line[5:])
 		if bytes.Equal(payload, []byte("[DONE]")) {
-			break
+			return errSSEDone
 		}
 		var raw chatResponse
 		if err := json.Unmarshal(payload, &raw); err != nil {
-			continue
+			return nil
 		}
 		if raw.Error != nil {
 			return errors.New(raw.Error.Message)
@@ -398,7 +517,7 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 			return errors.New(raw.Message)
 		}
 		if len(raw.Choices) == 0 {
-			continue
+			return nil
 		}
 		choice := raw.Choices[0]
 		reasoning := visibleReasoning(choice.Delta.ReasoningContent, choice.Delta.Reasoning, choice.Delta.Thinking, choice.Delta.Analysis, choice.Delta.Thought, choice.Delta.ReasoningDetails)
@@ -444,10 +563,12 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 				return err
 			}
 		}
-	}
-	if err := scanner.Err(); err != nil {
+		return nil
+	})
+	if err != nil && !errors.Is(err, errSSEDone) {
 		return err
 	}
+
 	if err := emitReasoningPieces(ctx, out, parser.Flush(), structuredSeen, &thinkingActive); err != nil {
 		return err
 	}

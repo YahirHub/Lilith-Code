@@ -14,10 +14,11 @@ import (
 	"github.com/lilith/li/internal/providers/openai"
 	"github.com/lilith/li/internal/session"
 	"github.com/lilith/li/internal/tui"
+	buildversion "github.com/lilith/li/internal/version"
 )
 
 var (
-	version = "dev"
+	version = buildversion.Current
 	commit  = "none"
 )
 

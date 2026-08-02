@@ -132,6 +132,13 @@ func TestTcellKeyTranslation(t *testing.T) {
 		}
 	})
 
+	t.Run("ssh return ctrl-m", func(t *testing.T) {
+		msg, ok := tcellKeyMsg(tcell.NewEventKey(tcell.KeyCtrlM, 0, tcell.ModNone))
+		if !ok || msg.Type != uikit.KeyEnter {
+			t.Fatalf("Ctrl+M de un PTY/SSH debe enviarse como Enter: ok=%v msg=%#v", ok, msg)
+		}
+	})
+
 	t.Run("space preserves rune", func(t *testing.T) {
 		msg, ok := tcellKeyMsg(tcell.NewEventKey(tcell.KeyRune, ' ', tcell.ModNone))
 		if !ok {

@@ -9,7 +9,7 @@ import (
 )
 
 func notifyTViewSignals(ch chan<- os.Signal) {
-	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 }
 
 func stopTViewSignals(ch chan<- os.Signal) {

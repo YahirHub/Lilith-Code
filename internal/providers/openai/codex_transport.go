@@ -7,7 +7,6 @@
 package openai
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -19,6 +18,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lilith/li/internal/providers"
 	"github.com/lilith/li/internal/secrets"
@@ -103,7 +103,7 @@ func (c *Client) streamCodex(ctx context.Context, req Request, out *countingSink
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
-	return parseCodexSSE(ctx, resp.Body, out)
+	return parseCodexSSE(ctx, resp.Body, c.streamIdleTimeout(), out)
 }
 
 // buildCodexPayload transforma Messages/Tools estilo chat/completions al
@@ -292,10 +292,7 @@ func convertToolsToResponses(tools []any) []map[string]any {
 // pending nuevo sin nombre, `snapshotCodex` lo descartaba y las ediciones
 // (`str_replace`, que emite argumentos grandes vía deltas) sólo aparecían al
 // final del turno.
-func parseCodexSSE(ctx context.Context, body io.Reader, out *countingSink) error {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
-
+func parseCodexSSE(ctx context.Context, body io.ReadCloser, idle time.Duration, out *countingSink) error {
 	pending := map[int]*ToolCall{}
 	// byItemID / byCallID son alias para tolerar eventos raros que sólo traen
 	// uno de los identificadores en lugar de `output_index`.
@@ -339,14 +336,13 @@ func parseCodexSSE(ctx context.Context, body io.Reader, out *countingSink) error
 		return len(order)
 	}
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	err := scanResponseLines(ctx, body, idle, func(line []byte) error {
 		if len(line) == 0 || !bytes.HasPrefix(line, []byte("data:")) {
-			continue
+			return nil
 		}
 		payload := bytes.TrimSpace(line[5:])
 		if bytes.Equal(payload, []byte("[DONE]")) {
-			break
+			return errSSEDone
 		}
 		var ev struct {
 			Type        string          `json:"type"`
@@ -359,7 +355,7 @@ func parseCodexSSE(ctx context.Context, body io.Reader, out *countingSink) error
 			Arguments   string          `json:"arguments"`
 		}
 		if err := json.Unmarshal(payload, &ev); err != nil {
-			continue
+			return nil
 		}
 		select {
 		case <-ctx.Done():
@@ -390,10 +386,10 @@ func parseCodexSSE(ctx context.Context, body io.Reader, out *countingSink) error
 				Arguments string `json:"arguments"`
 			}
 			if err := json.Unmarshal(ev.Item, &item); err != nil {
-				continue
+				return nil
 			}
 			if item.Type != "function_call" {
-				continue
+				return nil
 			}
 			idx := resolveIdx(ev.OutputIndex, item.ID, item.CallID)
 			// Si aparece un function_call NUEVO mientras hay pendings previos
@@ -454,7 +450,7 @@ func parseCodexSSE(ctx context.Context, body io.Reader, out *countingSink) error
 			}
 		case "response.function_call_arguments.delta":
 			if ev.Delta == "" {
-				continue
+				return nil
 			}
 			idx := resolveIdx(ev.OutputIndex, ev.ItemID, ev.CallID)
 			tc := getPendingIdx(idx)
@@ -476,7 +472,7 @@ func parseCodexSSE(ctx context.Context, body io.Reader, out *countingSink) error
 			// completa; nos aseguramos de tener el valor final antes del
 			// `output_item.done`.
 			if ev.Arguments == "" {
-				continue
+				return nil
 			}
 			idx := resolveIdx(ev.OutputIndex, ev.ItemID, ev.CallID)
 			tc := getPendingIdx(idx)
@@ -495,10 +491,10 @@ func parseCodexSSE(ctx context.Context, body io.Reader, out *countingSink) error
 				Arguments string `json:"arguments"`
 			}
 			if err := json.Unmarshal(ev.Item, &item); err != nil {
-				continue
+				return nil
 			}
 			if item.Type != "function_call" {
-				continue
+				return nil
 			}
 			idx := resolveIdx(ev.OutputIndex, item.ID, item.CallID)
 			doneIdx[idx] = true
@@ -524,10 +520,12 @@ func parseCodexSSE(ctx context.Context, body io.Reader, out *countingSink) error
 		case "response.completed":
 			// Nada más que emitir; el bucle terminará y el llamador enviará Done.
 		}
-	}
-	if err := scanner.Err(); err != nil {
+		return nil
+	})
+	if err != nil && !errors.Is(err, errSSEDone) {
 		return err
 	}
+
 	if len(order) > 0 {
 		out.send(Chunk{ToolCalls: snapshotCodex(pending, order)})
 	}

@@ -122,6 +122,14 @@ func tcellKeyMsg(event *tcell.EventKey) (uikit.KeyMsg, bool) {
 	ctrl := modifiers&tcell.ModCtrl != 0
 	shift := modifiers&tcell.ModShift != 0
 
+	// Many SSH/PTY combinations report the Return key as Ctrl+M (CR) instead
+	// of KeyEnter. Treat both as the same physical Enter key. Ctrl+M has no
+	// separate Lilith shortcut, and leaving it as a control key made submissions
+	// appear to be ignored on some VPS terminals.
+	if key == tcell.KeyEnter || key == tcell.KeyCtrlM {
+		return uikit.KeyMsg{Type: uikit.KeyEnter, Alt: alt}, true
+	}
+
 	if key == tcell.KeyRune {
 		r := event.Rune()
 		if ctrl {
@@ -146,8 +154,6 @@ func tcellKeyMsg(event *tcell.EventKey) (uikit.KeyMsg, bool) {
 	switch key {
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		return uikit.KeyMsg{Type: uikit.KeyBackspace, Alt: alt}, true
-	case tcell.KeyEnter:
-		return uikit.KeyMsg{Type: uikit.KeyEnter, Alt: alt}, true
 	case tcell.KeyTab:
 		return uikit.KeyMsg{Type: uikit.KeyTab, Alt: alt}, true
 	case tcell.KeyBacktab:

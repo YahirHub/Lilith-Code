@@ -16,6 +16,20 @@ func TestParseActionDefaultsToBuild(t *testing.T) {
 	}
 }
 
+func TestParseActionAcceptsVersion(t *testing.T) {
+	t.Parallel()
+	action, args, err := parseAction([]string{"version"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action != "version" || len(args) != 0 {
+		t.Fatalf("unexpected version action: %q %#v", action, args)
+	}
+	if version, err := projectVersion(); err != nil || version == "" {
+		t.Fatalf("project version invalid: version=%q err=%v", version, err)
+	}
+}
+
 func TestParseActionPreservesToolchainSubcommands(t *testing.T) {
 	t.Parallel()
 	action, args, err := parseAction([]string{"install", "-f", "--dir", "tools"})

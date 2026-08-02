@@ -308,3 +308,33 @@ func TestReasoningDeToolCallSeConservaEnHistorial(t *testing.T) {
 		t.Fatalf("reasoning no preservado junto a la tool call: %q", got)
 	}
 }
+
+func TestProviderErrorConsumesQueuedEnterAtBoundary(t *testing.T) {
+	m := newInputTestChat(t)
+	m.Resize(100, 30)
+	primeTestRequest(t, m)
+	m.streaming = true
+	m.enqueue("continua cuando vuelva la red", queueSteer)
+
+	_, cmd := m.Update(activeStreamMsg(m, chatStreamMsg{err: fmt.Errorf("network is unreachable")}))
+	if cmd == nil {
+		t.Fatal("el mensaje en cola debe iniciar el siguiente turno tras el error")
+	}
+	if len(m.queue) != 0 {
+		t.Fatalf("el Enter quedó varado en la cola: %#v", m.queue)
+	}
+	if m.activeTurnID == 0 {
+		t.Fatal("el mensaje en cola no inició un nuevo turno")
+	}
+	found := false
+	for _, message := range m.messages {
+		if message.Kind == MsgUser && message.Content == "continua cuando vuelva la red" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("el mensaje escrito durante la caída no se materializó como turno de usuario")
+	}
+	m.cancelTurn()
+}
