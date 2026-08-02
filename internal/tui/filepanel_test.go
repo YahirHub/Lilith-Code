@@ -98,14 +98,14 @@ func TestFilePanelMarksExistingCreateAsSkipped(t *testing.T) {
 	}
 }
 
-func TestFilePanelStillRendersLegacyWriteFileSessions(t *testing.T) {
+func TestFilePanelRendersNativeWriteFile(t *testing.T) {
 	if !IsFileTool("write_file") {
-		t.Fatal("legacy write_file tool calls from persisted sessions must still render as file panels")
+		t.Fatal("write_file tool calls must render as file panels")
 	}
-	p := &FilePanel{Tool: "write_file", Path: "legacy.txt"}
-	p.Update(`{"path":"legacy.txt","content":"hola"}`)
+	p := &FilePanel{Tool: "write_file", Path: "report.txt"}
+	p.Update(`{"path":"report.txt","content":"hola"}`)
 	if p.Content != "hola" {
-		t.Fatalf("legacy write_file panel should still parse content: %+v", p)
+		t.Fatalf("write_file panel should parse content: %+v", p)
 	}
 }
 
@@ -130,5 +130,20 @@ func TestFilePanelAcceptsStringifiedMultiEdits(t *testing.T) {
 	p.Update(`{"path":"a.txt","edits":"[{\\"oldText\\":\\"one\\",\\"newText\\":\\"ONE\\"}]"}`)
 	if len(p.Edits) != 1 || p.Edits[0].Old != "one" || p.Edits[0].New != "ONE" {
 		t.Fatalf("stringified edits not rendered: %+v", p.Edits)
+	}
+}
+
+func TestFilePanelRendersAppendFileAndOverwriteSkip(t *testing.T) {
+	if !IsFileTool("append_file") {
+		t.Fatal("append_file must render as a file panel")
+	}
+	p := &FilePanel{Tool: "append_file"}
+	p.Update(`{"path":"report.md","content":"## section\nbody\n"}`)
+	if p.Path != "report.md" || !strings.Contains(p.Content, "section") {
+		t.Fatalf("append panel did not parse streamed content: %+v", p)
+	}
+	p.Finish("OVERWRITE_REQUIRED: report.md already exists")
+	if !p.Skipped || p.Failed {
+		t.Fatalf("overwrite requirement should be a skipped panel: %+v", p)
 	}
 }

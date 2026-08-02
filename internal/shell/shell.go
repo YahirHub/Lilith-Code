@@ -70,6 +70,9 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	if command == "" {
 		return Result{}, errors.New("comando vacío")
 	}
+	if err := validateCommandSafety(command); err != nil {
+		return Result{}, err
+	}
 	command = normalizeNullRedirects(command)
 	shellPath, prefix, ok := toolchain.ShellCommand()
 	if !ok {

@@ -118,7 +118,7 @@ func TestWorktreeIsolationRequiresRepository(t *testing.T) {
 
 func TestOpenCodeLegacyDisabledToolsStayDenied(t *testing.T) {
 	p := newToolPolicy(agents.Agent{ToolFlags: map[string]bool{"write": false, "bash": false}}, "build", false)
-	for _, name := range []string{"create_file", "str_replace", "apply_diff", "run_terminal_command"} {
+	for _, name := range []string{"create_file", "write_file", "append_file", "str_replace", "apply_diff", "run_terminal_command"} {
 		def, _ := tools.Get(name)
 		if p.visible(name, def) {
 			t.Fatalf("%s should be denied by legacy OpenCode tools map", name)

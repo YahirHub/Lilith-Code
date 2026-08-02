@@ -46,7 +46,7 @@ func claudeToolName(name string) string {
 		return "Glob"
 	case "code_search":
 		return "Grep"
-	case "create_file":
+	case "create_file", "write_file", "append_file":
 		return "Write"
 	case "str_replace", "apply_diff":
 		return "Edit"

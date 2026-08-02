@@ -1,3 +1,5 @@
+> **Nota histórica:** desde `101-escritura-atomica-y-guard-heredoc.md`, `write_file` vuelve a ser una herramienta pública, nativa y atómica. En este documento sólo sigue vigente el diseño histórico de preflight/create-only; no aplicar la regla que trataba `write_file` como alias bloqueado.
+
 # Fecha
 2026-07-27
 

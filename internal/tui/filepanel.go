@@ -17,7 +17,7 @@ type filePanelEdit struct {
 }
 
 type FilePanel struct {
-	Tool     string // create_file (legacy: write_file) | str_replace
+	Tool     string // create_file | write_file | append_file | str_replace (legacy: write)
 	CallID   string
 	Index    int
 	Path     string
@@ -43,12 +43,18 @@ type FilePanel struct {
 const previewLines = 12
 
 // IsFileTool indica si una herramienta se representa como ventana de archivo.
-func isCreateFileTool(name string) bool {
-	return name == "create_file" || name == "write_file" || name == "write"
+func isContentFileTool(name string) bool {
+	return name == "create_file" || name == "write_file" || name == "append_file" || name == "write"
 }
 
+// isCreateFileTool is kept as the internal panel predicate used throughout the
+// TUI; it means a tool whose streamed `content` is rendered as added lines.
+func isCreateFileTool(name string) bool { return isContentFileTool(name) }
+
+func isCreateOnlyFileTool(name string) bool { return name == "create_file" }
+
 func IsFileTool(name string) bool {
-	return isCreateFileTool(name) || name == "str_replace"
+	return isContentFileTool(name) || name == "str_replace"
 }
 
 // Update refresca el panel con los argumentos (posiblemente incompletos) que
@@ -58,7 +64,7 @@ func (p *FilePanel) Update(rawArgs string) {
 		p.Path = v
 	}
 	switch p.Tool {
-	case "create_file", "write_file", "write":
+	case "create_file", "write_file", "append_file", "write":
 		if v, ok := partialJSONString(rawArgs, "content"); ok {
 			p.Content = v
 		}
@@ -166,6 +172,7 @@ func (p *FilePanel) Finish(result string) {
 	p.Result = strings.TrimSpace(result)
 	p.Failed = strings.HasPrefix(p.Result, "error:")
 	p.Skipped = strings.HasPrefix(p.Result, "FILE_EXISTS:") ||
+		strings.HasPrefix(p.Result, "OVERWRITE_REQUIRED:") ||
 		strings.HasPrefix(p.Result, "USE_CREATE_FILE:") ||
 		strings.HasPrefix(p.Result, "WRITE_BLOCKED:")
 }
@@ -175,7 +182,7 @@ func (p *FilePanel) title() string {
 	if path == "" {
 		path = "(file)"
 	}
-	// Mimic a bash invocation: "$ create_file path" / "$ str_replace path". Legacy sessions may still render "$ write_file ...".
+	// Mimic a shell-like invocation: "$ write_file path" / "$ str_replace path". Legacy sessions may still render "$ write ...".
 	verb := p.Tool
 	if verb == "" {
 		verb = "edit"
@@ -427,6 +434,26 @@ func partialJSONString(raw, key string) (string, bool) {
 func completeJSONString(raw, key string) (string, bool) {
 	value, found, complete := scanJSONString(raw, key)
 	return value, found && complete
+}
+
+func completeJSONBool(raw, key string) (bool, bool) {
+	needle := `"` + key + `"`
+	idx := strings.Index(raw, needle)
+	if idx < 0 {
+		return false, false
+	}
+	i := idx + len(needle)
+	for i < len(raw) && (raw[i] == ' ' || raw[i] == ':' || raw[i] == '\n' || raw[i] == '\t' || raw[i] == '\r') {
+		i++
+	}
+	switch {
+	case strings.HasPrefix(raw[i:], "true"):
+		return true, true
+	case strings.HasPrefix(raw[i:], "false"):
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 func scanJSONString(raw, key string) (string, bool, bool) {

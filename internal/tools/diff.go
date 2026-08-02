@@ -42,7 +42,7 @@ func init() {
 			},
 			"required": []string{"path", "diff"},
 		},
-		Run: func(_ context.Context, args map[string]any, env Env) (string, error) {
+		Run: func(ctx context.Context, args map[string]any, env Env) (string, error) {
 			rel := str(args, "path")
 			full, err := resolve(env.Root, rel)
 			if err != nil {
@@ -62,7 +62,7 @@ func init() {
 				return "", err
 			}
 			final := bom + restoreLineEndings(out, ending)
-			if err := os.WriteFile(full, []byte(final), 0o644); err != nil {
+			if _, err := atomicWriteFile(ctx, full, []byte(final), 0o644); err != nil {
 				return "", err
 			}
 			return fmt.Sprintf("patched %s (%d hunk(s) applied).", rel, hunks), nil

@@ -1,3 +1,5 @@
+> **Estado actualizado:** la tarea histórica fue superada por `contexto/101-escritura-atomica-y-guard-heredoc.md`. Sólo `write` permanece bloqueado; `write_file`/`append_file` son herramientas reales.
+
 # Tarea 07 — Intercepción de escritura y cancelación definitiva
 
 ## Estado

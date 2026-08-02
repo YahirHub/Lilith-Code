@@ -1205,7 +1205,7 @@ func (m *ChatModel) repairDanglingToolHistory() bool {
 
 // LoadSession reemplaza la conversación activa por una guardada y reconstruye
 // el transcript visible a partir del historial real. Las tool calls de
-// archivo (create_file / str_replace; write_file en sesiones antiguas) se rehidratan como FilePanel para que
+// archivo (create_file / write_file / append_file / str_replace; `write` en sesiones antiguas) se rehidratan como FilePanel para que
 // la sesión reanudada conserve el mismo diseño que cuando se estaban
 // ejecutando en vivo, en lugar de degradarse a una línea de texto genérica.
 func (m *ChatModel) LoadSession(s *session.Session) {
@@ -2637,8 +2637,9 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			m.finishThinkingPanel()
 			m.applyToolCalls(v.toolCalls)
 			liveDirty = true
-			// Creation/write-like calls are preflighted as soon as a partial tool call exposes
-			// their path. Existing create_file targets and hallucinated write/write_file calls cancel
+			// Creation/write-like calls are preflighted as soon as a partial tool call
+			// exposes its path. Existing create_file targets, unconfirmed write_file
+			// overwrites and legacy write calls cancel
 			// only this provider request (not the whole turn), synthesize a compact
 			// recovery result, and continue with the supported file tools. This prevents a
 			// model from streaming hundreds of useless lines before the normal
@@ -2839,6 +2840,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			}
 			if p := m.panelByCall[r.ToolCallID]; p != nil {
 				if isCreateFileTool(p.Tool) && (strings.HasPrefix(strings.TrimSpace(r.Content), "FILE_EXISTS:") ||
+					strings.HasPrefix(strings.TrimSpace(r.Content), "OVERWRITE_REQUIRED:") ||
 					strings.HasPrefix(strings.TrimSpace(r.Content), "USE_CREATE_FILE:") ||
 					strings.HasPrefix(strings.TrimSpace(r.Content), "WRITE_BLOCKED:")) {
 					// The body was never applied; do not keep hundreds of rejected
@@ -3682,12 +3684,15 @@ func (m *ChatModel) runTools(calls []openai.ToolCall, assistantText string) uiki
 			} else if isPlanExitToolName(c.Function.Name) {
 				planCompleted = true
 			} else if isCreateFileTool(c.Function.Name) &&
-				(strings.HasPrefix(out, "FILE_EXISTS:") || strings.HasPrefix(out, "USE_CREATE_FILE:") || strings.HasPrefix(out, "WRITE_BLOCKED:")) {
+				(strings.HasPrefix(out, "FILE_EXISTS:") || strings.HasPrefix(out, "OVERWRITE_REQUIRED:") || strings.HasPrefix(out, "USE_CREATE_FILE:") || strings.HasPrefix(out, "WRITE_BLOCKED:")) {
 				// The file was never written. Keep the visible panel, but compact the
 				// rejected full-file payload before the next API request so thousands
 				// of useless generated tokens are not re-sent on every continuation.
 				compactCallIDs = append(compactCallIDs, c.ID)
 				switch {
+				case strings.HasPrefix(out, "OVERWRITE_REQUIRED:"):
+					// Keep write_file active so the model can explicitly confirm
+					// overwrite=true or choose a targeted editor.
 				case strings.HasPrefix(out, "USE_CREATE_FILE:"):
 					recoverCreate = true
 				case strings.HasPrefix(out, "WRITE_BLOCKED:"):
@@ -3740,12 +3745,9 @@ func preflightStreamingCreateCall(root string, call openai.ToolCall) (openai.Too
 		return call, "", false
 	}
 
-	// Legacy overwrite-style names are never executable in Lilith. Unlike
-	// create_file, we do not need to know the target to reject them: stop the
-	// provider as soon as name+call ID are visible. If path has already arrived,
-	// return the more precise existing/new redirect; otherwise a generic policy
-	// redirect is enough and avoids generating the entire body just to learn path.
-	if name == "write" || name == "write_file" {
+	// `write` is an unsupported ambiguous legacy alias. Explicit write_file and
+	// append_file are native tools and must not be intercepted as hallucinations.
+	if name == "write" {
 		path, _ := completeJSONString(call.Function.Arguments, "path")
 		result, err := tools.InterceptLegacyWrite(root, name, path)
 		if err != nil {
@@ -3759,13 +3761,41 @@ func preflightStreamingCreateCall(root string, call openai.ToolCall) (openai.Too
 		return call, result, true
 	}
 
-	// create_file is valid only for a genuinely new path. Wait until the path
-	// string is complete, then preflight it while content is still streaming.
+	// append_file is safe for both existing and missing targets and therefore
+	// has no streaming preflight rejection.
+	if name == "append_file" {
+		return call, "", false
+	}
+
 	path, ok := completeJSONString(call.Function.Arguments, "path")
 	path = strings.TrimSpace(path)
 	if !ok || path == "" {
 		return call, "", false
 	}
+
+	if name == "write_file" {
+		overwrite, overwriteComplete := completeJSONBool(call.Function.Arguments, "overwrite")
+		if !overwriteComplete {
+			// The schema advertises overwrite before content. If content has already
+			// started without it, treat omission as false and stop the payload early.
+			if _, contentStarted := partialJSONString(call.Function.Arguments, "content"); !contentStarted {
+				return call, "", false
+			}
+			overwrite = false
+		}
+		result, blocked, err := tools.PreflightWriteFile(root, path, overwrite)
+		if err != nil || !blocked {
+			return call, "", false
+		}
+		compactArgs, err := json.Marshal(map[string]any{"path": path, "overwrite": overwrite, "content": ""})
+		if err != nil {
+			return call, "", false
+		}
+		call.Function.Arguments = string(compactArgs)
+		return call, result, true
+	}
+
+	// create_file remains valid only for a genuinely new path.
 	result, exists, err := tools.PreflightCreateFile(root, path)
 	if err != nil || !exists {
 		return call, "", false
@@ -3822,6 +3852,9 @@ func (m *ChatModel) interceptExistingCreateCall(call openai.ToolCall) (uikit.Cmd
 	}
 
 	switch {
+	case strings.HasPrefix(result, "OVERWRITE_REQUIRED:"):
+		// write_file stays active; the next model call must make the explicit
+		// overwrite decision or choose str_replace/apply_diff.
 	case strings.HasPrefix(result, "USE_CREATE_FILE:"):
 		m.enableCreateTool()
 	case strings.HasPrefix(result, "WRITE_BLOCKED:"):
@@ -3842,7 +3875,7 @@ func (m *ChatModel) switchCreateToolToEditors() {
 	seen := map[string]bool{}
 	next := make([]string, 0, len(m.activeTools)+3)
 	for _, name := range m.activeTools {
-		if isCreateFileTool(name) {
+		if isCreateOnlyFileTool(name) || name == "write" {
 			continue
 		}
 		if !seen[name] {
@@ -4392,9 +4425,10 @@ func systemPrompt(activeTools []string, skillsBlock, agentsBlock, todoBlock, mod
 	for _, rule := range []string{
 		"Use only tool names present in the schemas for this turn; tool_search can discover additional capabilities when needed.",
 		"Never write partial files or placeholders such as `...`, `// rest of code`, `TODO: fill in`, or equivalent; changes must leave real files usable as-is.",
-		"For existing files, prefer str_replace for precise replacements or apply_diff for unified patches. Both validate against the current on-disk file; read when you need context or after a mismatch/ambiguity.",
-		"create_file is creation-only. Never use it to overwrite an existing file. `write` and `write_file` are unsupported legacy names.",
-		"Treat FILE_EXISTS, USE_CREATE_FILE and WRITE_BLOCKED as policy redirects and follow the tool named by the result instead of retrying the rejected operation.",
+		"For existing source files, prefer str_replace for precise replacements or apply_diff for unified patches. Both validate against the current on-disk file; read when you need context or after a mismatch/ambiguity.",
+		"Use write_file for complete generated documents or intentional full-file regeneration; existing targets require overwrite=true. Use append_file for long reports built in bounded sections. Never use shell heredocs for large file content.",
+		"create_file is creation-only. The ambiguous legacy tool name `write` is unsupported.",
+		"Treat FILE_EXISTS, OVERWRITE_REQUIRED, USE_CREATE_FILE and WRITE_BLOCKED as policy redirects and follow the result instead of repeating a rejected payload unchanged.",
 		"When todo_write is available, use it for work with three or more meaningful implementation steps and keep its snapshot synchronized with actual progress.",
 		"Before finishing code changes, run relevant build/tests when a safe terminal tool is available; never run destructive commands unless the user explicitly requested that destructive action.",
 		"Preserve project conventions and unrelated content. Make the smallest safe change that satisfies the request.",

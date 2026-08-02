@@ -116,3 +116,33 @@ func TestStrReplaceFuzzyUsesNFKC(t *testing.T) {
 		t.Fatalf("unexpected fuzzy result: %q", got)
 	}
 }
+
+func TestStrReplaceMismatchReportsCurrentHashAndNearbyLines(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "report.md")
+	content := "# Report\n\n## Current section\nactual body\n\n## End\n"
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Execute(context.Background(), "str_replace", map[string]any{
+		"path": "report.md",
+		"old":  "## Current section\nstale body",
+		"new":  "## Current section\nnew body",
+	}, Env{Root: dir})
+	if err == nil {
+		t.Fatal("expected stale-target error")
+	}
+	message := err.Error()
+	for _, want := range []string{"target text was not found", "current_sha256:", "nearby_current_text:", "3 | ## Current section", "retry_hint: read_files"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("missing %q in diagnostic:\n%s", want, message)
+		}
+	}
+	got, readErr := os.ReadFile(p)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != content {
+		t.Fatalf("mismatch must not modify file: %q", got)
+	}
+}

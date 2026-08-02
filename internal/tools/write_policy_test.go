@@ -17,30 +17,28 @@ func TestLegacyWriteExistingFileIsInterceptedWithoutMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, name := range []string{"write", "write_file"} {
-		out, err := Execute(context.Background(), name, map[string]any{
-			"path":    "styles.css",
-			"content": strings.Repeat(".huge { display:block; }\n", 1000),
-		}, Env{Root: root})
-		if err != nil {
-			t.Fatalf("%s should be a recoverable interception: %v", name, err)
-		}
-		if !strings.HasPrefix(out, "FILE_EXISTS:") || !strings.Contains(out, "str_replace") || !strings.Contains(out, "apply_diff") {
-			t.Fatalf("%s returned a non-actionable interception: %q", name, out)
-		}
-		got, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(got) != string(before) {
-			t.Fatalf("%s mutated an existing file: %q", name, got)
-		}
+	out, err := Execute(context.Background(), "write", map[string]any{
+		"path":    "styles.css",
+		"content": strings.Repeat(".huge { display:block; }\n", 1000),
+	}, Env{Root: root})
+	if err != nil {
+		t.Fatalf("write should be a recoverable interception: %v", err)
+	}
+	if !strings.HasPrefix(out, "FILE_EXISTS:") || !strings.Contains(out, "write_file") {
+		t.Fatalf("write returned a non-actionable interception: %q", out)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(before) {
+		t.Fatalf("write mutated an existing file: %q", got)
 	}
 }
 
 func TestLegacyWriteMissingFileRedirectsToCreateFileWithoutCreating(t *testing.T) {
 	root := t.TempDir()
-	out, err := Execute(context.Background(), "write_file", map[string]any{
+	out, err := Execute(context.Background(), "write", map[string]any{
 		"path": "new.txt", "content": "should not be written",
 	}, Env{Root: root})
 	if err != nil {
@@ -50,14 +48,17 @@ func TestLegacyWriteMissingFileRedirectsToCreateFileWithoutCreating(t *testing.T
 		t.Fatalf("unexpected result: %q", out)
 	}
 	if _, err := os.Stat(filepath.Join(root, "new.txt")); !os.IsNotExist(err) {
-		t.Fatalf("legacy write must never create a file; stat err=%v", err)
+		t.Fatalf("legacy write alias must never create a file; stat err=%v", err)
 	}
 }
 
-func TestLegacyWriteNamesAreNotExposedAsSchemas(t *testing.T) {
+func TestOnlyAmbiguousLegacyWriteNameIsHidden(t *testing.T) {
 	joined := strings.Join(Names(), ",")
-	if strings.Contains(joined, "write_file") || strings.Contains(joined, ",write,") || strings.HasPrefix(joined, "write,") || strings.HasSuffix(joined, ",write") {
-		t.Fatalf("legacy write aliases must stay hidden from the model: %s", joined)
+	if !strings.Contains(joined, "write_file") || !strings.Contains(joined, "append_file") {
+		t.Fatalf("native file writers must be exposed: %s", joined)
+	}
+	if strings.Contains(joined, ",write,") || strings.HasPrefix(joined, "write,") || strings.HasSuffix(joined, ",write") {
+		t.Fatalf("ambiguous legacy write must stay hidden: %s", joined)
 	}
 }
 
@@ -78,7 +79,7 @@ func TestCreateFileSchemaSerializesPathBeforeContent(t *testing.T) {
 	}
 }
 
-func TestToolSearchDoesNotMaterializeCreateFileForGenericWriteQuery(t *testing.T) {
+func TestToolSearchMaterializesNativeWriterButNotCreateOnlyToolForGenericWrite(t *testing.T) {
 	var added []string
 	out, err := Execute(context.Background(), "tool_search", map[string]any{"query": "write file"}, Env{
 		Root:        t.TempDir(),
@@ -86,6 +87,9 @@ func TestToolSearchDoesNotMaterializeCreateFileForGenericWriteQuery(t *testing.T
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !containsName(added, "write_file") {
+		t.Fatalf("generic write query should enable write_file: %v\n%s", added, out)
 	}
 	if containsName(added, "create_file") {
 		t.Fatalf("generic write query must not enable create_file: %v\n%s", added, out)

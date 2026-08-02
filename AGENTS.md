@@ -56,6 +56,15 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - `code_format_validate` sólo puede modificar rutas explícitas dentro de la raíz; rechazar escapes `..` y no formatear un workspace completo cuando `changed_paths` esté vacío.
 - Las validaciones deben derivarse de manifests y herramientas reales del proyecto, y no inventar package managers o comandos.
 
+### Escritura de archivos y terminal
+
+- `write_file` y `append_file` escriben contenido estructurado directamente desde Go; nunca deben envolverse internamente en heredocs, `printf`, PowerShell here-strings, base64 ni otro comando de shell.
+- Toda escritura completa o append se materializa primero en un archivo temporal del mismo directorio, se sincroniza, verifica por bytes/SHA-256 y se publica de forma atómica. Una cancelación o fallo no puede dejar el destino truncado.
+- `create_file` conserva semántica create-only incluso ante carreras: si el destino aparece después del preflight, la publicación debe fallar sin sobrescribirlo.
+- Reemplazar un archivo existente con `write_file` requiere `overwrite=true`; cuando el contenido se leyó antes, usar `expected_sha256` para detectar cambios observables. Para documentos largos, `append_file` debe recibir secciones completas y acotadas, reutilizando el SHA devuelto cuando sea posible.
+- `str_replace` y `apply_diff` siguen siendo la vía preferida para cambios localizados. Un mismatch debe incluir hash, tamaño, líneas y una región actual cercana; nunca aplicar reemplazo fuzzy destructivo por cuenta propia.
+- `run_terminal_command` debe rechazar antes de ejecutar heredocs incompletos y escrituras inline demasiado largas. El rechazo debe garantizar que no se creó un archivo parcial y orientar a `write_file`/`append_file`.
+
 ### Proveedores y modelos
 
 - `/providers` puede mostrar proveedores configurados aunque estén desconectados para permitir iniciar sesión o corregir credenciales.

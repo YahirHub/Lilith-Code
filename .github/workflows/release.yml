@@ -17,6 +17,16 @@ jobs:
       - name: Descargar código
         uses: actions/checkout@v4
 
+      - name: Configurar Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Probar herramientas atómicas en Windows
+        shell: powershell
+        run: go test -tags=grammar_set_core ./internal/tools ./internal/shell
+
       - name: Probar instalador con Windows PowerShell 5.1
         shell: powershell
         run: .\.github\scripts\test_install_ps1.ps1

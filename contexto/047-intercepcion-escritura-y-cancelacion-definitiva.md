@@ -1,3 +1,5 @@
+> **Nota histórica:** `101-escritura-atomica-y-guard-heredoc.md` reemplaza la política de nombres descrita aquí. Actualmente sólo `write` es un alias ambiguo bloqueado; `write_file` y `append_file` son herramientas públicas y atómicas. Las decisiones sobre requestID, cancelación y `create_file` continúan vigentes.
+
 # Fecha
 2026-07-27
 

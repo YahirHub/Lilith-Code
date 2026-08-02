@@ -109,7 +109,7 @@ func portableToolNames(external string) []string {
 	case "edit":
 		return []string{"str_replace", "apply_diff"}
 	case "write":
-		return []string{"create_file", "str_replace", "apply_diff"}
+		return []string{"create_file", "write_file", "append_file", "str_replace", "apply_diff"}
 	case "webfetch":
 		return []string{"read_url"}
 	case "websearch":

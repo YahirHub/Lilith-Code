@@ -764,7 +764,7 @@ func backgroundBuiltinAllowed(name string) bool {
 	case "Agent", "read_files", "list_directory", "glob", "code_search", "code_intel_status",
 		"code_symbols", "code_references", "code_graph", "code_context",
 		"code_semantic", "code_scip_search", "run_terminal_command",
-		"str_replace", "apply_diff", "create_file", "read_url", "web_search", "todo_write",
+		"str_replace", "apply_diff", "create_file", "write_file", "append_file", "read_url", "web_search", "todo_write",
 		"list_skills", "skill_read", "skill_search", "skill_files", "tool_search",
 		"memory_read", "memory_write":
 		return true
@@ -876,7 +876,7 @@ func mapExternalTool(raw string) []string {
 	case "edit":
 		return []string{"str_replace", "apply_diff"}
 	case "write":
-		return []string{"create_file", "str_replace", "apply_diff"}
+		return []string{"create_file", "write_file", "append_file", "str_replace", "apply_diff"}
 	case "webfetch", "read_url":
 		return []string{"read_url"}
 	case "websearch", "web_search":
@@ -905,7 +905,7 @@ func mapPermissionKey(key string) []string {
 	case "read":
 		return []string{"read_files"}
 	case "edit":
-		return []string{"create_file", "str_replace", "apply_diff"}
+		return []string{"create_file", "write_file", "append_file", "str_replace", "apply_diff"}
 	case "glob":
 		return []string{"glob"}
 	case "grep":
@@ -1104,7 +1104,7 @@ func claudeToolName(name string) string {
 		return "Glob"
 	case "code_search":
 		return "Grep"
-	case "create_file":
+	case "create_file", "write_file", "append_file":
 		return "Write"
 	case "str_replace", "apply_diff":
 		return "Edit"

@@ -178,10 +178,10 @@ func Execute(ctx context.Context, name string, args map[string]any, env Env) (st
 		args = map[string]any{}
 	}
 	// Compatibility guard, intentionally NOT registered as a schema. Models
-	// trained on other coding agents occasionally hallucinate write/write_file.
-	// Treat those calls as a policy interception: never write, return the exact
-	// tool the model should use next, and keep the current turn recoverable.
-	if name == "write" || name == "write_file" {
+	// trained on other coding agents occasionally hallucinate the ambiguous legacy
+	// name `write`. Lilith exposes explicit write_file/append_file tools, so only
+	// the unsupported alias is intercepted.
+	if name == "write" {
 		if env.AgentMode == planstate.Plan {
 			return "", fmt.Errorf("Plan mode is read-only: tool %s is blocked until you switch back to Build with Tab", name)
 		}
@@ -257,21 +257,23 @@ var alwaysOn = []string{"tool_search", "todo_write", "plan_question", "plan_exit
 var directChatPattern = regexp.MustCompile(`(?i)^\s*(hola|hello|hi|hey|buenas( (dias|días|tardes|noches))?|gracias|thanks|thank you|ok(ay)?|vale|entendido|perfecto|listo|adios|adiós|bye)[!.?…\s]*$`)
 
 var (
-	projectScopePattern = regexp.MustCompile(`(?i)\b(project|proyecto|repo|repositor(y|io)|codebase|c(o|ó)digo|file|archivo|files|archivos|src|carpeta|directorio|package\.json|go\.mod|cargo\.toml|pyproject\.toml)\b`)
-	filePathPattern     = regexp.MustCompile(`(?i)[\w.-]+\.(ts|tsx|js|jsx|mjs|cjs|go|rs|py|java|kt|php|json|ya?ml|toml|md|css|scss|html|vue|svelte|txt|sh)\b`)
-	imagePathPattern    = regexp.MustCompile(`(?i)([\w .()\-]+\.(png|jpe?g|gif|bmp|tiff?|webp)\b|\b(imagen|image|captura|screenshot|ocr|mockup|maqueta|interfaz|ui)\b)`)
-	createFilePattern   = regexp.MustCompile(`(?i)\b(crea|crear|create|genera|generar|generate)\b\s+(?:(un|una|a|the)\s+)?(?:(nuevo|nueva|new)\s+)?(archivo|file|fichero)\b`)
-	newFilePattern      = regexp.MustCompile(`(?i)(\b(nuevo|nueva|new)\s+(archivo|file|fichero)\b|\b(agrega|añade|add)\b.{0,24}\b(archivo|file|fichero)\b)`)
-	writePattern        = regexp.MustCompile(`(?i)\b(escribe|write|implementa|implement|agrega|añade|add|modifica|modify|edita|edit|corrige|fix|refactoriza|refactor|renombra|rename|elimina|borra|delete|remove|guarda|save|haz|hazme|dame)\b`)
-	createSearchPattern = regexp.MustCompile(`(?i)\b(create|new|crear|nuevo|nueva|generar|genera|add new|agrega nuevo|añade nuevo)\b`)
-	searchPattern       = regexp.MustCompile(`(?i)\b(busca|search|encuentra|find|grep|d(o|ó)nde|where|localiza|usages|referencias)\b`)
-	symbolPattern       = regexp.MustCompile(`(?i)\b(s(i|í)mbolo|symbol|funci(o|ó)n|function|m(e|é)todo|method|clase|class|struct|interface|definition|definici(o|ó)n|callers?|llamadas?)\b`)
-	semanticPattern     = regexp.MustCompile(`(?i)\b(lsp|language server|semantic|sem(a|á)ntic|tipos?|types?|diagn(o|ó)stic|hover|go to definition|referencias exactas)\b`)
-	validationPattern   = regexp.MustCompile(`(?i)\b(valida|validate|lint|formatter|format|typecheck|compila|compile|build|tests?|pruebas?|go vet|cargo check)\b`)
-	scipPattern         = regexp.MustCompile(`(?i)\b(scip|semantic index|indice sem(a|á)ntico|índice sem(a|á)ntico)\b`)
-	shellPattern        = regexp.MustCompile(`(?i)\b(ejecuta|execute|run|comando|command|terminal|bash|shell|compila|compile|build|test|prueba|git|npm|go run|instala|install)\b`)
-	urlPattern          = regexp.MustCompile(`(?i)(https?://|\b(url|web|p(a|á)gina|docs? online|documentaci(o|ó)n online)\b)`)
-	webSearchPattern    = regexp.MustCompile(`(?i)\b(internet|web|online|actualizado|actualizada|reciente|latest|current|news|noticias|hoy|today)\b|última\s+versión|ultima\s+version|latest\s+version`)
+	projectScopePattern  = regexp.MustCompile(`(?i)\b(project|proyecto|repo|repositor(y|io)|codebase|c(o|ó)digo|file|archivo|files|archivos|src|carpeta|directorio|package\.json|go\.mod|cargo\.toml|pyproject\.toml)\b`)
+	filePathPattern      = regexp.MustCompile(`(?i)[\w.-]+\.(ts|tsx|js|jsx|mjs|cjs|go|rs|py|java|kt|php|json|ya?ml|toml|md|css|scss|html|vue|svelte|txt|sh)\b`)
+	imagePathPattern     = regexp.MustCompile(`(?i)([\w .()\-]+\.(png|jpe?g|gif|bmp|tiff?|webp)\b|\b(imagen|image|captura|screenshot|ocr|mockup|maqueta|interfaz|ui)\b)`)
+	createFilePattern    = regexp.MustCompile(`(?i)\b(crea|crear|create|genera|generar|generate)\b\s+(?:(un|una|a|the)\s+)?(?:(nuevo|nueva|new)\s+)?(archivo|file|fichero)\b`)
+	newFilePattern       = regexp.MustCompile(`(?i)(\b(nuevo|nueva|new)\s+(archivo|file|fichero)\b|\b(agrega|añade|add)\b.{0,24}\b(archivo|file|fichero)\b)`)
+	writePattern         = regexp.MustCompile(`(?i)\b(escribe|write|crea|crear|create|genera|generar|generate|implementa|implement|agrega|añade|add|modifica|modify|edita|edit|corrige|fix|refactoriza|refactor|renombra|rename|elimina|borra|delete|remove|guarda|save|haz|hazme|dame)\b`)
+	fullFileWritePattern = regexp.MustCompile(`(?i)\b(reporte|report|documento|document|markdown|readme|archivo completo|full file|reescribe|rewrite|regenera|regenerate|sobrescribe|overwrite)\b`)
+	appendFilePattern    = regexp.MustCompile(`(?i)\b(append|anexa|anexar|concatena|concatenar|por secciones|section by section|reporte|report)\b`)
+	createSearchPattern  = regexp.MustCompile(`(?i)\b(create|new|crear|nuevo|nueva|generar|genera|add new|agrega nuevo|añade nuevo)\b`)
+	searchPattern        = regexp.MustCompile(`(?i)\b(busca|search|encuentra|find|grep|d(o|ó)nde|where|localiza|usages|referencias)\b`)
+	symbolPattern        = regexp.MustCompile(`(?i)\b(s(i|í)mbolo|symbol|funci(o|ó)n|function|m(e|é)todo|method|clase|class|struct|interface|definition|definici(o|ó)n|callers?|llamadas?)\b`)
+	semanticPattern      = regexp.MustCompile(`(?i)\b(lsp|language server|semantic|sem(a|á)ntic|tipos?|types?|diagn(o|ó)stic|hover|go to definition|referencias exactas)\b`)
+	validationPattern    = regexp.MustCompile(`(?i)\b(valida|validate|lint|formatter|format|typecheck|compila|compile|build|tests?|pruebas?|go vet|cargo check)\b`)
+	scipPattern          = regexp.MustCompile(`(?i)\b(scip|semantic index|indice sem(a|á)ntico|índice sem(a|á)ntico)\b`)
+	shellPattern         = regexp.MustCompile(`(?i)\b(ejecuta|execute|run|comando|command|terminal|bash|shell|compila|compile|build|test|prueba|git|npm|go run|instala|install)\b`)
+	urlPattern           = regexp.MustCompile(`(?i)(https?://|\b(url|web|p(a|á)gina|docs? online|documentaci(o|ó)n online)\b)`)
+	webSearchPattern     = regexp.MustCompile(`(?i)\b(internet|web|online|actualizado|actualizada|reciente|latest|current|news|noticias|hoy|today)\b|última\s+versión|ultima\s+version|latest\s+version`)
 )
 
 var promptHints = []struct {
@@ -282,6 +284,8 @@ var promptHints = []struct {
 	{filePathPattern, []string{"code_context", "read_files", "str_replace", "apply_diff"}},
 	{imagePathPattern, []string{"extract_image_text", "read_files"}},
 	{writePattern, []string{"code_context", "code_validate", "str_replace", "apply_diff", "read_files"}},
+	{fullFileWritePattern, []string{"write_file"}},
+	{appendFilePattern, []string{"append_file"}},
 	{searchPattern, []string{"code_symbols", "code_references", "code_graph", "code_context", "code_search", "glob", "read_files"}},
 	{symbolPattern, []string{"code_symbols", "code_references", "code_graph", "code_context"}},
 	{semanticPattern, []string{"code_semantic", "code_symbols", "code_references"}},
@@ -317,10 +321,9 @@ func Select(prompt string) []string {
 			}
 		}
 	}
-	// create_file is intentionally narrower than the generic write/edit surface.
-	// Models strongly associate a tool named "write_file" with overwriting, so
-	// Lilith exposes the clearer create_file name only when the user explicitly
-	// asks for file creation. Generic "create a new design" wording does not expose it.
+	// create_file remains narrower than the generic write/edit surface because it
+	// is creation-only. write_file is safe to expose broadly: existing targets
+	// still require an explicit overwrite=true argument.
 	// If a broader implementation later needs a new file, tool_search can load it.
 	if createFilePattern.MatchString(p) || newFilePattern.MatchString(p) {
 		if _, ok := registry["create_file"]; ok {
@@ -399,7 +402,7 @@ func init() {
 	register(Definition{
 		Name: "tool_search",
 		Description: "Search available tools by keyword and enable them for the next calls. " +
-			"Use this when you need to read, write or search project files, inspect/search skills, run commands, or fetch a URL " +
+			"Use this when you need to read, write, append or search project files, inspect/search skills, run commands, or fetch a URL " +
 			"and that tool is not loaded yet.",
 		PromptSnippet: "Discover and enable additional tools on demand",
 		Parameters: map[string]any{
@@ -407,7 +410,7 @@ func init() {
 			"properties": map[string]any{
 				"query": map[string]any{
 					"type":        "string",
-					"description": "Keywords, e.g. \"write file\", \"search skill\" or \"run command\".",
+					"description": "Keywords, e.g. \"write file\", \"append report\", \"search skill\" or \"run command\".",
 				},
 			},
 			"required": []string{"query"},

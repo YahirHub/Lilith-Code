@@ -150,8 +150,8 @@ func TestSwitchCreateToolToEditorsAfterFileExists(t *testing.T) {
 	m := ChatModel{activeTools: []string{"tool_search", "create_file"}}
 	m.switchCreateToolToEditors()
 	joined := strings.Join(m.activeTools, ",")
-	if strings.Contains(joined, "create_file") || strings.Contains(joined, "write_file") {
-		t.Fatalf("create tool must be removed after FILE_EXISTS: %v", m.activeTools)
+	if strings.Contains(joined, "create_file") {
+		t.Fatalf("create_file must be removed after FILE_EXISTS: %v", m.activeTools)
 	}
 	for _, want := range []string{"read_files", "str_replace", "apply_diff"} {
 		if !strings.Contains(joined, want) {
@@ -168,8 +168,9 @@ func TestSystemPromptKeepsStableToolGuidanceAcrossLazyToolSets(t *testing.T) {
 	}
 	for _, want := range []string{
 		"validate against the current on-disk file",
-		"`write` and `write_file` are unsupported legacy names",
-		"FILE_EXISTS, USE_CREATE_FILE and WRITE_BLOCKED",
+		"Use write_file for complete generated documents",
+		"Use append_file for long reports",
+		"FILE_EXISTS, OVERWRITE_REQUIRED, USE_CREATE_FILE and WRITE_BLOCKED",
 	} {
 		if !strings.Contains(one, want) {
 			t.Fatalf("stable tool guidance missing %q:\n%s", want, one)
@@ -180,18 +181,18 @@ func TestSystemPromptKeepsStableToolGuidanceAcrossLazyToolSets(t *testing.T) {
 	}
 }
 
-func TestPreflightStreamingLegacyWriteExistingStopsBeforeBodyCompletes(t *testing.T) {
+func TestPreflightStreamingWriteFileExistingRequiresExplicitOverwrite(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "styles.css"), []byte("body{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	call := makeToolCall("write_file", `{"path":"styles.css","content":"`+strings.Repeat("x", 200))
 	got, result, ok := preflightStreamingCreateCall(root, call)
-	if !ok || !strings.HasPrefix(result, "FILE_EXISTS:") {
-		t.Fatalf("legacy write to existing file must be intercepted: ok=%v result=%q", ok, result)
+	if !ok || !strings.HasPrefix(result, "OVERWRITE_REQUIRED:") {
+		t.Fatalf("write_file without overwrite must be intercepted: ok=%v result=%q", ok, result)
 	}
 	if strings.Contains(got.Function.Arguments, strings.Repeat("x", 20)) {
-		t.Fatalf("rejected legacy body leaked into compact call: %s", got.Function.Arguments)
+		t.Fatalf("rejected overwrite body leaked into compact call: %s", got.Function.Arguments)
 	}
 }
 
@@ -207,11 +208,11 @@ func TestPreflightStreamingLegacyWriteMissingRedirectsToCreateFile(t *testing.T)
 	}
 }
 
-func TestFilePanelTreatsLegacyWriteInterceptionAsSkipped(t *testing.T) {
+func TestFilePanelTreatsOverwriteRequirementAsSkipped(t *testing.T) {
 	p := &FilePanel{Tool: "write_file", Path: "styles.css", Content: strings.Repeat("x\n", 50)}
-	p.Finish("FILE_EXISTS: styles.css already exists. Use str_replace or apply_diff.")
+	p.Finish("OVERWRITE_REQUIRED: styles.css already exists. Retry with overwrite=true.")
 	if !p.Done || !p.Skipped || p.Failed {
-		t.Fatalf("legacy interception should be a recoverable skip: %+v", p)
+		t.Fatalf("overwrite requirement should be a recoverable skip: %+v", p)
 	}
 }
 
@@ -239,14 +240,50 @@ func TestPartialJSONStringStillSupportsLivePreview(t *testing.T) {
 	}
 }
 
-func TestLegacyWriteIsStoppedAsSoonAsToolNameIsKnown(t *testing.T) {
+func TestAmbiguousLegacyWriteIsStoppedAsSoonAsToolNameIsKnown(t *testing.T) {
 	root := t.TempDir()
-	call := makeToolCall("write_file", `{"content":"`+strings.Repeat("x", 200))
+	call := makeToolCall("write", `{"content":"`+strings.Repeat("x", 200))
 	got, result, ok := preflightStreamingCreateCall(root, call)
 	if !ok || !strings.HasPrefix(result, "WRITE_BLOCKED:") {
-		t.Fatalf("legacy write should be rejected before path/body completes: ok=%v result=%q", ok, result)
+		t.Fatalf("ambiguous legacy write should be rejected before path/body completes: ok=%v result=%q", ok, result)
 	}
 	if strings.Contains(got.Function.Arguments, strings.Repeat("x", 20)) {
 		t.Fatalf("legacy body should be discarded immediately: %s", got.Function.Arguments)
+	}
+}
+
+func TestPreflightStreamingWriteFileWithOverwriteContinues(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "report.md"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	call := makeToolCall("write_file", `{"path":"report.md","overwrite":true,"content":"partial`)
+	_, _, intercepted := preflightStreamingCreateCall(root, call)
+	if intercepted {
+		t.Fatal("write_file with overwrite=true must continue streaming")
+	}
+}
+
+func TestPreflightStreamingAppendFileAlwaysContinues(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "report.md"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	call := makeToolCall("append_file", `{"path":"report.md","content":"partial`)
+	_, _, intercepted := preflightStreamingCreateCall(root, call)
+	if intercepted {
+		t.Fatal("append_file must not be rejected for existing targets")
+	}
+}
+
+func TestCompleteJSONBool(t *testing.T) {
+	if value, ok := completeJSONBool(`{"overwrite":true,"content":"x"}`, "overwrite"); !ok || !value {
+		t.Fatalf("true boolean not parsed: value=%v ok=%v", value, ok)
+	}
+	if value, ok := completeJSONBool(`{"overwrite":false}`, "overwrite"); !ok || value {
+		t.Fatalf("false boolean not parsed: value=%v ok=%v", value, ok)
+	}
+	if _, ok := completeJSONBool(`{"overwrite":tru`, "overwrite"); ok {
+		t.Fatal("partial boolean must not be considered complete")
 	}
 }

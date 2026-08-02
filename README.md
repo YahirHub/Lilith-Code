@@ -74,6 +74,32 @@ Las herramientas disponibles para el modelo son `code_intel_status`,
 `code_semantic`, `code_scip_search`, `code_validate` y
 `code_format_validate`.
 
+## Escritura segura de archivos
+
+Lilith no necesita construir documentos largos mediante comandos de shell. El
+agente dispone de herramientas nativas que reciben el contenido como argumentos
+estructurados:
+
+- `write_file`: crea un documento completo o reemplaza uno existente únicamente
+  cuando se declara `overwrite=true`; puede validar el SHA-256 previamente leído;
+- `append_file`: agrega una sección completa y acotada, útil para reportes largos;
+  cada llamada estructurada se limita a 1 MiB y el documento puede crecer por
+  secciones verificadas;
+- `create_file`: conserva semántica estricta de archivo nuevo;
+- `str_replace` y `apply_diff`: realizan cambios localizados sobre código existente.
+
+Las escrituras completas se realizan con un temporal en el mismo directorio,
+`fsync`, reemplazo atómico y verificación final de bytes y SHA-256. Una
+cancelación no deja el archivo destino a medio escribir. En Windows se usa una
+operación nativa de reemplazo; Linux y Termux mantienen la misma garantía sin
+CGO.
+
+`run_terminal_command` bloquea antes de ejecutar heredocs incompletos y comandos
+de escritura inline demasiado largos. Esto evita que un límite del proveedor,
+la TUI o el shell guarde un Markdown truncado. Para reportes extensos, el modelo
+debe usar `write_file` una sola vez cuando el contenido cabe o `append_file` por
+secciones, y revisar el conteo/hash devuelto al finalizar.
+
 ## Atajos principales
 
 - `Enter`: enviar el mensaje o agregar steering durante una tarea.

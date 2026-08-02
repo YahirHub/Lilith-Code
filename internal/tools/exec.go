@@ -30,7 +30,7 @@ func init() {
 		Name: "run_terminal_command",
 		Description: fmt.Sprintf(
 			"Run a shell command in the project directory (bash, or busybox sh on Windows) and return stdout, "+
-				"stderr and the exit code. `timeout_seconds` is optional: when omitted the command runs until it finishes or "+
+				"stderr and the exit code. Incomplete heredocs and oversized inline file-writing commands are rejected before execution; use write_file/append_file for generated content. `timeout_seconds` is optional: when omitted the command runs until it finishes or "+
 				"the user cancels it. Set a positive value only when a hard deadline is actually required. Output is tail-truncated to the last %d lines / %dKB per "+
 				"stream; when truncated the full stream is saved to a temp file whose path is reported so you can inspect "+
 				"it with read_files.",
@@ -39,6 +39,7 @@ func init() {
 		PromptSnippet: "Execute shell commands in the project directory",
 		PromptGuidelines: []string{
 			"Use run_terminal_command for builds, tests, git and shell inspection; prefer non-interactive commands. Omit timeout_seconds for long builds, installs and test suites unless a hard deadline is explicitly needed.",
+			"Do not generate long files with heredocs, printf, PowerShell here-strings or base64 in the terminal. Use write_file for complete content or append_file for bounded sections; unsafe inline writes are blocked before execution.",
 			"When discarding shell output use /dev/null. Never redirect to a literal file named null; Lilith normalizes common accidental null redirections defensively.",
 		},
 		Mutating: true,

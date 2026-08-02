@@ -37,13 +37,15 @@ func TestEditPromptDoesNotExposeCreateFile(t *testing.T) {
 	}
 }
 
-func TestPublicToolCatalogUsesCreateFileName(t *testing.T) {
+func TestPublicToolCatalogExposesNativeFileWriters(t *testing.T) {
 	joined := strings.Join(Names(), ",")
-	if !strings.Contains(joined, "create_file") {
-		t.Fatalf("create_file should be public: %v", Names())
+	for _, want := range []string{"create_file", "write_file", "append_file"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("%s should be public: %v", want, Names())
+		}
 	}
-	if strings.Contains(joined, "write_file") {
-		t.Fatalf("write_file should not remain in the public registry: %v", Names())
+	if strings.Contains(joined, ",write,") || strings.HasPrefix(joined, "write,") || strings.HasSuffix(joined, ",write") {
+		t.Fatalf("ambiguous legacy write must stay hidden: %v", Names())
 	}
 }
 

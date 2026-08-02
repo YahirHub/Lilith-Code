@@ -179,6 +179,23 @@ Lilith incluye un motor independiente en `internal/codeintel`:
 
 El perfil ligero se agrega únicamente al mensaje de sistema del agente principal y los subagentes; nunca crea ni modifica un turno de usuario y no provoca el escaneo completo. El índice sólo se refresca al invocar herramientas de inteligencia de código.
 
+## 10 ter. Escritura nativa y atómica
+
+Las escrituras extensas del agente ya no dependen de heredocs o literales largos
+en `run_terminal_command`:
+
+- `write_file` recibe el contenido completo, exige `overwrite=true` para un destino existente y admite `expected_sha256`;
+- `append_file` construye documentos largos por secciones completas, bajo lock por ruta y con límite de tamaño;
+- `create_file`, `str_replace` y `apply_diff` usan el mismo backend atómico;
+- el backend escribe un temporal en el directorio del destino, preserva permisos, sincroniza, publica sin ventana de contenido parcial y verifica bytes/SHA-256;
+- la creación estricta usa publicación no-clobber para no sobrescribir un archivo que aparezca después del preflight;
+- la shell rechaza heredocs sin delimitador y escrituras inline superiores al umbral seguro antes de iniciar el proceso;
+- un mismatch de `str_replace` devuelve el estado actual, SHA-256 y una región cercana para que el modelo vuelva a leer y reintente con texto vigente.
+
+La TUI renderiza `write_file` y `append_file` como paneles de archivo. Cuando un
+modelo intenta reemplazar sin autorización, se interrumpe el stream de argumentos,
+se compacta el cuerpo rechazado y se devuelve `OVERWRITE_REQUIRED` sin tocar disco.
+
 ## 11. Persistencia y seguridad
 
 - Directorios y archivos sensibles usan permisos restrictivos.
@@ -235,3 +252,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `098-instaladores-repo-termux-nativo-onboarding.md`
 - `099-reconexion-automatica-y-skills-internas.md`
 - `100-inteligencia-codigo-estatica.md`
+- `101-escritura-atomica-y-guard-heredoc.md`

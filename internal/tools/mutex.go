@@ -1,8 +1,8 @@
 package tools
 
 // Per-path write mutex, inspired by pi.dev's file-mutation-queue. Serialises
-// concurrent str_replace / create_file / apply_diff calls that target the same
-// real file so a burst of tool calls can never corrupt it mid-write.
+// concurrent str_replace / create_file / write_file / append_file / apply_diff
+// calls that target the same real file so a burst can never corrupt it mid-write.
 
 import (
 	"path/filepath"
@@ -32,7 +32,7 @@ func mutationKey(absPath string) string {
 
 // lockFile returns the mutex for absPath, creating it on first use. The caller
 // must Lock() and defer Unlock() around the whole read/validate/write window,
-// not only the final os.WriteFile call.
+// not only the final atomic commit.
 func lockFile(absPath string) *sync.Mutex {
 	key := mutationKey(absPath)
 	fileLocksMu.Lock()

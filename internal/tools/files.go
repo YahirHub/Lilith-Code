@@ -104,28 +104,28 @@ func PreflightCreateFile(root, rel string) (result string, exists bool, err erro
 	return fmt.Sprintf("FILE_EXISTS: %s already exists (%d bytes). Use str_replace for targeted edits or apply_diff for a unified patch. Do not retry create_file.", rel, info.Size()), true, nil
 }
 
-// InterceptLegacyWrite handles model-hallucinated write/write_file calls without
+// InterceptLegacyWrite handles the ambiguous model-hallucinated `write` call without
 // ever mutating disk. Those names are deliberately not exposed in Lilith's
 // schemas, but some coding models still emit them because other agents use them
 // for overwrite semantics. Returning a compact actionable tool result lets the
-// same turn recover with create_file or str_replace/apply_diff instead of
+// same turn recover with write_file/create_file or str_replace/apply_diff instead of
 // failing as an unknown tool or rewriting an existing file.
 func InterceptLegacyWrite(root, toolName, rel string) (string, error) {
-	if toolName != "write" && toolName != "write_file" {
+	if toolName != "write" {
 		return "", fmt.Errorf("unsupported legacy write tool: %s", toolName)
 	}
 	path := strings.TrimSpace(rel)
 	if path == "" {
-		return "WRITE_BLOCKED: missing path. Use create_file for a new file or str_replace/apply_diff for an existing file.", nil
+		return "WRITE_BLOCKED: missing path. Use write_file for complete content, create_file for a guaranteed-new file, or str_replace/apply_diff for an existing source file.", nil
 	}
 	result, exists, err := PreflightCreateFile(root, path)
 	if err != nil {
 		return "", err
 	}
 	if exists {
-		return result + " The requested write/write_file call was blocked before writing any bytes.", nil
+		return result + " The ambiguous legacy write call was blocked before writing any bytes. Use write_file with overwrite=true only for an intentional full replacement.", nil
 	}
-	return fmt.Sprintf("USE_CREATE_FILE: %s does not exist. Use create_file to create it; write/write_file are not executable tools in Lilith.", path), nil
+	return fmt.Sprintf("USE_CREATE_FILE: %s does not exist. Use create_file for a guaranteed-new target or write_file for complete generated content; the ambiguous legacy tool `write` is not executable in Lilith.", path), nil
 }
 
 func init() {
@@ -217,7 +217,7 @@ func init() {
 		},
 		Mutating:   true,
 		Parameters: newCreateFileParameters(),
-		Run: func(_ context.Context, args map[string]any, env Env) (string, error) {
+		Run: func(ctx context.Context, args map[string]any, env Env) (string, error) {
 			rel := str(args, "path")
 			full, err := resolve(env.Root, rel)
 			if err != nil {
@@ -234,11 +234,20 @@ func init() {
 			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 				return "", err
 			}
-			content := str(args, "content")
-			if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			content := []byte(str(args, "content"))
+			if len(content) > MaxNativeWriteBytes {
+				return "", fmt.Errorf("content is %d bytes; create_file accepts at most %d bytes per call", len(content), MaxNativeWriteBytes)
+			}
+			report, err := atomicCreateFile(ctx, full, content, 0o644)
+			if err != nil {
+				if errors.Is(err, fs.ErrExist) {
+					if result, exists, preflightErr := PreflightCreateFile(env.Root, rel); preflightErr == nil && exists {
+						return result, nil
+					}
+				}
 				return "", err
 			}
-			return fmt.Sprintf("wrote %s (%d bytes).", rel, len(content)), nil
+			return formatWriteReport("created", rel, len(content), report.Bytes, report), nil
 		},
 	})
 
@@ -287,7 +296,7 @@ func init() {
 			},
 			"required": []string{"path"},
 		},
-		Run: func(_ context.Context, args map[string]any, env Env) (string, error) {
+		Run: func(ctx context.Context, args map[string]any, env Env) (string, error) {
 			rel := str(args, "path")
 			full, err := resolve(env.Root, rel)
 			if err != nil {
@@ -306,12 +315,12 @@ func init() {
 			}
 			out, applied, err := applyEdits(string(data), edits, rel)
 			if err != nil {
-				return "", err
+				return "", enrichStrReplaceError(err, data, rel)
 			}
 			if applied == 0 {
 				return fmt.Sprintf("no changes needed in %s (all replacements were already identical).", rel), nil
 			}
-			if err := os.WriteFile(full, []byte(out), 0o644); err != nil {
+			if _, err := atomicWriteFile(ctx, full, []byte(out), 0o644); err != nil {
 				return "", err
 			}
 			if applied == 1 {
@@ -521,6 +530,114 @@ func sliceLines(src string, offset, limit int) (string, string) {
 }
 
 type editPair struct{ old, new string }
+
+type editTargetError struct {
+	EditIndex   int
+	Kind        string
+	Needle      string
+	Occurrences int
+	Rel         string
+}
+
+func (e *editTargetError) Error() string {
+	switch e.Kind {
+	case "ambiguous":
+		return fmt.Sprintf("edits[%d]: target matches %d locations in %s. Read the affected region and add only enough surrounding context to make it unique", e.EditIndex, e.Occurrences, e.Rel)
+	default:
+		return fmt.Sprintf("edits[%d]: target text was not found in the current %s. Read the affected region and retry with current text", e.EditIndex, e.Rel)
+	}
+}
+
+func enrichStrReplaceError(err error, data []byte, rel string) error {
+	var targetErr *editTargetError
+	if !errors.As(err, &targetErr) {
+		return err
+	}
+	report := contentReport(data, 0o644)
+	var b strings.Builder
+	b.WriteString(targetErr.Error())
+	fmt.Fprintf(&b, "\ncurrent_file: %s\ncurrent_bytes: %d\ncurrent_lines: %d\ncurrent_sha256: %s", rel, report.Bytes, report.Lines, report.SHA256)
+	start, end, excerpt := closestCurrentText(string(data), targetErr.Needle, 3)
+	if excerpt != "" {
+		fmt.Fprintf(&b, "\nnearby_current_text: lines %d-%d\n%s\nretry_hint: read_files path=%s offset=%d limit=%d, then retry with exact current text", start, end, excerpt, rel, start, end-start+1)
+	} else {
+		fmt.Fprintf(&b, "\nretry_hint: read_files path=%s with a narrow offset/limit, then retry against the current SHA-256 above", rel)
+	}
+	return errors.New(b.String())
+}
+
+func closestCurrentText(src, needle string, radius int) (int, int, string) {
+	lines := strings.Split(normalizeToLF(src), "\n")
+	if len(lines) == 0 {
+		return 0, 0, ""
+	}
+	needleLine := ""
+	for _, line := range strings.Split(normalizeToLF(needle), "\n") {
+		if strings.TrimSpace(line) != "" {
+			needleLine = strings.TrimSpace(line)
+			break
+		}
+	}
+	if needleLine == "" {
+		return 0, 0, ""
+	}
+	needleLower := strings.ToLower(needleLine)
+	bestIndex, bestScore := -1, 0
+	needleTokens := tokenSet(needleLower)
+	for i, line := range lines {
+		lineLower := strings.ToLower(strings.TrimSpace(line))
+		score := 0
+		if strings.Contains(lineLower, needleLower) || strings.Contains(needleLower, lineLower) && lineLower != "" {
+			score += 1000
+		}
+		for token := range tokenSet(lineLower) {
+			if needleTokens[token] {
+				score += 10 + len(token)
+			}
+		}
+		for j := 0; j < len(lineLower) && j < len(needleLower) && lineLower[j] == needleLower[j]; j++ {
+			score++
+		}
+		if score > bestScore {
+			bestScore, bestIndex = score, i
+		}
+	}
+	if bestIndex < 0 || bestScore == 0 {
+		return 0, 0, ""
+	}
+	start := bestIndex - radius
+	if start < 0 {
+		start = 0
+	}
+	end := bestIndex + radius + 1
+	if end > len(lines) {
+		end = len(lines)
+	}
+	var b strings.Builder
+	for i := start; i < end; i++ {
+		line := lines[i]
+		if len([]rune(line)) > 320 {
+			line = string([]rune(line)[:319]) + "…"
+		}
+		fmt.Fprintf(&b, "%d | %s", i+1, line)
+		if i+1 < end {
+			b.WriteByte('\n')
+		}
+	}
+	return start + 1, end, b.String()
+}
+
+func tokenSet(value string) map[string]bool {
+	out := map[string]bool{}
+	for _, field := range strings.FieldsFunc(value, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '_'
+	}) {
+		if len(field) >= 3 {
+			out[field] = true
+		}
+	}
+	return out
+}
 
 func stringField(args map[string]any, keys ...string) (string, bool) {
 	for _, key := range keys {
@@ -796,7 +913,7 @@ func applyEdits(src string, edits []editPair, rel string) (string, int, error) {
 	for _, edit := range active {
 		_, _, fuzzy, found := fuzzyFind(normalizedContent, edit.old)
 		if !found {
-			return "", 0, fmt.Errorf("edits[%d]: target text was not found in the current %s. Read the affected region and retry with current text", edit.index, rel)
+			return "", 0, &editTargetError{EditIndex: edit.index, Kind: "not_found", Needle: edit.old, Rel: rel}
 		}
 		usedFuzzy = usedFuzzy || fuzzy
 	}
@@ -810,11 +927,11 @@ func applyEdits(src string, edits []editPair, rel string) (string, int, error) {
 	for _, edit := range active {
 		idx, matchLen, _, found := fuzzyFind(base, edit.old)
 		if !found {
-			return "", 0, fmt.Errorf("edits[%d]: target text was not found in the current %s. Read the affected region and retry with current text", edit.index, rel)
+			return "", 0, &editTargetError{EditIndex: edit.index, Kind: "not_found", Needle: edit.old, Rel: rel}
 		}
 		occurrences := fuzzyOccurrenceCount(base, edit.old)
 		if occurrences > 1 {
-			return "", 0, fmt.Errorf("edits[%d]: target matches %d locations in %s. Read the affected region and add only enough surrounding context to make it unique", edit.index, occurrences, rel)
+			return "", 0, &editTargetError{EditIndex: edit.index, Kind: "ambiguous", Needle: edit.old, Occurrences: occurrences, Rel: rel}
 		}
 		replacements = append(replacements, textReplacement{
 			editIndex:  edit.index,

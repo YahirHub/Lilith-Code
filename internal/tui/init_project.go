@@ -49,7 +49,7 @@ The resulting LILITH.md must be concise, durable context for future coding-agent
 	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: "/init", Time: time.Now()})
 	m.appendHistory(openai.Message{Role: "user", Content: prompt})
 	m.activeTools = m.selectToolsForPrompt(prompt, planstate.Build)
-	for _, name := range []string{"read_files", "list_directory", "glob", "code_search", "run_terminal_command", "create_file", "str_replace", "apply_diff", "tool_search"} {
+	for _, name := range []string{"read_files", "list_directory", "glob", "code_search", "run_terminal_command", "create_file", "write_file", "append_file", "str_replace", "apply_diff", "tool_search"} {
 		if _, ok := tools.Get(name); ok {
 			m.activeTools = appendUniqueTool(m.activeTools, name)
 		}
