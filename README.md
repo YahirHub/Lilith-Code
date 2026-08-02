@@ -8,19 +8,20 @@ sobre tu repositorio y ofrece una TUI interactiva construida sobre tview/Tcell.
 
 - TUI con historial, Markdown y selector de proveedores/modelos; `/models`
   aplica la selección a la siguiente petición sin reiniciar la CLI.
-- Soporte multi-proveedor: OpenCode Free, **ChatGPT Codex** mediante OAuth con
-  una suscripción ChatGPT Plus/Pro, o cualquier endpoint OpenAI-compatible con
-  API key.
+- Onboarding de primer arranque con tres rutas claras: proveedor personalizado,
+  **ChatGPT Codex** mediante OAuth o continuar con los modelos gratuitos de
+  OpenCode Free.
 - Herramientas integradas para leer y editar archivos, buscar con ripgrep y
   ejecutar comandos en shell POSIX (BusyBox en Windows).
 - Sesiones persistentes que pueden retomarse con `li --continue`.
 - Transporte resiliente para VPS/SSH, con reintentos seguros, watchdog de
   inactividad y soporte para Return recibido como `Ctrl+M`.
-- Compatibilidad nativa con Termux ARM64: binario Android dedicado, instalación
-  en `$PREFIX/bin`, dependencias mediante `pkg` y shell resuelto desde `PATH`.
+- Compatibilidad con Termux ARM64 mediante compilación nativa en el dispositivo:
+  el instalador clona el tag estable, instala Go con `pkg`, compila e instala en
+  `$PREFIX/bin`.
 - Sin dependencias externas obligatorias en runtime: la toolchain auxiliar se
   descarga y verifica mediante SHA-256 al primer uso; en Termux se usan los
-  paquetes nativos del repositorio para evitar binarios Linux incompatibles.
+  paquetes nativos del repositorio.
 
 ## Atajos principales
 
@@ -35,36 +36,39 @@ sobre tu repositorio y ofrece una TUI interactiva construida sobre tview/Tcell.
 
 ## Instalación rápida
 
+Los instaladores viven en la rama `main`, no dentro de los assets del release.
+Así pueden corregirse sin publicar otra versión de los binarios.
+
 Linux:
 
 ```bash
-curl -fsSL https://github.com/YahirHub/Lilith-Code/releases/latest/download/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh | bash
 ```
 
 Termux ARM64:
 
 ```bash
 pkg install -y curl
-curl -fsSL https://github.com/YahirHub/Lilith-Code/releases/latest/download/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://github.com/YahirHub/Lilith-Code/releases/latest/download/install.ps1 | iex
+irm https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.ps1 | iex
 ```
 
-Los instaladores detectan la plataforma y arquitectura, verifican SHA-256,
-configuran el destino correcto y reemplazan de forma segura una versión
-anterior. En Termux se instala directamente en `$PREFIX/bin`, por lo que no se
-requiere editar ni recargar `.bashrc`. Consulta
-[`install.md`](./install.md) para instalar una versión concreta y ver todas las
-plataformas compatibles.
+Los instaladores actualizan una versión anterior y conservan `~/.li`. Linux y
+Windows descargan el binario del release y verifican SHA-256. Termux instala
+`git`, `golang` y `ripgrep`, clona la versión estable y compila nativamente para
+evitar incompatibilidades del ejecutable Android precompilado. Consulta
+[`install.md`](./install.md) para más opciones.
 
 ## Releases
 
 La versión se define en `internal/version/version.go`. Para publicar una nueva
 versión, cambia `version.Current`, haz commit y ejecuta manualmente el workflow
 **Publicar release** desde GitHub Actions. El workflow prueba el proyecto,
-ejecuta `cmd/build`, genera checksums, adjunta los instaladores y crea notas
-agrupadas de forma automática con los commits realizados desde el tag anterior.
+ejecuta `cmd/build`, genera checksums de los binarios y crea notas agrupadas con
+los commits realizados desde el tag anterior. Los instaladores no se adjuntan al
+release: siempre se descargan directamente desde el repositorio.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise install.sh update paths without network access."""
+"""Exercise Linux binary updates and native Termux source builds without network."""
 
 from __future__ import annotations
 
@@ -13,6 +13,10 @@ import tempfile
 
 REQUIRED_COMMANDS = (
     "awk",
+    "sort",
+    "tail",
+    "dirname",
+    "mkdir",
     "sha256sum",
     "cp",
     "chmod",
@@ -42,7 +46,7 @@ def write_release(release: Path, asset: str) -> Path:
     write_executable(
         binary,
         "#!/bin/sh\n"
-        "if [ \"${1:-}\" = version ]; then echo 'Lilith 0.1.1'; "
+        "if [ \"${1:-}\" = version ]; then echo 'Lilith 0.1.2'; "
         "else echo 'new lilith'; fi\n",
     )
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
@@ -74,7 +78,7 @@ def write_fake_curl(fakebin: Path, binary: Path, checksums: Path) -> None:
 
 def run_installer(installer: Path, repo: Path, env: dict[str, str]) -> str:
     completed = subprocess.run(
-        ["/bin/sh", str(installer), "0.1.1"],
+        ["/bin/sh", str(installer), "0.1.2"],
         cwd=repo,
         env=env,
         text=True,
@@ -88,15 +92,16 @@ def run_installer(installer: Path, repo: Path, env: dict[str, str]) -> str:
 def simulate_termux(installer: Path, repo: Path, root: Path) -> None:
     prefix = root / "data" / "data" / "com.termux" / "files" / "usr"
     fakebin = root / "fakebin"
-    release = root / "release"
     home = root / "home"
-    for directory in (prefix / "bin", fakebin, release, home):
+    source_fixture = root / "source-fixture"
+    source_store = home / ".local" / "share" / "lilith" / "source"
+    for directory in (prefix / "bin", fakebin, home, source_fixture / "cmd" / "li"):
         directory.mkdir(parents=True, exist_ok=True)
 
-    write_executable(prefix / "bin" / "li", "#!/bin/sh\necho 'Lilith 0.1.0'\n")
-    binary = write_release(release, "li-termux-arm64")
+    (source_fixture / "go.mod").write_text("module github.com/lilith/li\n", encoding="utf-8")
+    (source_fixture / "cmd" / "li" / "main.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+    write_executable(prefix / "bin" / "li", "#!/bin/sh\necho 'Lilith 0.1.1'\n")
     link_test_commands(fakebin)
-    write_fake_curl(fakebin, binary, release / "SHA256SUMS.txt")
     write_executable(
         fakebin / "uname",
         "#!/bin/sh\n"
@@ -107,11 +112,38 @@ def simulate_termux(installer: Path, repo: Path, root: Path) -> None:
     write_executable(
         fakebin / "pkg",
         "#!/bin/sh\n"
-        f"printf '%s\\n' \"$*\" >> '{pkg_log}'\n"
-        f"cat > '{prefix / 'bin' / 'rg'}' <<'EOF'\n#!/bin/sh\nexit 0\nEOF\n"
-        f"chmod +x '{prefix / 'bin' / 'rg'}'\n"
-        f"cat > '{prefix / 'bin' / 'git'}' <<'EOF'\n#!/bin/sh\nexit 0\nEOF\n"
-        f"chmod +x '{prefix / 'bin' / 'git'}'\n",
+        f"printf '%s\\n' \"$*\" >> '{pkg_log}'\n",
+    )
+    write_executable(
+        fakebin / "git",
+        "#!/bin/sh\n"
+        f"fixture='{source_fixture}'\n"
+        "case \"${1:-}\" in\n"
+        "  ls-remote) printf '0123456789abcdef\\trefs/tags/v0.1.2\\n';;\n"
+        "  clone)\n"
+        "    for last do :; done\n"
+        "    mkdir -p \"$last\"\n"
+        "    cp -R \"$fixture/.\" \"$last/\"\n"
+        "    mkdir -p \"$last/.git\"\n"
+        "    ;;\n"
+        "  -C) printf '0123456\\n';;\n"
+        "  *) echo \"unexpected git invocation: $*\" >&2; exit 2;;\n"
+        "esac\n",
+    )
+    write_executable(
+        fakebin / "go",
+        "#!/bin/sh\n"
+        "if [ \"${1:-}\" = env ] && [ \"${2:-}\" = GOOS ]; then echo android; exit 0; fi\n"
+        "out=''\n"
+        "while [ $# -gt 0 ]; do\n"
+        "  case \"$1\" in -o) out=\"$2\"; shift 2;; *) shift;; esac\n"
+        "done\n"
+        "[ -n \"$out\" ] || { echo 'missing -o' >&2; exit 2; }\n"
+        "cat > \"$out\" <<'SCRIPT'\n"
+        "#!/bin/sh\n"
+        "if [ \"${1:-}\" = version ]; then echo 'Lilith 0.1.2'; else echo 'new lilith'; fi\n"
+        "SCRIPT\n"
+        "chmod +x \"$out\"\n",
     )
 
     env = os.environ.copy()
@@ -120,6 +152,7 @@ def simulate_termux(installer: Path, repo: Path, root: Path) -> None:
             "HOME": str(home),
             "PREFIX": str(prefix),
             "TERMUX_VERSION": "0.119",
+            "LI_TERMUX_SOURCE_DIR": str(source_store),
             "PATH": os.pathsep.join((str(fakebin), str(prefix / "bin"))),
         }
     )
@@ -128,14 +161,16 @@ def simulate_termux(installer: Path, repo: Path, root: Path) -> None:
     version = subprocess.check_output(
         [str(prefix / "bin" / "li"), "version"], text=True
     ).strip()
-    if version != "Lilith 0.1.1":
-        raise AssertionError(f"Termux installer did not update li: {version!r}")
-    if "install -y git ripgrep" not in pkg_log.read_text(encoding="utf-8"):
-        raise AssertionError("Termux installer did not request git/ripgrep")
+    if version != "Lilith 0.1.2":
+        raise AssertionError(f"Termux installer did not rebuild li: {version!r}")
+    if "install -y git golang ripgrep" not in pkg_log.read_text(encoding="utf-8"):
+        raise AssertionError("Termux installer did not request git/golang/ripgrep")
+    if not (source_store / "go.mod").exists():
+        raise AssertionError("Termux installer did not preserve the cloned source")
     if (home / ".bashrc").exists():
         raise AssertionError("Termux installer must not edit .bashrc")
-    if "Entorno: Termux ARM64" not in output:
-        raise AssertionError("installer did not select its Termux branch")
+    if "Compilando con Go de Termux" not in output:
+        raise AssertionError("installer did not use its native Termux build branch")
 
 
 def simulate_linux(installer: Path, repo: Path, root: Path) -> None:
@@ -146,7 +181,7 @@ def simulate_linux(installer: Path, repo: Path, root: Path) -> None:
     for directory in (targetbin, fakebin, release, home):
         directory.mkdir(parents=True, exist_ok=True)
 
-    write_executable(targetbin / "li", "#!/bin/sh\necho 'Lilith 0.1.0'\n")
+    write_executable(targetbin / "li", "#!/bin/sh\necho 'Lilith 0.1.1'\n")
     binary = write_release(release, "li-linux-amd64")
     link_test_commands(fakebin)
     write_fake_curl(fakebin, binary, release / "SHA256SUMS.txt")
@@ -163,8 +198,6 @@ def simulate_linux(installer: Path, repo: Path, root: Path) -> None:
     env.update(
         {
             "HOME": str(home),
-            # The writable destination is already in PATH, so the installed
-            # command must work immediately in the same shell environment.
             "PATH": os.pathsep.join((str(targetbin), str(fakebin))),
         }
     )
@@ -173,7 +206,7 @@ def simulate_linux(installer: Path, repo: Path, root: Path) -> None:
     version = subprocess.check_output(
         [str(targetbin / "li"), "version"], text=True
     ).strip()
-    if version != "Lilith 0.1.1":
+    if version != "Lilith 0.1.2":
         raise AssertionError(f"Linux installer did not update li: {version!r}")
     if (home / ".bashrc").exists():
         raise AssertionError("Linux installer must not edit .bashrc")
@@ -188,7 +221,7 @@ def main() -> None:
         root = Path(tmp_raw)
         simulate_termux(installer, repo, root / "termux")
         simulate_linux(installer, repo, root / "linux")
-    print("Linux and Termux install/update simulations passed")
+    print("Linux update and native Termux build simulations passed")
 
 
 if __name__ == "__main__":

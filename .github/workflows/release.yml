@@ -11,7 +11,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  probar-instalador-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Probar instalador con Windows PowerShell 5.1
+        shell: powershell
+        run: .\.github\scripts\test_install_ps1.ps1
+
   release:
+    needs: probar-instalador-windows
     runs-on: ubuntu-latest
     steps:
       - name: Descargar código
@@ -49,7 +60,7 @@ jobs:
       - name: Ejecutar pruebas
         run: go test ./...
 
-      - name: Probar instaladores Linux y Termux
+      - name: Probar instalador Linux y compilación Termux
         run: |
           sh -n install.sh
           python3 .github/scripts/test_install_sh.py
@@ -57,19 +68,11 @@ jobs:
       - name: Compilar binarios
         run: go run ./cmd/build build
 
-      - name: Verificar artefacto Termux
+      - name: Generar sumas SHA-256
         shell: bash
         run: |
-          test -s dist/li-termux-arm64
-          go version -m dist/li-termux-arm64
-
-      - name: Preparar instaladores y sumas SHA-256
-        shell: bash
-        run: |
-          cp install.sh install.ps1 install.cmd dist/
-          chmod +x dist/install.sh
           cd dist
-          sha256sum li-* install.sh install.ps1 install.cmd > SHA256SUMS.txt
+          sha256sum li-* > SHA256SUMS.txt
 
       - name: Detectar release anterior
         id: previous

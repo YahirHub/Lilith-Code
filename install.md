@@ -1,118 +1,119 @@
 # Instalación de Lilith
 
-Lilith publica binarios para Linux, Termux/Android ARM64 y Windows. Los
-instaladores detectan la plataforma, validan el archivo con SHA-256 y actualizan
-una instalación existente sin borrar la configuración guardada en `~/.li`.
+Los instaladores se descargan directamente desde la rama `main`. Esto permite
+corregir `install.sh`, `install.ps1` o `install.cmd` sin volver a compilar ni
+publicar los binarios. La configuración, sesiones y credenciales permanecen en
+`~/.li` y no se eliminan durante una actualización.
 
 ## Linux
 
 Arquitecturas: AMD64, ARM64 y ARMv7.
 
 ```bash
-curl -fsSL https://github.com/YahirHub/Lilith-Code/releases/latest/download/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh | bash
 ```
 
-El instalador usa `/usr/local/bin/li` directamente o mediante `sudo`. Si no
-dispone de privilegios, utiliza otro directorio escribible que ya pertenezca al
-`PATH`. Nunca depende de modificar `.bashrc`, por lo que `li` queda disponible
-en la terminal actual sin ejecutar `source ~/.bashrc`. Si no existe ningún
-destino seguro en el PATH y tampoco hay `sudo`, el instalador se detiene antes
-de realizar una instalación parcial.
+El instalador descarga el binario del último release, verifica
+`SHA256SUMS.txt` y lo coloca en un directorio que ya pertenece al `PATH`,
+normalmente `/usr/local/bin`. No modifica `.bashrc` ni requiere ejecutar
+`source ~/.bashrc`.
 
-Para instalar o volver a instalar una versión concreta:
+Versión concreta:
 
 ```bash
-curl -fsSL https://github.com/YahirHub/Lilith-Code/releases/latest/download/install.sh -o install.sh
-sh install.sh 0.2.0
+curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh -o install.sh
+sh install.sh 0.1.2
 rm install.sh
 ```
 
-También se puede definir `LI_VERSION=v0.2.0` o usar `LI_REPOSITORY` para un fork.
-
+También se puede usar `LI_VERSION=v0.1.2` o `LI_REPOSITORY` para un fork.
 
 ## Termux en Android
 
-Compatibilidad nativa inicial: **ARM64/AArch64**, incluida la Samsung Galaxy Tab
-A9+ SM-X210. El release contiene `li-termux-arm64`, compilado específicamente
-con `GOOS=android`, `GOARCH=arm64` y `CGO_ENABLED=0`.
-
-Instala primero `curl` y ejecuta el mismo instalador Unix:
+Compatibilidad oficial inicial: ARM64/AArch64.
 
 ```bash
 pkg install -y curl
-curl -fsSL https://github.com/YahirHub/Lilith-Code/releases/latest/download/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh | sh
 ```
 
-El instalador detecta Termux antes de tratarlo como Linux, instala el binario en
-`$PREFIX/bin/li` y agrega mediante `pkg` las dependencias recomendadas que falten:
-`git` y `ripgrep`. `$PREFIX/bin` ya pertenece al `PATH` de Termux, por lo que
-`li` queda disponible inmediatamente y no es necesario ejecutar `source
-~/.bashrc` ni reiniciar la app.
+En Termux no se descarga un binario Android del release. El instalador:
 
-Para omitir la instalación automática de paquetes auxiliares:
+1. instala o actualiza `git`, `golang` y `ripgrep` mediante `pkg`;
+2. detecta el último tag estable, o la versión indicada con `LI_VERSION`;
+3. clona el repositorio en `$HOME/.local/share/lilith/source`;
+4. compila `./cmd/li` nativamente con Go de Termux;
+5. reemplaza de forma segura `$PREFIX/bin/li`.
+
+El código fuente conservado permite repetir una actualización y facilita el
+diagnóstico. Puede cambiarse su destino con `LI_TERMUX_SOURCE_DIR`.
+
+Versión concreta:
 
 ```bash
-curl -fsSL https://github.com/YahirHub/Lilith-Code/releases/latest/download/install.sh | \
-  LI_SKIP_TERMUX_PACKAGES=1 sh
+curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh | \
+  LI_VERSION=0.1.2 sh
 ```
 
-Para una versión concreta:
-
-```bash
-curl -fsSL https://github.com/YahirHub/Lilith-Code/releases/latest/download/install.sh | \
-  LI_VERSION=0.1.1 sh
-```
-
-La configuración y las sesiones permanecen en `$HOME/.li`. El instalador no
-solicita root, no usa `sudo` y no escribe en almacenamiento compartido de
-Android.
+El runtime corrige además el argumento ejecutable duplicado que Android puede
+introducir al lanzar programas Go; sin esa normalización Cobra interpretaría la
+ruta absoluta de `li` como un comando desconocido.
 
 ## Windows PowerShell
 
 Arquitecturas: AMD64 y ARM64.
 
 ```powershell
-irm https://github.com/YahirHub/Lilith-Code/releases/latest/download/install.ps1 | iex
+irm https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.ps1 | iex
 ```
 
-Se instala en `%LOCALAPPDATA%\Programs\Lilith\bin\li.exe`. El instalador agrega
-la carpeta al `PATH` persistente del usuario y a la sesión actual de PowerShell.
-Una instalación anterior se reemplaza de forma atómica.
+Se instala en `%LOCALAPPDATA%\Programs\Lilith\bin\li.exe`. El script detecta la
+arquitectura tanto en PowerShell 7 como en Windows PowerShell 5.1, agrega el
+directorio al `PATH` persistente del usuario y también a la sesión actual.
 
-Para una versión concreta:
+Versión concreta:
 
 ```powershell
-$env:LI_VERSION = '0.2.0'
-irm https://github.com/YahirHub/Lilith-Code/releases/latest/download/install.ps1 | iex
+$env:LI_VERSION = '0.1.2'
+irm https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.ps1 | iex
 ```
 
 ## Windows CMD
 
-Descarga `install.cmd` desde el release y ejecútalo. El archivo descarga el
-instalador PowerShell oficial, actualiza el `PATH` de la sesión de CMD y verifica
-la instalación con `li version`.
+Descarga el archivo directamente desde el repositorio y ejecútalo:
 
 ```cmd
+curl.exe -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.cmd -o install.cmd
 install.cmd
 ```
 
-Para una versión concreta:
+Versión concreta:
 
 ```cmd
-install.cmd 0.2.0
+install.cmd 0.1.2
 ```
+
+## Primer arranque
+
+Al ejecutar `li` por primera vez aparece un onboarding con estas opciones:
+
+1. proveedor personalizado OpenAI-compatible;
+2. ChatGPT Codex mediante OAuth;
+3. continuar con los modelos gratuitos de OpenCode Free.
+
+Después puede volver a esa pantalla con `/login`.
 
 ## Actualizar
 
-Vuelve a ejecutar el mismo instalador. Detectará la plataforma, descargará el
-release solicitado y reemplazará únicamente el ejecutable. Las sesiones,
-proveedores, credenciales y preferencias permanecen intactas.
+Vuelve a ejecutar el mismo comando de instalación. Linux y Windows reemplazan
+el ejecutable usando el release solicitado; Termux vuelve a clonar el tag y lo
+compila nativamente.
 
 ```bash
 li version
 ```
 
-## Compilar desde el código
+## Compilar manualmente
 
 Requiere Go 1.24 o superior:
 
@@ -122,5 +123,5 @@ cd lilith
 go run ./cmd/build build
 ```
 
-Los binarios se generan en `dist/`, incluido `li-termux-arm64`. Al primer arranque, Lilith crea `~/.li/` con
-sus preferencias, proveedores, credenciales y sesiones.
+`cmd/build` genera los binarios de release para Linux y Windows. Termux se
+compila en el propio dispositivo mediante `install.sh`.

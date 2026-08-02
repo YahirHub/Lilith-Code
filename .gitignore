@@ -33,3 +33,7 @@ Thumbs.db
 
 # Pruebas manuales generadas por el agente/CLI
 /pruebas-tools/
+
+# Python caches
+__pycache__/
+*.py[cod]

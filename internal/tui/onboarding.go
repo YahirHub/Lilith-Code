@@ -23,9 +23,9 @@ type onboardingCard struct {
 }
 
 var onboardingCards = []onboardingCard{
-	{"ChatGPT Codex", "Inicia sesión con tu cuenta ChatGPT Plus/Pro mediante OAuth.", "SUSCRIPCIÓN", OptionCodex},
 	{"Proveedor personalizado", "Conecta cualquier endpoint OpenAI-compatible con tu API key.", "API KEY", OptionCustom},
-	{"OpenCode Free", "Modelos gratuitos incluidos (Grok, Qwen3, Kimi).", "GRATIS", OptionOpenCodeFree},
+	{"ChatGPT Codex", "Inicia sesión con tu cuenta ChatGPT Plus/Pro mediante OAuth.", "SUSCRIPCIÓN", OptionCodex},
+	{"Continuar con OpenCode Free", "Usa los modelos gratuitos incluidos sin configurar una API key.", "GRATIS", OptionOpenCodeFree},
 }
 
 // OnboardingModel is the first-run screen (also reused for /login).

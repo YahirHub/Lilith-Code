@@ -17,7 +17,7 @@ El proyecto conserva un diseño inspirado en agentes de terminal modernos, pero 
 - `rivo/uniseg` para ancho Unicode.
 - Cobra para la CLI.
 - Binario objetivo con `CGO_ENABLED=0`.
-- Termux ARM64 usa un target propio `GOOS=android GOARCH=arm64` y el asset `li-termux-arm64`.
+- Termux ARM64 se instala desde `install.sh`: usa `pkg`, clona el tag estable y compila `cmd/li` nativamente; no se publica un asset Android no verificado.
 
 No quedan dependencias de Bubble Tea, Bubbles, Lip Gloss, Glamour ni otros módulos Charmbracelet. No deben reintroducirse.
 
@@ -177,7 +177,7 @@ Después de elegir el destino, `/fork` captura el estado actual y crea una sesi�
 5. Ejecutar formato, tests, race, vet y builds estáticos/multiplataforma cuando el entorno lo permita.
 6. Documentar el cambio en un MD numerado.
 7. Commit en español con el autor Git `YahirHub <217099863+YahirHub@users.noreply.github.com>`.
-8. Para publicar, cambiar únicamente `internal/version/version.go` y ejecutar manualmente el workflow **Publicar release**; éste prueba, compila `cmd/build`, valida `li-termux-arm64`, crea checksums, adjunta instaladores y genera notas agrupadas desde los commits posteriores al tag anterior.
+8. Para publicar, cambiar `internal/version/version.go` y ejecutar manualmente el workflow **Publicar release**; éste prueba, compila Linux/Windows, crea checksums y genera notas agrupadas. Los instaladores se descargan desde la rama `main`; Termux compila desde el código en el dispositivo.
 
 ## 13. Validación objetivo
 
@@ -189,7 +189,7 @@ go test -race ./...
 go vet ./...
 CGO_ENABLED=0 go build ./cmd/li
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/li
-GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build ./cmd/li
+GOOS=android GOARCH=arm64 CGO_ENABLED=0 go test ./cmd/li
 ```
 
 El entorno de entrega puede usar stubs locales sólo para comprobar la arquitectura cuando no tenga acceso a módulos o Go 1.24; nunca presentar esa comprobación como sustituto de una prueba final con las dependencias oficiales en Windows/Linux/Android. La compatibilidad interactiva de Termux requiere además una prueba en dispositivo ARM64 real.
@@ -213,3 +213,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `095-corregir-prueba-rewind-en-workflow.md`
 - `096-notas-release-e-instaladores.md`
 - `097-termux-arm64-agentes-y-skills.md`
+- `098-instaladores-repo-termux-nativo-onboarding.md`

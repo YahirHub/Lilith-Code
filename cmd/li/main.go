@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/spf13/cobra"
 
 	"github.com/lilith/li/internal/config"
 	"github.com/lilith/li/internal/logx"
+	"github.com/lilith/li/internal/platformargs"
 	"github.com/lilith/li/internal/providers"
 	"github.com/lilith/li/internal/providers/openai"
 	"github.com/lilith/li/internal/session"
@@ -25,6 +27,7 @@ var (
 var continueLast bool
 
 func main() {
+	os.Args = platformargs.Normalize(os.Args, runtime.GOOS)
 	root := &cobra.Command{
 		Use:   "li",
 		Short: "Lilith — CLI agéntico compatible con OpenAI",
