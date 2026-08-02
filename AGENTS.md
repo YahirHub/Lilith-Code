@@ -31,6 +31,8 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 ### Runtime y compilación
 
 - El binario principal debe seguir siendo compatible con `CGO_ENABLED=0`.
+- Termux ARM64 usa un artefacto nativo `GOOS=android GOARCH=arm64`; no reemplazarlo por un binario GNU/Linux genérico.
+- En Termux usar `$PREFIX`, `$HOME`, `PATH` y `pkg`. No asumir `/bin/sh`, `/usr/local/bin`, `sudo`, systemd, glibc ni root.
 - Go objetivo: 1.24 o superior.
 - `tview` controla el runtime físico; la UI visible se construye con los componentes internos de Lilith.
 - No bloquear el bucle de render con llamadas de red o procesos largos: usar `uikit.Cmd`.
@@ -117,9 +119,10 @@ go test -race ./...
 go vet ./...
 CGO_ENABLED=0 go build ./cmd/li
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/li
+GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build ./cmd/li
 ```
 
-También probar manualmente la ruta o pantalla afectada en Windows Terminal y Linux cuando cambie la TUI.
+También probar manualmente la ruta o pantalla afectada en Windows Terminal y Linux cuando cambie la TUI. Para cambios de Termux, validar instalación limpia, actualización y teclado en un dispositivo Android ARM64 real.
 
 ## Commits y documentación
 

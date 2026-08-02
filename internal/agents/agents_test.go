@@ -98,3 +98,21 @@ func TestOpenCodeLegacyToolFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestBundledTermuxAgentsAreMaterialized(t *testing.T) {
+	t.Parallel()
+	configDir := filepath.Join(t.TempDir(), ".li")
+	dir := BundledDir(configDir)
+	if dir == "" {
+		t.Fatal("expected bundled agent cache directory")
+	}
+	for _, name := range []string{"termux-specialist.md", "termux-auditor.md"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read bundled agent %s: %v", name, err)
+		}
+		if !strings.Contains(string(data), "Termux") {
+			t.Fatalf("bundled agent %s does not contain Termux guidance", name)
+		}
+	}
+}

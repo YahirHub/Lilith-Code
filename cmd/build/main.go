@@ -1,5 +1,6 @@
-// Command build creates stripped, static Lilith binaries for the supported
-// Linux/Windows targets. It also preserves the existing toolchain helper used
+// Command build creates stripped Lilith binaries for the supported
+// Linux, Termux/Android and Windows targets. It also preserves the existing
+// toolchain helper used
 // by the Makefile:
 //
 //	go run ./cmd/build             build all li binaries
@@ -35,6 +36,7 @@ var targets = []target{
 	{GOOS: "linux", GOARCH: "amd64", Output: "li-linux-amd64"},
 	{GOOS: "linux", GOARCH: "arm64", Output: "li-linux-arm64"},
 	{GOOS: "linux", GOARCH: "arm", GOARM: "7", Output: "li-linux-armv7"},
+	{GOOS: "android", GOARCH: "arm64", Output: "li-termux-arm64"},
 	{GOOS: "windows", GOARCH: "amd64", Output: "li-windows-amd64.exe"},
 	{GOOS: "windows", GOARCH: "arm64", Output: "li-windows-arm64.exe"},
 }

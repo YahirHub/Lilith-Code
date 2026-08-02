@@ -24,6 +24,18 @@ func TestBundledDirMaterializesEmbeddedSkillAssets(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, ".ready")); err != nil {
 		t.Fatalf("expected completed cache marker: %v", err)
 	}
+	for _, rel := range []string{
+		filepath.Join("termux-development", "SKILL.md"),
+		filepath.Join("termux-release", "SKILL.md"),
+	} {
+		data, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil {
+			t.Fatalf("read bundled %s: %v", rel, err)
+		}
+		if !strings.Contains(string(data), "Termux") {
+			t.Fatalf("bundled %s does not contain Termux guidance", rel)
+		}
+	}
 }
 
 func TestLoadUserAndProjectSkillsOverrideBuiltinByName(t *testing.T) {

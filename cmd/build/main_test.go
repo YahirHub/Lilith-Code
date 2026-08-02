@@ -55,3 +55,16 @@ func TestSanitizedBuildEnvRemovesCrossCompilationOverrides(t *testing.T) {
 		t.Fatalf("unrelated env var was removed: %#v", got)
 	}
 }
+
+func TestTargetsIncludeNativeTermuxARM64(t *testing.T) {
+	t.Parallel()
+	for _, target := range targets {
+		if target.GOOS == "android" && target.GOARCH == "arm64" && target.Output == "li-termux-arm64" {
+			if target.GOARM != "" {
+				t.Fatalf("Termux ARM64 target must not set GOARM: %#v", target)
+			}
+			return
+		}
+	}
+	t.Fatal("missing native android/arm64 Termux target")
+}

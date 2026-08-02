@@ -24,3 +24,8 @@ Built-in skills are intended mainly for Markdown instructions/references. The
 runtime still supports other resource files because embedded skills are
 materialized into Lilith's private cache before the existing skill tools read
 them.
+
+Bundled in the current release:
+
+- `termux-development`: Android/Termux runtime and portability guidance.
+- `termux-release`: native ARM64 build, installer, update, and release checks.

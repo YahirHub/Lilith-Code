@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -113,6 +114,9 @@ func init() {
 			}
 			rg := toolchain.Lookup("rg")
 			if rg == "" {
+				if runtime.GOOS == "android" {
+					return "", fmt.Errorf("ripgrep no está instalado: ejecuta `pkg install ripgrep` en Termux")
+				}
 				return "", fmt.Errorf("ripgrep not installed: run `go run ./cmd/build install`")
 			}
 			limit := intArg(args, "limit", 100)

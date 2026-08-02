@@ -3,6 +3,7 @@ package hooks
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -91,5 +92,24 @@ func TestMCPToolHookResolvesInputAndDoesNotBlockOnFailure(t *testing.T) {
 	res, err = r.Run(context.Background(), "PostToolUse", "Write", map[string]any{"tool_input": map[string]any{}})
 	if err != nil || res.Blocked || !strings.Contains(res.SystemMessage, "offline") {
 		t.Fatalf("non-blocking failure result=%#v err=%v", res, err)
+	}
+}
+
+func TestCommandHookUsesShellFromPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows command hooks use cmd.exe")
+	}
+	r := &Runner{
+		Root: t.TempDir(),
+		Entries: map[string][]Matcher{
+			"SessionStart": {{Hooks: []Hook{{Type: "command", Command: `printf '%s\n' '{"systemMessage":"portable-shell"}'`}}}},
+		},
+	}
+	result, err := r.Run(context.Background(), "SessionStart", "", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SystemMessage != "portable-shell" {
+		t.Fatalf("system message=%q", result.SystemMessage)
 	}
 }

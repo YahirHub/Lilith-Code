@@ -16,8 +16,11 @@ sobre tu repositorio y ofrece una TUI interactiva construida sobre tview/Tcell.
 - Sesiones persistentes que pueden retomarse con `li --continue`.
 - Transporte resiliente para VPS/SSH, con reintentos seguros, watchdog de
   inactividad y soporte para Return recibido como `Ctrl+M`.
+- Compatibilidad nativa con Termux ARM64: binario Android dedicado, instalación
+  en `$PREFIX/bin`, dependencias mediante `pkg` y shell resuelto desde `PATH`.
 - Sin dependencias externas obligatorias en runtime: la toolchain auxiliar se
-  descarga y verifica mediante SHA-256 al primer uso.
+  descarga y verifica mediante SHA-256 al primer uso; en Termux se usan los
+  paquetes nativos del repositorio para evitar binarios Linux incompatibles.
 
 ## Atajos principales
 
@@ -38,14 +41,23 @@ Linux:
 curl -fsSL https://github.com/YahirHub/Lilith-Code/releases/latest/download/install.sh | bash
 ```
 
+Termux ARM64:
+
+```bash
+pkg install -y curl
+curl -fsSL https://github.com/YahirHub/Lilith-Code/releases/latest/download/install.sh | sh
+```
+
 Windows PowerShell:
 
 ```powershell
 irm https://github.com/YahirHub/Lilith-Code/releases/latest/download/install.ps1 | iex
 ```
 
-Los instaladores detectan la arquitectura, verifican SHA-256, configuran el
-`PATH` y reemplazan de forma segura una versión anterior. Consulta
+Los instaladores detectan la plataforma y arquitectura, verifican SHA-256,
+configuran el destino correcto y reemplazan de forma segura una versión
+anterior. En Termux se instala directamente en `$PREFIX/bin`, por lo que no se
+requiere editar ni recargar `.bashrc`. Consulta
 [`install.md`](./install.md) para instalar una versión concreta y ver todas las
 plataformas compatibles.
 

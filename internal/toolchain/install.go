@@ -12,8 +12,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -24,6 +26,9 @@ const maxArtifactBytes = 64 << 20
 // Install downloads, verifies and unpacks a tool into BinDir. It is a no-op
 // when the tool is already present unless force is true.
 func Install(ctx context.Context, t Tool, force bool, progress func(string)) (string, error) {
+	if runtime.GOOS == "android" {
+		return installTermuxPackage(ctx, t, force, progress)
+	}
 	art, err := t.ArtifactFor(Platform())
 	if err != nil {
 		return "", err
@@ -65,6 +70,37 @@ func Install(ctx context.Context, t Tool, force bool, progress func(string)) (st
 	}
 	log("Instalado %s en %s", t.Name, dest)
 	return dest, nil
+}
+
+func installTermuxPackage(ctx context.Context, t Tool, force bool, progress func(string)) (string, error) {
+	if !force {
+		if current := Lookup(t.Name); current != "" {
+			return current, nil
+		}
+	}
+	pkgName := strings.TrimSpace(t.TermuxPackage)
+	if pkgName == "" {
+		return "", fmt.Errorf("%s: no existe paquete Termux configurado", t.Name)
+	}
+	pkg, err := exec.LookPath("pkg")
+	if err != nil {
+		return "", fmt.Errorf("%s: Termux requiere `pkg install %s`: %w", t.Name, pkgName, err)
+	}
+	if progress != nil {
+		progress(fmt.Sprintf("Instalando %s con pkg (%s)…", pkgName, t.Why))
+	}
+	cmd := exec.CommandContext(ctx, pkg, "install", "-y", pkgName)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("pkg install %s: %w", pkgName, err)
+	}
+	installed := Lookup(t.Name)
+	if installed == "" {
+		return "", fmt.Errorf("pkg instaló %s pero no se encontró %s en PATH", pkgName, t.Name)
+	}
+	return installed, nil
 }
 
 // EnsureAll installs every tool in the catalog that is missing.

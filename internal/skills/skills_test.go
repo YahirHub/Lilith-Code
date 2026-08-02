@@ -31,17 +31,22 @@ description: Project-specific glass design rules.
 `)
 
 	got := Load(DefaultLoadOptions(configDir, project))
-	if len(got) != 1 {
-		t.Fatalf("expected 1 deduplicated skill, got %d: %#v", len(got), got)
+	var glass *Skill
+	count := 0
+	for i := range got {
+		if got[i].Name == "glass-design" {
+			glass = &got[i]
+			count++
+		}
 	}
-	if got[0].Name != "glass-design" {
-		t.Fatalf("unexpected skill name: %q", got[0].Name)
+	if count != 1 || glass == nil {
+		t.Fatalf("expected one deduplicated glass-design skill, got %d in %#v", count, got)
 	}
-	if got[0].Description != "Project-specific glass design rules." {
-		t.Fatalf("project skill should override user skill, got description %q", got[0].Description)
+	if glass.Description != "Project-specific glass design rules." {
+		t.Fatalf("project skill should override user skill, got description %q", glass.Description)
 	}
-	if got[0].Source != "project" {
-		t.Fatalf("expected project source, got %q", got[0].Source)
+	if glass.Source != "project" {
+		t.Fatalf("expected project source, got %q", glass.Source)
 	}
 }
 

@@ -78,7 +78,7 @@ def render(tag: str, previous_tag: str, repository: str, commits: list[Commit]) 
             lines.append(f"- {commit.subject} ([`{commit.sha[:7]}`](https://github.com/{repository}/commit/{commit.sha}))")
         lines.append("")
 
-    lines.extend(["## Instalación y actualización", "", "### Linux", "", "```bash", f"curl -fsSL https://github.com/{repository}/releases/latest/download/install.sh | bash", "```", "", "### Windows (PowerShell)", "", "```powershell", f"irm https://github.com/{repository}/releases/latest/download/install.ps1 | iex", "```", ""])
+    lines.extend(["## Instalación y actualización", "", "### Linux", "", "```bash", f"curl -fsSL https://github.com/{repository}/releases/latest/download/install.sh | bash", "```", "", "### Termux ARM64", "", "```bash", "pkg install -y curl", f"curl -fsSL https://github.com/{repository}/releases/latest/download/install.sh | sh", "```", "", "### Windows (PowerShell)", "", "```powershell", f"irm https://github.com/{repository}/releases/latest/download/install.ps1 | iex", "```", ""])
 
     if previous_tag:
         lines.extend([

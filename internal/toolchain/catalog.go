@@ -34,6 +34,9 @@ type Tool struct {
 	Name string
 	// Why is shown to the user when installing.
 	Why string
+	// TermuxPackage is installed through Termux pkg instead of downloading a
+	// generic Linux artifact that may not match Android's runtime/prefix.
+	TermuxPackage string
 	// Platforms is keyed by "goos/goarch".
 	Platforms map[string]Artifact
 }
@@ -42,8 +45,9 @@ const rgBase = "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/r
 
 // Ripgrep is used for fast code search from tools and from the agent.
 var Ripgrep = Tool{
-	Name: "rg",
-	Why:  "búsqueda de código rápida (ripgrep)",
+	Name:          "rg",
+	Why:           "búsqueda de código rápida (ripgrep)",
+	TermuxPackage: "ripgrep",
 	Platforms: map[string]Artifact{
 		"windows/amd64": {
 			URL:    rgBase + "x86_64-pc-windows-msvc.zip",

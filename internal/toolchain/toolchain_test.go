@@ -68,3 +68,9 @@ func TestExtractTarGz(t *testing.T) {
 		t.Errorf("contenido = %q", got)
 	}
 }
+
+func TestRipgrepDeclaresTermuxPackage(t *testing.T) {
+	if Ripgrep.TermuxPackage != "ripgrep" {
+		t.Fatalf("Termux package=%q", Ripgrep.TermuxPackage)
+	}
+}

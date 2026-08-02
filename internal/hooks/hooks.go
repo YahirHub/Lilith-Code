@@ -19,6 +19,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/lilith/li/internal/toolchain"
 )
 
 type Hook struct {
@@ -403,7 +405,12 @@ func (r *Runner) runOne(parent context.Context, event string, input map[string]a
 		if runtime.GOOS == "windows" {
 			cmd = exec.CommandContext(ctx, "cmd.exe", "/C", command)
 		} else {
-			cmd = exec.CommandContext(ctx, "/bin/sh", "-c", command)
+			shellPath, prefix, ok := toolchain.ShellCommand()
+			if !ok {
+				return Result{}, fmt.Errorf("no se encontró bash/sh para ejecutar hook")
+			}
+			args := append(append([]string(nil), prefix...), command)
+			cmd = exec.CommandContext(ctx, shellPath, args...)
 		}
 		cmd.Dir = r.Root
 		cmd.Stdin = bytes.NewReader(data)

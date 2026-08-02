@@ -29,3 +29,8 @@ the recommended value for agent files that must stay maximally portable to Claud
 
 Lilith also accepts common OpenCode/Pi fields and paths, but `.claude/agents`
 remains the recommended format when an agent should be shareable with Claude Code.
+
+Built-in platform specialists currently include:
+
+- `termux-specialist`: implementation worker for Android/Termux support.
+- `termux-auditor`: read-only portability and release auditor.

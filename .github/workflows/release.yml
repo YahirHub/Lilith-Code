@@ -49,8 +49,19 @@ jobs:
       - name: Ejecutar pruebas
         run: go test ./...
 
+      - name: Probar instaladores Linux y Termux
+        run: |
+          sh -n install.sh
+          python3 .github/scripts/test_install_sh.py
+
       - name: Compilar binarios
         run: go run ./cmd/build build
+
+      - name: Verificar artefacto Termux
+        shell: bash
+        run: |
+          test -s dist/li-termux-arm64
+          go version -m dist/li-termux-arm64
 
       - name: Preparar instaladores y sumas SHA-256
         shell: bash
