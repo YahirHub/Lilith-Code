@@ -12,6 +12,7 @@ const (
 	EventStarted      EventKind = "started"
 	EventThinking     EventKind = "thinking"
 	EventText         EventKind = "text"
+	EventStreamReset  EventKind = "stream_reset"
 	EventToolStarted  EventKind = "tool_started"
 	EventToolFinished EventKind = "tool_finished"
 	EventCompleted    EventKind = "completed"

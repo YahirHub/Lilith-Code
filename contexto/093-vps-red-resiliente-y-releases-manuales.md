@@ -49,9 +49,11 @@ contenido. El transporte nuevo usa:
 Tanto Chat Completions SSE como Codex Responses SSE pasan por el mismo lector con
 watchdog. Cada línea recibida —incluidos comentarios keepalive— reinicia el reloj.
 Si no llega ningún byte durante cuatro minutos, se cierra el body para desbloquear
-la lectura y el fallo entra en la política existente de reintentos transitorios.
-Sólo se reintenta automáticamente cuando todavía no se emitió contenido, evitando
-duplicar texto o tool calls a mitad de respuesta.
+la lectura. La política inicial sólo reintentaba antes del primer chunk; desde el
+cambio `099-reconexion-automatica-y-skills-internas.md`, los cortes de transporte
+mantienen vivo el turno hasta recuperar conectividad. Cuando ya hubo contenido,
+la TUI elimina primero el intento parcial completo y repite el request original,
+por lo que no duplica texto ni tool calls.
 
 En Unix también se captura `SIGHUP` junto con SIGTERM/Interrupt para que una
 terminal SSH cerrada detenga el runtime de forma controlada. La conversación ya

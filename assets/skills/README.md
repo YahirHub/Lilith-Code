@@ -1,31 +1,11 @@
 # Built-in Lilith skills
 
-Place built-in Agent Skills in this directory before compiling Lilith:
+This directory is reserved for optional built-in Agent Skills embedded in the
+`li` binary. Lilith currently ships **without product-specific built-in
+skills**: installation, compilation, updating and release procedures belong to
+repository documentation and CI, not to the model's skill catalog.
 
-```text
-assets/skills/
-└── my-skill/
-    ├── SKILL.md
-    └── references/
-        └── notes.md
-```
-
-Everything below `assets/skills` is embedded in the `li` binary by Go's
-`embed` package. At runtime Lilith exposes these skills through the same
-`list_skills`, `skill_read`, `skill_search` and `skill_files` tools used for
-normal skills.
-
-Precedence is intentionally low: a skill with the same `name` in
-`~/.li/skills` overrides the built-in copy, and a project skill in
-`<project>/.li/skills` overrides both. This lets a user replace or customize a
-bundled skill without rebuilding Lilith.
-
-Built-in skills are intended mainly for Markdown instructions/references. The
-runtime still supports other resource files because embedded skills are
-materialized into Lilith's private cache before the existing skill tools read
-them.
-
-Bundled in the current release:
-
-- `termux-development`: Android/Termux runtime and portability guidance.
-- `termux-release`: native ARM64 build, installer, update, and release checks.
+User and project skills continue to work normally from `~/.li/skills`,
+`<project>/.li/skills` and the compatible Claude/OpenCode locations. If a
+future generic skill is added here, it must be useful across projects and must
+not teach the model how to install, compile or publish Lilith itself.

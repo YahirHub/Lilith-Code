@@ -64,6 +64,14 @@ type Client struct {
 	// remain valid. Zero uses the production default; a negative value disables
 	// the watchdog (useful for specialized providers/tests).
 	StreamIdleTimeout time.Duration
+
+	// ConnectivityProbe is optional and primarily useful to embedders/tests. The
+	// production fallback probes the selected provider first and then public
+	// connectivity endpoints to distinguish an offline machine from a provider
+	// outage. NetworkRetryMinDelay/MaxDelay bound the recovery polling cadence.
+	ConnectivityProbe    func(context.Context, providers.Provider) ConnectivityState
+	NetworkRetryMinDelay time.Duration
+	NetworkRetryMaxDelay time.Duration
 }
 
 const defaultStreamIdleTimeout = 4 * time.Minute
@@ -208,8 +216,11 @@ type Chunk struct {
 	// que algunos modelos (p. ej. gpt-5) emiten antes del texto final.
 	Thinking     string
 	ThinkingDone bool
-	Done         bool
-	Err          error
+	// Retry reports a recoverable network interruption. It is a status event,
+	// not a terminal error; consumers must keep pumping the same channel.
+	Retry *RetryStatus
+	Done  bool
+	Err   error
 }
 
 var errSSEDone = errors.New("sse done")
@@ -329,70 +340,107 @@ func (c *Client) resolveAPIKey(p providers.Provider) (string, error) {
 	return "", nil
 }
 
-// maxAttempts es el número total de intentos ante fallos transitorios
-// (HTTP 5xx, 429 o cortes de red) antes de rendirse.
-const maxAttempts = 3
+// maxServiceAttempts bounds retries for HTTP 408/429/5xx responses. Pure
+// transport interruptions are different: Stream waits until connectivity
+// returns or the user cancels the turn.
+const maxServiceAttempts = 3
 
 // Stream sends a chat request and pushes chunks into the returned channel.
-// Cancel via the context. Reintenta con espera creciente cuando el proveedor
-// falla de forma transitoria y aún no se emitió nada del turno.
+// Transport interruptions never destroy the active turn. The client probes the
+// selected endpoint, waits with bounded exponential backoff and retries the
+// exact request when connectivity returns. If an attempt had already emitted a
+// partial answer, Retry.Reset tells the TUI to discard that incomplete attempt
+// before rendering the replacement stream.
 func (c *Client) Stream(ctx context.Context, req Request) <-chan Chunk {
 	out := make(chan Chunk, 8)
 	go func() {
 		defer close(out)
-		var lastErr error
-		for attempt := 1; attempt <= maxAttempts; attempt++ {
-			counter := &countingSink{out: out}
+		serviceAttempts := 0
+		networkAttempts := 0
+		for {
+			counter := &countingSink{ctx: ctx, out: out}
 			err := c.do(ctx, req, counter)
 			if err == nil {
-				out <- Chunk{Done: true}
+				sendChunk(ctx, out, Chunk{Done: true})
 				return
 			}
-			lastErr = err
-			// Sólo reintentamos si el turno aún no emitió nada: repetir a
-			// medio stream duplicaría contenido o tool calls.
-			if counter.n > 0 || ctx.Err() != nil || !isTransient(err) || attempt == maxAttempts {
-				break
-			}
-			select {
-			case <-ctx.Done():
-				out <- Chunk{Err: ctx.Err()}
+			if ctx.Err() != nil {
+				sendChunk(ctx, out, Chunk{Err: ctx.Err()})
 				return
-			case <-time.After(time.Duration(attempt) * time.Second):
 			}
+
+			if isNetworkFailure(err) {
+				if counter.n > 0 {
+					networkAttempts = 0
+				}
+				networkAttempts++
+				if c != nil && c.HTTP != nil {
+					c.HTTP.CloseIdleConnections()
+				}
+				if waitErr := c.waitForConnectivity(ctx, req.Provider, networkAttempts, counter.n > 0, out); waitErr != nil {
+					sendChunk(ctx, out, Chunk{Err: waitErr})
+					return
+				}
+				if c != nil && c.HTTP != nil {
+					c.HTTP.CloseIdleConnections()
+				}
+				serviceAttempts = 0
+				continue
+			}
+
+			if counter.n == 0 && isTransientHTTP(err) && serviceAttempts < maxServiceAttempts-1 {
+				networkAttempts = 0
+				serviceAttempts++
+				delay := time.Duration(serviceAttempts) * time.Second
+				timer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					sendChunk(ctx, out, Chunk{Err: ctx.Err()})
+					return
+				case <-timer.C:
+				}
+				continue
+			}
+			sendChunk(ctx, out, Chunk{Err: err})
+			return
 		}
-		out <- Chunk{Err: lastErr}
 	}()
 	return out
 }
 
-// countingSink cuenta lo ya entregado a la TUI en el intento actual.
+// countingSink counts semantic chunks emitted by one provider attempt. Retry
+// status chunks bypass it so Reset reflects only incomplete model output.
 type countingSink struct {
+	ctx context.Context
 	out chan<- Chunk
 	n   int
 }
 
-func (s *countingSink) send(ch Chunk) { s.n++; s.out <- ch }
+func (s *countingSink) send(ch Chunk) {
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case s.out <- ch:
+		s.n++
+	case <-ctx.Done():
+	}
+}
 
-// isTransient distingue fallos recuperables (red, 429, 5xx) de errores
-// definitivos como credenciales inválidas o petición mal formada.
-func isTransient(err error) bool {
+func isTransientHTTP(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
 	for _, code := range []string{"HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504", "HTTP 429", "HTTP 408", "HTTP 520", "HTTP 524"} {
 		if strings.Contains(msg, code) {
-			return true
-		}
-	}
-	if strings.HasPrefix(msg, "HTTP ") {
-		return false
-	}
-	// Errores de transporte: timeouts, EOF, conexión reiniciada.
-	low := strings.ToLower(msg)
-	for _, frag := range []string{"timeout", "i/o timeout", "eof", "connection reset", "connection refused", "network is unreachable", "temporary", "broken pipe", "no such host", "tls", "stream sin actividad"} {
-		if strings.Contains(low, frag) {
 			return true
 		}
 	}

@@ -29,7 +29,7 @@
 ## Reglas derivadas
 - Cualquier vista en vivo dentro del transcript debe tener altura estable
   mientras el stream corre; si crece, la ventana desliza, no se estira.
-- Los reintentos sólo son válidos antes de emitir el primer chunk del turno.
+- Regla original sustituida por `099-reconexion-automatica-y-skills-internas.md`: ante cortes de transporte se puede reintentar después del primer chunk únicamente si la TUI elimina antes todo el intento parcial y conserva intacto el request original. Los reintentos HTTP normales siguen evitando duplicados.
 
 ## Pruebas
 `internal/tui/filepanel_test.go`: la vista previa mide siempre `previewLines`

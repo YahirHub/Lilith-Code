@@ -14,8 +14,10 @@ sobre tu repositorio y ofrece una TUI interactiva construida sobre tview/Tcell.
 - Herramientas integradas para leer y editar archivos, buscar con ripgrep y
   ejecutar comandos en shell POSIX (BusyBox en Windows).
 - Sesiones persistentes que pueden retomarse con `li --continue`.
-- Transporte resiliente para VPS/SSH, con reintentos seguros, watchdog de
-  inactividad y soporte para Return recibido como `Ctrl+M`.
+- Transporte resiliente para VPS/SSH: si Internet o el proveedor se vuelven
+  inaccesibles, conserva el turno, muestra un estado legible y reintenta
+  automáticamente cuando la conexión regresa. Los streams incompletos se
+  descartan antes de repetirlos para no duplicar texto ni tool calls.
 - Compatibilidad con Termux ARM64 mediante compilación nativa en el dispositivo:
   el instalador clona el tag estable, instala Go con `pkg`, compila e instala en
   `$PREFIX/bin`.

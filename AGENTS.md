@@ -54,6 +54,9 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - Los catálogos bundled se guardan en `provider-model-cache.json`; así los modelos descubiertos sobreviven a reinicios y trabajo sin red.
 - Si el modelo activo desaparece del catálogo, seleccionar el primer modelo válido de un proveedor conectado.
 - Un fallo de un proveedor no debe impedir actualizar los demás ni borrar su última caché válida.
+- Los errores de transporte (`dial tcp`, DNS, timeout, EOF, conexión reiniciada o stream truncado) no deben cerrar el turno ni mostrarse crudos: comprobar conectividad, mantener una espera cancelable con `Esc` y reintentar la misma solicitud cuando el endpoint vuelva.
+- Si un stream ya mostró contenido antes del corte, descartar sólo la respuesta parcial del request actual antes de reintentar; nunca duplicar texto, reasoning ni tool calls y nunca borrar el prompt del usuario.
+- Distinguir errores de red de errores definitivos de autenticación, payload o configuración. HTTP 4xx no recuperables deben seguir fallando de forma explícita.
 - Si `GET {baseURL}/models` responde 404, 405 o 501, tratar el catálogo como no soportado: conservar modelos manuales/caché y no mostrarlo como error.
 
 ### Agentes primarios

@@ -114,8 +114,10 @@ type ChatModel struct {
 	// proveedor entre tool calls. Si una petición se cancela de forma local
 	// (por ejemplo por preflight FILE_EXISTS), sus chunks tardíos no deben
 	// confundirse con la siguiente petición del mismo turno.
-	requestSeq      uint64
-	activeRequestID uint64
+	requestSeq          uint64
+	activeRequestID     uint64
+	requestMessageStart int
+	networkNoticeIndex  int
 
 	// turnCtx abarca TODO el turno del usuario: streaming del proveedor y
 	// herramientas. Escape cancela este contexto una sola vez y los resultados
@@ -316,6 +318,7 @@ type chatStreamMsg struct {
 	partial      bool
 	thinking     string
 	thinkingDone bool
+	retry        *openai.RetryStatus
 	done         bool
 	err          error
 }
@@ -595,24 +598,25 @@ func NewChat(ctx *AppContext) ChatModel {
 	project, _ := os.Getwd()
 	sessionCtx, sessionCancel := context.WithCancel(context.Background())
 	m := ChatModel{
-		ctx:               ctx,
-		viewport:          vp,
-		textarea:          ta,
-		mode:              ModeDefault,
-		store:             session.NewStore(ctx.ConfigDir),
-		rewindStore:       rewind.NewStore(ctx.ConfigDir),
-		rewindTurn:        &rewindTurnState{},
-		project:           project,
-		sess:              session.New(project),
-		todos:             litodo.NewManager(nil),
-		plans:             planstate.NewManager(nil),
-		goals:             ligoal.NewManager(nil),
-		planQuestion:      newPlanQuestionDock(ctx),
-		sessionCtx:        sessionCtx,
-		sessionCancel:     sessionCancel,
-		agentEventCh:      make(chan subagents.Event, 512),
-		assistantActive:   -1,
-		contextCacheDirty: true,
+		ctx:                ctx,
+		viewport:           vp,
+		textarea:           ta,
+		mode:               ModeDefault,
+		store:              session.NewStore(ctx.ConfigDir),
+		rewindStore:        rewind.NewStore(ctx.ConfigDir),
+		rewindTurn:         &rewindTurnState{},
+		project:            project,
+		sess:               session.New(project),
+		todos:              litodo.NewManager(nil),
+		plans:              planstate.NewManager(nil),
+		goals:              ligoal.NewManager(nil),
+		planQuestion:       newPlanQuestionDock(ctx),
+		sessionCtx:         sessionCtx,
+		sessionCancel:      sessionCancel,
+		agentEventCh:       make(chan subagents.Event, 512),
+		assistantActive:    -1,
+		networkNoticeIndex: -1,
+		contextCacheDirty:  true,
 	}
 	m.loadAgents()
 	m.syncAgentModePresentation()
@@ -667,9 +671,12 @@ func (m *ChatModel) beginTurnMode(mode planstate.Mode) error {
 // any message still in flight from the old turn stale.
 func (m *ChatModel) endTurn() {
 	m.stopCompactionState()
+	m.clearNetworkNotice()
 	// Invalidar IDs antes de cancelar evita que cualquier evento que ya estaba
 	// encolado en el runtime TUI pueda confundirse con trabajo aún vigente.
 	m.activeRequestID = 0
+	m.requestMessageStart = 0
+	m.networkNoticeIndex = -1
 	m.activeTurnID = 0
 	if m.requestCancel != nil {
 		m.requestCancel()
@@ -715,6 +722,8 @@ func (m *ChatModel) cancelTurn() string {
 	// remain transcript-only because sending an unfinished call back to the API
 	// would be invalid.
 	m.checkpointPartialAssistantHistory()
+	m.clearNetworkNotice()
+	m.requestMessageStart = 0
 	// Invalidate FIRST. A provider chunk, tool result or canceled-request event
 	// that was already waiting in the TUI queue must become stale before we even
 	// signal the OS. This is the hard guarantee that a process closing later can
@@ -1434,6 +1443,101 @@ func (m *ChatModel) Resize(w, h int) {
 	m.viewport.Width = vpWidth
 	m.viewport.Height = vpHeight
 	m.refreshTranscript(true)
+}
+
+func (m *ChatModel) resetProviderAttemptForRetry() {
+	start := m.requestMessageStart
+	if start < 0 || start > len(m.messages) {
+		start = len(m.messages)
+	}
+	// Provider output can be interleaved with unrelated runtime notices or
+	// background-agent events. Remove only presentation created by this HTTP/SSE
+	// attempt; never truncate those independent messages.
+	kept := append([]ChatMessage(nil), m.messages[:start]...)
+	for idx, message := range m.messages[start:] {
+		absIdx := start + idx
+		if absIdx == m.networkNoticeIndex {
+			continue
+		}
+		switch message.Kind {
+		case MsgAssistant, MsgThinking, MsgFile, MsgCommand:
+			continue
+		default:
+			kept = append(kept, message)
+		}
+	}
+	m.messages = kept
+	m.requestMessageStart = len(m.messages)
+	m.streamBuf.Reset()
+	m.reasoningBuf.Reset()
+	m.pendingCall = nil
+	m.livePanels = nil
+	m.panelByCall = nil
+	m.cmdPanels = nil
+	m.cmdByCall = nil
+	if panels := m.panels(); len(panels) == 0 {
+		m.panelSel = 0
+		m.panelPinned = false
+	} else if m.panelSel < 0 || m.panelSel >= len(panels) {
+		m.panelSel = len(panels) - 1
+		m.panelPinned = false
+	}
+	m.thinkingActive = nil
+	m.assistantActive = -1
+	m.networkNoticeIndex = -1
+	m.thinking = true
+	m.working = false
+	m.invalidateTranscriptCache()
+}
+
+func (m *ChatModel) showNetworkRetry(status openai.RetryStatus) {
+	providerName := strings.TrimSpace(m.turnProvider)
+	if provider := m.ctx.Providers.FindProvider(m.turnProvider); provider != nil && strings.TrimSpace(provider.Name) != "" {
+		providerName = strings.TrimSpace(provider.Name)
+	}
+	if providerName == "" {
+		providerName = "el proveedor"
+	}
+
+	var text string
+	switch status.State {
+	case openai.ConnectivityOffline:
+		text = "Sin conexión a Internet. Lilith conserva este turno y reintentará automáticamente"
+	case openai.ConnectivityProviderUnavailable:
+		text = providerName + " no responde aunque hay conexión. Lilith reintentará automáticamente"
+	default:
+		text = "La conexión se interrumpió. Lilith está comprobando la red para reintentar automáticamente"
+	}
+	if status.After > 0 {
+		seconds := int((status.After + time.Second - 1) / time.Second)
+		if seconds < 1 {
+			seconds = 1
+		}
+		text += fmt.Sprintf(" en %d s", seconds)
+	}
+	text += ". Pulsa Esc para cancelar."
+
+	if m.networkNoticeIndex >= 0 && m.networkNoticeIndex < len(m.messages) && m.messages[m.networkNoticeIndex].Kind == MsgSystem {
+		m.messages[m.networkNoticeIndex].Content = text
+		m.messages[m.networkNoticeIndex].Time = time.Now()
+		return
+	}
+	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: text, Time: time.Now()})
+	m.networkNoticeIndex = len(m.messages) - 1
+}
+
+func (m *ChatModel) clearNetworkNotice() {
+	idx := m.networkNoticeIndex
+	m.networkNoticeIndex = -1
+	if idx < 0 || idx >= len(m.messages) || m.messages[idx].Kind != MsgSystem {
+		return
+	}
+	copy(m.messages[idx:], m.messages[idx+1:])
+	m.messages = m.messages[:len(m.messages)-1]
+	if m.assistantActive > idx {
+		m.assistantActive--
+	}
+	m.invalidateTranscriptCache()
 }
 
 func (m *ChatModel) AddSystem(text string) {
@@ -2432,6 +2536,25 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			m.turnCtx == nil || m.turnCtx.Err() != nil {
 			return m, nil
 		}
+		if v.retry != nil {
+			var liveCmd uikit.Cmd
+			if v.retry.Reset {
+				m.resetProviderAttemptForRetry()
+				liveCmd = m.requestLivePersist()
+			}
+			if v.retry.Recovered {
+				m.clearNetworkNotice()
+				m.thinking = true
+				m.working = false
+			} else {
+				m.showNetworkRetry(*v.retry)
+			}
+			m.refreshTranscript(true)
+			if v.ch != nil {
+				return m, uikit.Batch(liveCmd, streamPump(v.ch, v.turnID, v.requestID))
+			}
+			return m, liveCmd
+		}
 		if v.err != nil {
 			if cmd := m.recoverFromContextOverflow(v.err); cmd != nil {
 				return m, cmd
@@ -3377,6 +3500,8 @@ func (m *ChatModel) runTurn() uikit.Cmd {
 	m.thinkingActive = nil
 	m.assistantActive = -1
 	m.reasoningBuf.Reset()
+	m.requestMessageStart = len(m.messages)
+	m.networkNoticeIndex = -1
 	m.streaming = true
 	m.thinking = true
 	m.working = false
@@ -4304,6 +4429,9 @@ func streamPump(ch <-chan openai.Chunk, turnID, requestID uint64) uikit.Cmd {
 		}
 		if c.Err != nil {
 			return chatStreamMsg{turnID: turnID, requestID: requestID, err: c.Err}
+		}
+		if c.Retry != nil {
+			return chatStreamMsg{turnID: turnID, requestID: requestID, ch: ch, retry: c.Retry}
 		}
 		if c.Done {
 			return chatStreamMsg{turnID: turnID, requestID: requestID, done: true}

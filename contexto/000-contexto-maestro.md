@@ -110,7 +110,9 @@ Los estados se persisten en la sesión. Goal comparte las capacidades de impleme
 - En Unix/Android, shell y hooks resuelven `bash`/`sh` mediante `PATH`; no se hardcodea `/bin/sh`, inexistente en Termux.
 - `run_terminal_command` no impone límite de ejecución cuando `timeout_seconds` no está presente. Los builds, instalaciones y pruebas largas siguen ejecutándose hasta completar o hasta una cancelación explícita; un timeout positivo conserva el corte y la limpieza del árbol de procesos.
 - Cola de steering y follow-up sin abrir turnos paralelos. Si el proveedor falla, el siguiente mensaje en cola se consume en esa frontera de error y no queda varado como si Enter se hubiera ignorado.
-- El cliente de proveedor no usa un timeout HTTP total: limita dial, TLS y espera de headers, usa TCP keepalive y corta sólo un stream que permanezca sin bytes durante cuatro minutos. Los fallos transitorios se reintentan cuando todavía no se emitió contenido.
+- El cliente de proveedor no usa un timeout HTTP total: limita dial, TLS y espera de headers, usa TCP keepalive y corta sólo un stream que permanezca sin bytes durante cuatro minutos.
+- Los cortes de transporte no terminan el turno ni muestran errores crudos como `dial tcp`: Lilith comprueba primero el endpoint activo y luego conectividad pública, distingue Internet caído de proveedor inaccesible, espera con backoff cancelable por `Esc` y reintenta automáticamente al recuperarse.
+- Si el corte ocurrió después de recibir texto, reasoning o una tool call parcial, se elimina únicamente ese intento incompleto de la TUI y se repite el request original. El prompt, historial estable, cola y turno permanecen intactos.
 - Cancelación con Esc; `/exit` es la salida explícita.
 - TodoWrite, planes y goals se guardan en la sesión.
 - Skills y agentes pueden usar modelo heredado, explícito o lista de preferencias.
@@ -212,5 +214,6 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `094-nombre-codex-ctrl-c-y-autor-git.md`
 - `095-corregir-prueba-rewind-en-workflow.md`
 - `096-notas-release-e-instaladores.md`
-- `097-termux-arm64-agentes-y-skills.md`
+- `097-termux-arm64-agentes.md`
 - `098-instaladores-repo-termux-nativo-onboarding.md`
+- `099-reconexion-automatica-y-skills-internas.md`

@@ -93,6 +93,9 @@ func (p *AgentPanel) Apply(e subagents.Event) {
 		p.Reasoning = appendAgentVisualTail(p.Reasoning, e.Content)
 	case subagents.EventText:
 		p.Output = appendAgentVisualTail(p.Output, e.Content)
+	case subagents.EventStreamReset:
+		p.Reasoning = ""
+		p.Output = ""
 	case subagents.EventToolStarted:
 		p.startTool(e)
 	case subagents.EventToolFinished:

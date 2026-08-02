@@ -543,3 +543,33 @@ func TestRunExpandsPluginRootInAgentAndPreloadedSkill(t *testing.T) {
 		t.Fatalf("expanded plugin paths missing: %q", system)
 	}
 }
+
+func TestCollectResetsPartialOutputAfterNetworkInterruption(t *testing.T) {
+	ch := make(chan openai.Chunk, 8)
+	ch <- openai.Chunk{Delta: "respuesta parcial"}
+	ch <- openai.Chunk{Thinking: "razonamiento parcial"}
+	ch <- openai.Chunk{Retry: &openai.RetryStatus{State: openai.ConnectivityOffline, Reset: true}}
+	ch <- openai.Chunk{Delta: "respuesta final"}
+	close(ch)
+
+	var events []Event
+	text, reasoning, calls, err := collect(ch, Config{
+		Events: func(event Event) { events = append(events, event) },
+	}, "task-retry", tools.AgentRequest{Agent: agents.Agent{Name: "worker"}}, "model", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "respuesta final" || reasoning != "" || len(calls) != 0 {
+		t.Fatalf("partial attempt survived retry reset: text=%q reasoning=%q calls=%#v", text, reasoning, calls)
+	}
+	foundReset := false
+	for _, event := range events {
+		if event.Kind == EventStreamReset {
+			foundReset = true
+			break
+		}
+	}
+	if !foundReset {
+		t.Fatalf("missing stream reset event: %#v", events)
+	}
+}

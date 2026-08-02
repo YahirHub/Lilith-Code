@@ -517,6 +517,15 @@ func collect(ch <-chan openai.Chunk, cfg Config, taskID string, req tools.AgentR
 		if chunk.Err != nil {
 			return "", "", nil, chunk.Err
 		}
+		if chunk.Retry != nil {
+			if chunk.Retry.Reset {
+				tb.Reset()
+				rb.Reset()
+				calls = nil
+				emit(cfg, Event{Kind: EventStreamReset, TaskID: taskID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Background: req.Background, At: timeNow()})
+			}
+			continue
+		}
 		if chunk.Delta != "" {
 			tb.WriteString(chunk.Delta)
 			emit(cfg, Event{Kind: EventText, TaskID: taskID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Background: req.Background, Content: chunk.Delta, At: timeNow()})

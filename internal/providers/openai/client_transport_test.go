@@ -2,9 +2,13 @@ package openai
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,4 +55,207 @@ func TestStreamIdleTimeoutUnblocksSilentConnection(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("la conexión silenciosa tardó demasiado en desbloquearse: %s", elapsed)
 	}
+}
+
+type sequenceRoundTripper struct {
+	mu        sync.Mutex
+	responses []func(*http.Request) (*http.Response, error)
+	calls     int
+}
+
+func (s *sequenceRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.calls >= len(s.responses) {
+		return nil, io.ErrUnexpectedEOF
+	}
+	fn := s.responses[s.calls]
+	s.calls++
+	return fn(req)
+}
+
+type unexpectedEOFBody struct {
+	reader io.Reader
+}
+
+func (b *unexpectedEOFBody) Read(p []byte) (int, error) { return b.reader.Read(p) }
+func (b *unexpectedEOFBody) Close() error               { return nil }
+
+type terminalErrorReader struct {
+	err  error
+	done bool
+}
+
+func (r *terminalErrorReader) Read([]byte) (int, error) {
+	if r.done {
+		return 0, io.EOF
+	}
+	r.done = true
+	return 0, r.err
+}
+
+func sseResponse(body io.ReadCloser) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       body,
+	}
+}
+
+func TestStreamWaitsForConnectivityAndRetriesWithoutRawTCPError(t *testing.T) {
+	t.Parallel()
+	transport := &sequenceRoundTripper{responses: []func(*http.Request) (*http.Response, error){
+		func(*http.Request) (*http.Response, error) {
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("network is unreachable")}
+		},
+		func(*http.Request) (*http.Response, error) {
+			return sseResponse(io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))), nil
+		},
+	}}
+	probeCalls := 0
+	client := &Client{
+		HTTP:                 &http.Client{Transport: transport},
+		NetworkRetryMinDelay: time.Millisecond,
+		NetworkRetryMaxDelay: time.Millisecond,
+		ConnectivityProbe: func(context.Context, providers.Provider) ConnectivityState {
+			probeCalls++
+			if probeCalls < 3 {
+				return ConnectivityOffline
+			}
+			return ConnectivityOnline
+		},
+	}
+
+	chunks := collectChunks(client.Stream(context.Background(), Request{
+		Provider: providers.Provider{ID: "test", Name: "Test", BaseURL: "https://provider.test/v1", Auth: providers.AuthNone},
+		Model:    "test",
+		Messages: []Message{{Role: "user", Content: "hola"}},
+		Stream:   true,
+	}))
+
+	var sawOffline, sawRecovered, sawDone bool
+	for _, chunk := range chunks {
+		if chunk.Err != nil {
+			t.Fatalf("network interruption leaked as terminal error: %v", chunk.Err)
+		}
+		if chunk.Retry != nil && chunk.Retry.State == ConnectivityOffline {
+			sawOffline = true
+		}
+		if chunk.Retry != nil && chunk.Retry.Recovered {
+			sawRecovered = true
+		}
+		if chunk.Done {
+			sawDone = true
+		}
+	}
+	if !sawOffline || !sawRecovered || !sawDone {
+		t.Fatalf("missing recovery states: offline=%v recovered=%v done=%v chunks=%#v", sawOffline, sawRecovered, sawDone, chunks)
+	}
+}
+
+func TestRepeatedImmediateNetworkFailuresUseBoundedBackoff(t *testing.T) {
+	t.Parallel()
+	fail := func(*http.Request) (*http.Response, error) {
+		return nil, &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}
+	}
+	transport := &sequenceRoundTripper{responses: []func(*http.Request) (*http.Response, error){
+		fail,
+		fail,
+		func(*http.Request) (*http.Response, error) {
+			return sseResponse(io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))), nil
+		},
+	}}
+	client := &Client{
+		HTTP:                 &http.Client{Transport: transport},
+		NetworkRetryMinDelay: 2 * time.Millisecond,
+		NetworkRetryMaxDelay: 2 * time.Millisecond,
+		ConnectivityProbe: func(context.Context, providers.Provider) ConnectivityState {
+			return ConnectivityOnline
+		},
+	}
+
+	chunks := collectChunks(client.Stream(context.Background(), Request{
+		Provider: providers.Provider{ID: "test", BaseURL: "https://provider.test/v1", Auth: providers.AuthNone},
+		Model:    "test",
+		Messages: []Message{{Role: "user", Content: "hola"}},
+		Stream:   true,
+	}))
+
+	var sawSecondDelay, sawDone bool
+	for _, chunk := range chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected terminal error: %v", chunk.Err)
+		}
+		if chunk.Retry != nil && chunk.Retry.State == ConnectivityChecking && chunk.Retry.Attempt == 2 && chunk.Retry.After > 0 {
+			sawSecondDelay = true
+		}
+		if chunk.Done {
+			sawDone = true
+		}
+	}
+	if !sawSecondDelay || !sawDone {
+		t.Fatalf("repeated failures did not back off safely: delayed=%v done=%v chunks=%#v", sawSecondDelay, sawDone, chunks)
+	}
+}
+
+func TestStreamRequestsResetAfterPartialResponseIsInterrupted(t *testing.T) {
+	t.Parallel()
+	partial := io.MultiReader(
+		strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"parcial\"}}]}\n\n"),
+		&terminalErrorReader{err: io.ErrUnexpectedEOF},
+	)
+	transport := &sequenceRoundTripper{responses: []func(*http.Request) (*http.Response, error){
+		func(*http.Request) (*http.Response, error) {
+			return sseResponse(&unexpectedEOFBody{reader: partial}), nil
+		},
+		func(*http.Request) (*http.Response, error) {
+			return sseResponse(io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"completa\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))), nil
+		},
+	}}
+	client := &Client{
+		HTTP:                 &http.Client{Transport: transport},
+		NetworkRetryMinDelay: time.Millisecond,
+		NetworkRetryMaxDelay: time.Millisecond,
+		ConnectivityProbe: func(context.Context, providers.Provider) ConnectivityState {
+			return ConnectivityOnline
+		},
+	}
+
+	chunks := collectChunks(client.Stream(context.Background(), Request{
+		Provider: providers.Provider{ID: "test", Name: "Test", BaseURL: "https://provider.test/v1", Auth: providers.AuthNone},
+		Model:    "test",
+		Messages: []Message{{Role: "user", Content: "hola"}},
+		Stream:   true,
+	}))
+
+	var sawPartial, sawReset, sawComplete, sawDone bool
+	for _, chunk := range chunks {
+		if chunk.Delta == "parcial" {
+			sawPartial = true
+		}
+		if chunk.Retry != nil && chunk.Retry.Reset {
+			sawReset = true
+		}
+		if chunk.Delta == "completa" {
+			sawComplete = true
+		}
+		if chunk.Done {
+			sawDone = true
+		}
+		if chunk.Err != nil {
+			t.Fatalf("unexpected terminal error: %v", chunk.Err)
+		}
+	}
+	if !sawPartial || !sawReset || !sawComplete || !sawDone {
+		t.Fatalf("unexpected retry sequence: partial=%v reset=%v complete=%v done=%v chunks=%#v", sawPartial, sawReset, sawComplete, sawDone, chunks)
+	}
+}
+
+func collectChunks(ch <-chan Chunk) []Chunk {
+	var chunks []Chunk
+	for chunk := range ch {
+		chunks = append(chunks, chunk)
+	}
+	return chunks
 }

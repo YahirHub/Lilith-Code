@@ -309,14 +309,14 @@ func TestReasoningDeToolCallSeConservaEnHistorial(t *testing.T) {
 	}
 }
 
-func TestProviderErrorConsumesQueuedEnterAtBoundary(t *testing.T) {
+func TestPermanentProviderErrorConsumesQueuedEnterAtBoundary(t *testing.T) {
 	m := newInputTestChat(t)
 	m.Resize(100, 30)
 	primeTestRequest(t, m)
 	m.streaming = true
 	m.enqueue("continua cuando vuelva la red", queueSteer)
 
-	_, cmd := m.Update(activeStreamMsg(m, chatStreamMsg{err: fmt.Errorf("network is unreachable")}))
+	_, cmd := m.Update(activeStreamMsg(m, chatStreamMsg{err: fmt.Errorf("HTTP 401: unauthorized")}))
 	if cmd == nil {
 		t.Fatal("el mensaje en cola debe iniciar el siguiente turno tras el error")
 	}
@@ -335,6 +335,66 @@ func TestProviderErrorConsumesQueuedEnterAtBoundary(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("el mensaje escrito durante la caída no se materializó como turno de usuario")
+	}
+	m.cancelTurn()
+}
+
+func TestNetworkRetryKeepsTurnAliveAndResetsPartialAttempt(t *testing.T) {
+	m := newInputTestChat(t)
+	m.Resize(100, 30)
+	primeTestRequest(t, m)
+	m.streaming = true
+	m.requestMessageStart = len(m.messages)
+
+	_, _ = m.Update(activeStreamMsg(m, chatStreamMsg{delta: "respuesta incompleta"}))
+	if m.streamBuf.Len() == 0 || m.assistantActive < 0 {
+		t.Fatal("the partial provider response was not materialized")
+	}
+	m.messages = append(m.messages, ChatMessage{Kind: MsgSystem, Content: "MCP conectado", Time: time.Now()})
+
+	status := &openai.RetryStatus{
+		State:   openai.ConnectivityOffline,
+		Attempt: 1,
+		After:   time.Second,
+		Reset:   true,
+	}
+	_, cmd := m.Update(activeStreamMsg(m, chatStreamMsg{retry: status}))
+	if cmd != nil {
+		_ = cmd // live persistence may be scheduled; no provider restart is expected here.
+	}
+	if m.activeTurnID == 0 || !m.streaming {
+		t.Fatal("network recovery must keep the active turn alive")
+	}
+	if m.streamBuf.Len() != 0 || m.assistantActive != -1 {
+		t.Fatalf("partial attempt was not reset: stream=%q assistant=%d", m.streamBuf.String(), m.assistantActive)
+	}
+	foundIndependentNotice := false
+	for _, message := range m.messages {
+		if message.Kind == MsgSystem && message.Content == "MCP conectado" {
+			foundIndependentNotice = true
+		}
+	}
+	if !foundIndependentNotice {
+		t.Fatalf("retry removed an unrelated runtime notice: %#v", m.messages)
+	}
+	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgSystem || !strings.Contains(m.messages[len(m.messages)-1].Content, "Sin conexión a Internet") {
+		t.Fatalf("friendly network status missing: %#v", m.messages)
+	}
+	for _, message := range m.messages {
+		if strings.Contains(strings.ToLower(message.Content), "dial tcp") {
+			t.Fatalf("raw socket error leaked into transcript: %q", message.Content)
+		}
+	}
+
+	_, _ = m.Update(activeStreamMsg(m, chatStreamMsg{retry: &openai.RetryStatus{
+		State:     openai.ConnectivityOnline,
+		Attempt:   1,
+		Recovered: true,
+	}}))
+	for _, message := range m.messages {
+		if strings.Contains(message.Content, "Sin conexión a Internet") {
+			t.Fatalf("network status was not cleared after recovery: %#v", m.messages)
+		}
 	}
 	m.cancelTurn()
 }

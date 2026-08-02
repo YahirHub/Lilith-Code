@@ -182,6 +182,12 @@ func collectCompactionSummary(ctx context.Context, client *openai.Client, req op
 		if chunk.Err != nil {
 			return "", chunk.Err
 		}
+		if chunk.Retry != nil {
+			if chunk.Retry.Reset {
+				b.Reset()
+			}
+			continue
+		}
 		if chunk.Delta != "" {
 			b.WriteString(chunk.Delta)
 		}

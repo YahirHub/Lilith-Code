@@ -32,5 +32,5 @@ remains the recommended format when an agent should be shareable with Claude Cod
 
 Built-in platform specialists currently include:
 
-- `termux-specialist`: implementation worker for Android/Termux support.
-- `termux-auditor`: read-only portability and release auditor.
+- `termux-specialist`: implementation worker for Android/Termux runtime portability.
+- `termux-auditor`: read-only Android/Termux runtime auditor.

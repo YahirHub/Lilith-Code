@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestBundledDirMaterializesEmbeddedSkillAssets(t *testing.T) {
+func TestBundledDirMaterializesSkillInfrastructureWithoutProductSkills(t *testing.T) {
 	t.Parallel()
 	configDir := filepath.Join(t.TempDir(), ".li")
 	dir := BundledDir(configDir)
@@ -18,22 +18,15 @@ func TestBundledDirMaterializesEmbeddedSkillAssets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read materialized embedded README: %v", err)
 	}
-	if !strings.Contains(string(data), "Built-in Lilith skills") {
+	if !strings.Contains(string(data), "without product-specific built-in") {
 		t.Fatalf("unexpected embedded README contents: %q", string(data))
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".ready")); err != nil {
 		t.Fatalf("expected completed cache marker: %v", err)
 	}
-	for _, rel := range []string{
-		filepath.Join("termux-development", "SKILL.md"),
-		filepath.Join("termux-release", "SKILL.md"),
-	} {
-		data, err := os.ReadFile(filepath.Join(dir, rel))
-		if err != nil {
-			t.Fatalf("read bundled %s: %v", rel, err)
-		}
-		if !strings.Contains(string(data), "Termux") {
-			t.Fatalf("bundled %s does not contain Termux guidance", rel)
+	for _, removed := range []string{"termux-development", "termux-release"} {
+		if _, err := os.Stat(filepath.Join(dir, removed)); !os.IsNotExist(err) {
+			t.Fatalf("removed built-in skill %s is still materialized: %v", removed, err)
 		}
 	}
 }
