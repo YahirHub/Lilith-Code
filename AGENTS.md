@@ -22,7 +22,8 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - `internal/providers/openai/`: transportes OpenAI-compatible, Codex y normalización de reasoning.
 - `internal/compaction/`: selección del corte, estimación, resumen iterativo y reconstrucción del contexto activo.
 - `internal/rewind/`: checkpoints de conversación, snapshots de workspace, restauración y forks aislados.
-- `internal/tools/`: herramientas del agente, incluidas shell, archivos, búsqueda, skills, subagentes y OCR.
+- `internal/tools/`: herramientas del agente, incluidas shell, archivos, búsqueda, skills, subagentes, OCR e inteligencia de código.
+- `internal/codeintel/`: detección de host/proyecto, índice sintáctico persistente, Tree-sitter embebido, mapa de repositorio, adaptadores, LSP y SCIP opcionales.
 - `internal/plan/`, `internal/goal/`, `internal/todo/`: estados persistentes de Plan, Goal y tareas.
 - `contexto/`: decisiones y continuidad técnica numeradas.
 
@@ -31,6 +32,7 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 ### Runtime y compilación
 
 - El binario principal debe seguir siendo compatible con `CGO_ENABLED=0`.
+- Los builds de Lilith deben incluir `-tags=grammar_set_core`; las gramáticas de `gotreesitter` permanecen comprimidas y embebidas. No usar `grammar_blobs_external`, CGO ni archivos WASM/gramáticas externos en runtime.
 - Termux ARM64 se instala compilando nativamente desde el repositorio con Go de Termux; no publicar ni instalar un binario Android no verificado.
 - En Termux usar `$PREFIX`, `$HOME`, `PATH` y `pkg`. No asumir `/bin/sh`, `/usr/local/bin`, `sudo`, systemd, glibc ni root.
 - Go objetivo: 1.24 o superior.
@@ -38,6 +40,21 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - No bloquear el bucle de render con llamadas de red o procesos largos: usar `uikit.Cmd`.
 - El bucle de estado/streaming nunca debe esperar a `tview.QueueUpdateDraw`: el render físico corre en una cola latest-only independiente y limitada por frecuencia.
 - No concatenar ni dividir el transcript completo por cada delta. Mantener el historial estable en segmentos de líneas y reconstruir únicamente la cola mutable del turno.
+
+### Inteligencia de código
+
+- `internal/codeintel` debe seguir independiente de la TUI y compartirse entre agente principal/subagentes cuando la raíz coincide.
+- El perfil ligero no puede disparar un escaneo completo; el índice se refresca de forma perezosa e incremental al usar sus herramientas.
+- El índice vive fuera del repositorio, bajo `~/.li/codeintel/`, se guarda de forma atómica y una cancelación nunca puede reemplazarlo parcialmente ni eliminar registros no visitados.
+- Tree-sitter usa `github.com/odvcencio/gotreesitter` en Go puro con gramáticas embebidas. Para lenguajes no disponibles, conservar fallback seguro en lugar de fallar el turno.
+- Go debe conservar la capa `go/ast` para constantes, variables, nombres canónicos de paquete y referencias mediante alias; no volver a referencias fuzzy cuando exista identidad calificada.
+- `code_context` debe priorizar código fuente relacionado y limitar documentación, scripts de release y tests salvo que la consulta los pida explícitamente.
+- `code_graph` debe devolver un subgrafo conectado: seleccionar semillas por la consulta y expandir relaciones vecinas antes de filtrar nodos.
+- El perfil `<code_intelligence>` pertenece al mensaje de sistema y nunca debe crear, alterar ni persistir turnos de usuario.
+- En Windows nativo, no ejecutar un adaptador Make secundario cuando el Makefile use asignaciones/utilidades POSIX o exista un adaptador principal compatible.
+- LSP y SCIP son capas opcionales: sólo usar ejecutables e índices ya presentes, nunca instalar o descargar componentes por cuenta propia.
+- `code_format_validate` sólo puede modificar rutas explícitas dentro de la raíz; rechazar escapes `..` y no formatear un workspace completo cuando `changed_paths` esté vacío.
+- Las validaciones deben derivarse de manifests y herramientas reales del proyecto, y no inventar package managers o comandos.
 
 ### Proveedores y modelos
 
@@ -117,12 +134,12 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 ```bash
 gofmt -w <archivos-go-modificados>
 git diff --check
-go test ./...
-go test -race ./...
-go vet ./...
-CGO_ENABLED=0 go build ./cmd/li
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/li
-GOOS=android GOARCH=arm64 CGO_ENABLED=0 go test ./cmd/li
+go test -tags=grammar_set_core ./...
+go test -tags=grammar_set_core -race ./...
+go vet -tags=grammar_set_core ./...
+CGO_ENABLED=0 go build -tags=grammar_set_core ./cmd/li
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags=grammar_set_core ./cmd/li
+GOOS=android GOARCH=arm64 CGO_ENABLED=0 go test -tags=grammar_set_core ./cmd/li
 ```
 
 También probar manualmente la ruta o pantalla afectada en Windows Terminal y Linux cuando cambie la TUI. Para cambios de Termux, validar instalación limpia, actualización y teclado en un dispositivo Android ARM64 real.

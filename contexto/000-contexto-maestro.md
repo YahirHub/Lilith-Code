@@ -35,6 +35,7 @@ internal/tui/                 chat y pantallas interactivas
 internal/tui/uikit/           componentes TUI propios
 internal/version/             versión SemVer única para binarios y releases
 internal/tools/               herramientas del agente
+internal/codeintel/           índice sintáctico, LSP, SCIP y validación por lenguaje
 internal/plan/                estado y políticas Plan
 internal/goal/                objetivos persistentes
 internal/todo/                TodoWrite persistente
@@ -162,6 +163,22 @@ Después de elegir el destino, `/fork` captura el estado actual y crea una sesi�
 - Salidas: texto, layout monoespaciado, regiones, separadores, coordenadas y JSON.
 - Mantiene `CGO_ENABLED=0` porque no enlaza una biblioteca OCR al binario.
 
+
+## 10 bis. Inteligencia de código
+
+Lilith incluye un motor independiente en `internal/codeintel`:
+
+- detecta host, distribución, WSL, SSH, contenedor, Termux, shell, arquitectura, manifests, frameworks, lenguajes, package manager y herramientas disponibles;
+- usa Tree-sitter en Go puro con gramáticas Core100 embebidas mediante el tag `grammar_set_core`, sin CGO ni archivos externos;
+- mantiene un índice incremental y transaccional bajo `~/.li/codeintel/`, nunca dentro del workspace, y expone su ruta física en el estado;
+- combina Tree-sitter con `go/ast` para indexar constantes/variables Go, nombres canónicos y referencias por alias de importación;
+- expone símbolos, referencias precisas cuando existe identidad calificada, un grafo conectado y contexto por declaraciones con ranking bilingüe orientado a código fuente;
+- puede consultar LSP e `index.scip` únicamente cuando ya existen en el sistema;
+- selecciona formatters, compiladores y tests mediante adaptadores para Go, Rust, Node/TypeScript, Deno, Python, PHP/Laravel, Ruby, Dart/Flutter, Swift, Elixir, .NET, Godot, Maven, Gradle, CMake y Make, sin instalar dependencias; en Windows descarta Makefiles POSIX secundarios;
+- rechaza rutas de validación que escapen de la raíz y no aplica formato global implícito.
+
+El perfil ligero se agrega únicamente al mensaje de sistema del agente principal y los subagentes; nunca crea ni modifica un turno de usuario y no provoca el escaneo completo. El índice sólo se refresca al invocar herramientas de inteligencia de código.
+
 ## 11. Persistencia y seguridad
 
 - Directorios y archivos sensibles usan permisos restrictivos.
@@ -186,12 +203,12 @@ Después de elegir el destino, `/fork` captura el estado actual y crea una sesi�
 ```bash
 gofmt -w <archivos>
 git diff --check
-go test ./...
-go test -race ./...
-go vet ./...
-CGO_ENABLED=0 go build ./cmd/li
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/li
-GOOS=android GOARCH=arm64 CGO_ENABLED=0 go test ./cmd/li
+go test -tags=grammar_set_core ./...
+go test -tags=grammar_set_core -race ./...
+go vet -tags=grammar_set_core ./...
+CGO_ENABLED=0 go build -tags=grammar_set_core ./cmd/li
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags=grammar_set_core ./cmd/li
+GOOS=android GOARCH=arm64 CGO_ENABLED=0 go test -tags=grammar_set_core ./cmd/li
 ```
 
 El entorno de entrega puede usar stubs locales sólo para comprobar la arquitectura cuando no tenga acceso a módulos o Go 1.24; nunca presentar esa comprobación como sustituto de una prueba final con las dependencias oficiales en Windows/Linux/Android. La compatibilidad interactiva de Termux requiere además una prueba en dispositivo ARM64 real.
@@ -217,3 +234,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `097-termux-arm64-agentes.md`
 - `098-instaladores-repo-termux-nativo-onboarding.md`
 - `099-reconexion-automatica-y-skills-internas.md`
+- `100-inteligencia-codigo-estatica.md`

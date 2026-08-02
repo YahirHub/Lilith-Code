@@ -456,8 +456,8 @@ func TestRunForkInheritsConversationAndDropsDanglingToolCall(t *testing.T) {
 	if len(request.Messages) != 4 {
 		t.Fatalf("messages=%#v", request.Messages)
 	}
-	if request.Messages[0].Content != "main system" || request.Messages[1].Content != "original request" {
-		t.Fatalf("fork did not inherit parent context: %#v", request.Messages)
+	if !strings.HasPrefix(request.Messages[0].Content, "main system") || !strings.Contains(request.Messages[0].Content, "<code_intelligence>") || request.Messages[1].Content != "original request" {
+		t.Fatalf("fork did not inherit parent context and code-intelligence profile: %#v", request.Messages)
 	}
 	if len(request.Messages[2].ToolCalls) != 0 || request.Messages[2].Content != "I will branch this." {
 		t.Fatalf("dangling tool call was not sanitized: %#v", request.Messages[2])
@@ -467,6 +467,24 @@ func TestRunForkInheritsConversationAndDropsDanglingToolCall(t *testing.T) {
 	}
 	if len(request.Tools) != 1 {
 		t.Fatalf("fork tools=%d, want inherited read_files", len(request.Tools))
+	}
+}
+
+func TestMergeCodeIntelSystemMessageDoesNotCreateUserTurn(t *testing.T) {
+	messages := []openai.Message{{Role: "system", Content: "base"}, {Role: "user", Content: "task"}}
+	merged := mergeCodeIntelSystemMessage(messages, "profile")
+	if len(merged) != 2 {
+		t.Fatalf("messages=%#v", merged)
+	}
+	if merged[0].Role != "system" || !strings.Contains(merged[0].Content, "<code_intelligence>") {
+		t.Fatalf("profile was not merged into the system message: %#v", merged)
+	}
+	if messages[0].Content != "base" {
+		t.Fatalf("parent messages were mutated: %#v", messages)
+	}
+	merged = mergeCodeIntelSystemMessage(merged, "profile")
+	if strings.Count(merged[0].Content, "<code_intelligence>") != 1 {
+		t.Fatalf("profile was duplicated: %#v", merged[0])
 	}
 }
 

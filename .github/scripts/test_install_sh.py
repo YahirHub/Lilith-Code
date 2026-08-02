@@ -7,9 +7,19 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
+import re
 import subprocess
 import tempfile
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+VERSION_MATCH = re.search(
+    r'const\s+Current\s*=\s*"([^"]+)"',
+    (REPO_ROOT / "internal" / "version" / "version.go").read_text(encoding="utf-8"),
+)
+if VERSION_MATCH is None:
+    raise RuntimeError("unable to read internal/version/version.go")
+CURRENT_VERSION = VERSION_MATCH.group(1)
+OLD_VERSION = "0.1.2"
 
 REQUIRED_COMMANDS = (
     "awk",
@@ -46,7 +56,7 @@ def write_release(release: Path, asset: str) -> Path:
     write_executable(
         binary,
         "#!/bin/sh\n"
-        "if [ \"${1:-}\" = version ]; then echo 'Lilith 0.1.2'; "
+        f"if [ \"${{1:-}}\" = version ]; then echo 'Lilith {CURRENT_VERSION}'; "
         "else echo 'new lilith'; fi\n",
     )
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
@@ -78,7 +88,7 @@ def write_fake_curl(fakebin: Path, binary: Path, checksums: Path) -> None:
 
 def run_installer(installer: Path, repo: Path, env: dict[str, str]) -> str:
     completed = subprocess.run(
-        ["/bin/sh", str(installer), "0.1.2"],
+        ["/bin/sh", str(installer), CURRENT_VERSION],
         cwd=repo,
         env=env,
         text=True,
@@ -100,7 +110,7 @@ def simulate_termux(installer: Path, repo: Path, root: Path) -> None:
 
     (source_fixture / "go.mod").write_text("module github.com/lilith/li\n", encoding="utf-8")
     (source_fixture / "cmd" / "li" / "main.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
-    write_executable(prefix / "bin" / "li", "#!/bin/sh\necho 'Lilith 0.1.1'\n")
+    write_executable(prefix / "bin" / "li", f"#!/bin/sh\necho 'Lilith {OLD_VERSION}'\n")
     link_test_commands(fakebin)
     write_executable(
         fakebin / "uname",
@@ -119,7 +129,7 @@ def simulate_termux(installer: Path, repo: Path, root: Path) -> None:
         "#!/bin/sh\n"
         f"fixture='{source_fixture}'\n"
         "case \"${1:-}\" in\n"
-        "  ls-remote) printf '0123456789abcdef\\trefs/tags/v0.1.2\\n';;\n"
+        f"  ls-remote) printf '0123456789abcdef\\trefs/tags/v{CURRENT_VERSION}\\n';;\n"
         "  clone)\n"
         "    for last do :; done\n"
         "    mkdir -p \"$last\"\n"
@@ -130,9 +140,11 @@ def simulate_termux(installer: Path, repo: Path, root: Path) -> None:
         "  *) echo \"unexpected git invocation: $*\" >&2; exit 2;;\n"
         "esac\n",
     )
+    go_log = root / "go.log"
     write_executable(
         fakebin / "go",
         "#!/bin/sh\n"
+        f"printf '%s\n' \"$*\" >> '{go_log}'\n"
         "if [ \"${1:-}\" = env ] && [ \"${2:-}\" = GOOS ]; then echo android; exit 0; fi\n"
         "out=''\n"
         "while [ $# -gt 0 ]; do\n"
@@ -141,7 +153,7 @@ def simulate_termux(installer: Path, repo: Path, root: Path) -> None:
         "[ -n \"$out\" ] || { echo 'missing -o' >&2; exit 2; }\n"
         "cat > \"$out\" <<'SCRIPT'\n"
         "#!/bin/sh\n"
-        "if [ \"${1:-}\" = version ]; then echo 'Lilith 0.1.2'; else echo 'new lilith'; fi\n"
+        f"if [ \"${{1:-}}\" = version ]; then echo 'Lilith {CURRENT_VERSION}'; else echo 'new lilith'; fi\n"
         "SCRIPT\n"
         "chmod +x \"$out\"\n",
     )
@@ -161,7 +173,7 @@ def simulate_termux(installer: Path, repo: Path, root: Path) -> None:
     version = subprocess.check_output(
         [str(prefix / "bin" / "li"), "version"], text=True
     ).strip()
-    if version != "Lilith 0.1.2":
+    if version != f"Lilith {CURRENT_VERSION}":
         raise AssertionError(f"Termux installer did not rebuild li: {version!r}")
     if "install -y git golang ripgrep" not in pkg_log.read_text(encoding="utf-8"):
         raise AssertionError("Termux installer did not request git/golang/ripgrep")
@@ -169,6 +181,8 @@ def simulate_termux(installer: Path, repo: Path, root: Path) -> None:
         raise AssertionError("Termux installer did not preserve the cloned source")
     if (home / ".bashrc").exists():
         raise AssertionError("Termux installer must not edit .bashrc")
+    if "-tags=grammar_set_core" not in go_log.read_text(encoding="utf-8"):
+        raise AssertionError("Termux build did not embed the core grammar set")
     if "Compilando con Go de Termux" not in output:
         raise AssertionError("installer did not use its native Termux build branch")
 
@@ -181,7 +195,7 @@ def simulate_linux(installer: Path, repo: Path, root: Path) -> None:
     for directory in (targetbin, fakebin, release, home):
         directory.mkdir(parents=True, exist_ok=True)
 
-    write_executable(targetbin / "li", "#!/bin/sh\necho 'Lilith 0.1.1'\n")
+    write_executable(targetbin / "li", f"#!/bin/sh\necho 'Lilith {OLD_VERSION}'\n")
     binary = write_release(release, "li-linux-amd64")
     link_test_commands(fakebin)
     write_fake_curl(fakebin, binary, release / "SHA256SUMS.txt")
@@ -206,7 +220,7 @@ def simulate_linux(installer: Path, repo: Path, root: Path) -> None:
     version = subprocess.check_output(
         [str(targetbin / "li"), "version"], text=True
     ).strip()
-    if version != "Lilith 0.1.2":
+    if version != f"Lilith {CURRENT_VERSION}":
         raise AssertionError(f"Linux installer did not update li: {version!r}")
     if (home / ".bashrc").exists():
         raise AssertionError("Linux installer must not edit .bashrc")
@@ -215,7 +229,7 @@ def simulate_linux(installer: Path, repo: Path, root: Path) -> None:
 
 
 def main() -> None:
-    repo = Path(__file__).resolve().parents[2]
+    repo = REPO_ROOT
     installer = repo / "install.sh"
     with tempfile.TemporaryDirectory(prefix="lilith-install-tests-") as tmp_raw:
         root = Path(tmp_raw)

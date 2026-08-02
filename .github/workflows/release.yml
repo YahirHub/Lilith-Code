@@ -36,6 +36,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Descargar dependencias Go
+        run: go mod download
+
       - name: Leer versión del proyecto
         id: version
         shell: bash
@@ -57,8 +60,22 @@ jobs:
             exit 1
           fi
 
-      - name: Ejecutar pruebas
-        run: go test ./...
+      - name: Ejecutar pruebas y análisis estático
+        run: |
+          go test -tags=grammar_set_core ./...
+          go vet -tags=grammar_set_core ./...
+
+      - name: Verificar binario estático con gramáticas embebidas
+        shell: bash
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 go build -tags=grammar_set_core -trimpath -buildvcs=false -o dist/li-static-check ./cmd/li
+          if command -v ldd >/dev/null 2>&1 && ldd dist/li-static-check 2>&1 | grep -qvE 'not a dynamic executable|statically linked'; then
+            echo "El binario de comprobación tiene dependencias dinámicas inesperadas:" >&2
+            ldd dist/li-static-check >&2 || true
+            exit 1
+          fi
+          rm -f dist/li-static-check
 
       - name: Probar instalador Linux y compilación Termux
         run: |

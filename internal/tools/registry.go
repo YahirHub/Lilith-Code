@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/lilith/li/internal/agents"
+	"github.com/lilith/li/internal/codeintel"
 	ligoal "github.com/lilith/li/internal/goal"
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/skills"
@@ -22,6 +23,8 @@ import (
 type Env struct {
 	// Root is the project directory; every path is resolved inside it.
 	Root string
+	// CodeIntel is the repository-aware syntax/semantic engine shared by the session.
+	CodeIntel *codeintel.Manager
 	// ConfigDir is Lilith's global configuration directory (~/.li). Tools
 	// that depend on user configuration (for example web_search) use it
 	// without exposing secrets to the model.
@@ -262,6 +265,10 @@ var (
 	writePattern        = regexp.MustCompile(`(?i)\b(escribe|write|implementa|implement|agrega|añade|add|modifica|modify|edita|edit|corrige|fix|refactoriza|refactor|renombra|rename|elimina|borra|delete|remove|guarda|save|haz|hazme|dame)\b`)
 	createSearchPattern = regexp.MustCompile(`(?i)\b(create|new|crear|nuevo|nueva|generar|genera|add new|agrega nuevo|añade nuevo)\b`)
 	searchPattern       = regexp.MustCompile(`(?i)\b(busca|search|encuentra|find|grep|d(o|ó)nde|where|localiza|usages|referencias)\b`)
+	symbolPattern       = regexp.MustCompile(`(?i)\b(s(i|í)mbolo|symbol|funci(o|ó)n|function|m(e|é)todo|method|clase|class|struct|interface|definition|definici(o|ó)n|callers?|llamadas?)\b`)
+	semanticPattern     = regexp.MustCompile(`(?i)\b(lsp|language server|semantic|sem(a|á)ntic|tipos?|types?|diagn(o|ó)stic|hover|go to definition|referencias exactas)\b`)
+	validationPattern   = regexp.MustCompile(`(?i)\b(valida|validate|lint|formatter|format|typecheck|compila|compile|build|tests?|pruebas?|go vet|cargo check)\b`)
+	scipPattern         = regexp.MustCompile(`(?i)\b(scip|semantic index|indice sem(a|á)ntico|índice sem(a|á)ntico)\b`)
 	shellPattern        = regexp.MustCompile(`(?i)\b(ejecuta|execute|run|comando|command|terminal|bash|shell|compila|compile|build|test|prueba|git|npm|go run|instala|install)\b`)
 	urlPattern          = regexp.MustCompile(`(?i)(https?://|\b(url|web|p(a|á)gina|docs? online|documentaci(o|ó)n online)\b)`)
 	webSearchPattern    = regexp.MustCompile(`(?i)\b(internet|web|online|actualizado|actualizada|reciente|latest|current|news|noticias|hoy|today)\b|última\s+versión|ultima\s+version|latest\s+version`)
@@ -271,11 +278,15 @@ var promptHints = []struct {
 	pattern *regexp.Regexp
 	tools   []string
 }{
-	{projectScopePattern, []string{"list_directory", "glob", "read_files"}},
-	{filePathPattern, []string{"read_files", "str_replace", "apply_diff"}},
+	{projectScopePattern, []string{"code_intel_status", "code_graph", "code_context", "list_directory", "glob", "read_files"}},
+	{filePathPattern, []string{"code_context", "read_files", "str_replace", "apply_diff"}},
 	{imagePathPattern, []string{"extract_image_text", "read_files"}},
-	{writePattern, []string{"str_replace", "apply_diff", "read_files"}},
-	{searchPattern, []string{"code_search", "glob", "read_files"}},
+	{writePattern, []string{"code_context", "code_validate", "str_replace", "apply_diff", "read_files"}},
+	{searchPattern, []string{"code_symbols", "code_references", "code_graph", "code_context", "code_search", "glob", "read_files"}},
+	{symbolPattern, []string{"code_symbols", "code_references", "code_graph", "code_context"}},
+	{semanticPattern, []string{"code_semantic", "code_symbols", "code_references"}},
+	{validationPattern, []string{"code_validate"}},
+	{scipPattern, []string{"code_scip_search"}},
 	{shellPattern, []string{"run_terminal_command"}},
 	{urlPattern, []string{"read_url"}},
 	{webSearchPattern, []string{"web_search"}},

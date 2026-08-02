@@ -18,6 +18,7 @@ import (
 	"github.com/lilith/li/internal/tui/uikit/viewport"
 
 	"github.com/lilith/li/internal/agents"
+	"github.com/lilith/li/internal/codeintel"
 	compactctx "github.com/lilith/li/internal/compaction"
 	"github.com/lilith/li/internal/config"
 	ligoal "github.com/lilith/li/internal/goal"
@@ -153,9 +154,10 @@ type ChatModel struct {
 	toolFallback   string
 
 	// Persistencia de la conversación (historial por proyecto).
-	store   *session.Store
-	sess    *session.Session
-	project string
+	store     *session.Store
+	sess      *session.Session
+	project   string
+	codeIntel *codeintel.Manager
 
 	// /rewind stores a cheap conversation checkpoint at each user boundary and
 	// captures the workspace lazily before the first mutating tool. The mutable
@@ -606,6 +608,7 @@ func NewChat(ctx *AppContext) ChatModel {
 		rewindStore:        rewind.NewStore(ctx.ConfigDir),
 		rewindTurn:         &rewindTurnState{},
 		project:            project,
+		codeIntel:          codeintel.New(project, ctx.ConfigDir),
 		sess:               session.New(project),
 		todos:              litodo.NewManager(nil),
 		plans:              planstate.NewManager(nil),

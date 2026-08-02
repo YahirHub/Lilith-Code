@@ -22,11 +22,11 @@ Versión concreta:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh -o install.sh
-sh install.sh 0.1.2
+sh install.sh 0.2.0
 rm install.sh
 ```
 
-También se puede usar `LI_VERSION=v0.1.2` o `LI_REPOSITORY` para un fork.
+También se puede usar `LI_VERSION=v0.2.0` o `LI_REPOSITORY` para un fork.
 
 ## Termux en Android
 
@@ -52,7 +52,7 @@ Versión concreta:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh | \
-  LI_VERSION=0.1.2 sh
+  LI_VERSION=0.2.0 sh
 ```
 
 El runtime corrige además el argumento ejecutable duplicado que Android puede
@@ -74,7 +74,7 @@ directorio al `PATH` persistente del usuario y también a la sesión actual.
 Versión concreta:
 
 ```powershell
-$env:LI_VERSION = '0.1.2'
+$env:LI_VERSION = '0.2.0'
 irm https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.ps1 | iex
 ```
 
@@ -90,7 +90,7 @@ install.cmd
 Versión concreta:
 
 ```cmd
-install.cmd 0.1.2
+install.cmd 0.2.0
 ```
 
 ## Primer arranque
@@ -121,6 +121,14 @@ Requiere Go 1.24 o superior:
 git clone https://github.com/YahirHub/Lilith-Code.git lilith
 cd lilith
 go run ./cmd/build build
+```
+
+El builder aplica automáticamente `CGO_ENABLED=0` y `-tags=grammar_set_core`
+para incorporar las gramáticas de inteligencia de código dentro de cada
+binario. Un build directo equivalente es:
+
+```bash
+CGO_ENABLED=0 go build -tags=grammar_set_core -trimpath -o li ./cmd/li
 ```
 
 `cmd/build` genera los binarios de release para Linux y Windows. Termux se

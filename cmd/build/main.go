@@ -25,6 +25,8 @@ import (
 	buildversion "github.com/lilith/li/internal/version"
 )
 
+const embeddedGrammarBuildTag = "grammar_set_core"
+
 type target struct {
 	GOOS   string
 	GOARCH string
@@ -125,7 +127,7 @@ func buildAll() error {
 		}
 	}
 	fmt.Printf("\nListo. Binarios li generados en %s\n", dist)
-	fmt.Println("Las skills de assets/skills están embebidas dentro de cada binario.")
+	fmt.Println("Las skills y gramáticas sintácticas principales están embebidas dentro de cada binario estático.")
 	return nil
 }
 
@@ -140,6 +142,7 @@ func buildTarget(goExe, root, dist, version, commit string, t target) error {
 	ldflags := fmt.Sprintf("-s -w -X main.version=%s -X main.commit=%s", version, commit)
 	args := []string{
 		"build",
+		"-tags=" + embeddedGrammarBuildTag,
 		"-trimpath",
 		"-buildvcs=false",
 		"-ldflags=" + ldflags,

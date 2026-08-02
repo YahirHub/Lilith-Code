@@ -58,3 +58,19 @@ func TestAppendRuntimeStateOnlyTouchesLatestUserCopy(t *testing.T) {
 		t.Fatalf("original history mutated")
 	}
 }
+
+func TestAppendCodeIntelSystemProfileStaysOutOfUserTurn(t *testing.T) {
+	system := appendCodeIntelSystemProfile("base system", "profile")
+	if !strings.Contains(system, "<code_intelligence>") || !strings.Contains(system, "profile") {
+		t.Fatalf("code-intelligence profile missing from system content: %q", system)
+	}
+	if strings.Count(appendCodeIntelSystemProfile(system, "profile"), "<code_intelligence>") != 1 {
+		t.Fatalf("code-intelligence profile was duplicated: %q", system)
+	}
+
+	history := []openai.Message{{Role: "user", Content: "task"}}
+	got := appendRuntimeState(cloneHistoryMessages(history), "<todo_state>active</todo_state>")
+	if strings.Contains(got[0].Content, "<code_intelligence>") {
+		t.Fatalf("code-intelligence profile leaked into the user turn: %q", got[0].Content)
+	}
+}

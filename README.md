@@ -24,6 +24,55 @@ sobre tu repositorio y ofrece una TUI interactiva construida sobre tview/Tcell.
 - Sin dependencias externas obligatorias en runtime: la toolchain auxiliar se
   descarga y verifica mediante SHA-256 al primer uso; en Termux se usan los
   paquetes nativos del repositorio.
+- Motor de inteligencia de código por proyecto: detecta sistema, shell,
+  manifests, lenguajes y herramientas; mantiene un índice incremental de
+  símbolos/referencias, construye contexto compacto, consulta LSP/SCIP cuando
+  ya existen y selecciona validaciones reales por ecosistema.
+
+
+## Inteligencia de código estática
+
+Lilith incorpora `internal/codeintel`, compartido por el agente principal y los
+subagentes. El motor trabaja de forma perezosa: la detección ligera se inyecta
+en el prompt y el índice completo sólo se actualiza cuando una herramienta de
+código lo necesita.
+
+Incluye:
+
+- detección de Windows, Linux, WSL, contenedores, SSH y Termux, arquitectura,
+  distribución, shell, `PATH`, manifests, frameworks, monorepos, package manager
+  y herramientas instaladas;
+- análisis sintáctico Tree-sitter en Go puro con el conjunto Core100 de
+  gramáticas comprimidas embebido dentro del ejecutable;
+- fallback estructural para archivos cuyo lenguaje no esté incluido en el
+  conjunto embebido;
+- índice incremental persistente bajo `~/.li/codeintel/`, fuera del repositorio,
+  cuya ruta física se muestra en `code_intel_status`;
+- para Go, una capa adicional basada en `go/ast` que indexa funciones, métodos,
+  tipos, structs, interfaces, constantes y variables con nombres canónicos de
+  paquete;
+- resolución de referencias Go por identidad calificada y alias de importación,
+  evitando confundir símbolos distintos que comparten nombre;
+- grafo conectado de paquetes, archivos, imports, declaraciones, llamadas y
+  pruebas, con expansión alrededor de los nodos relevantes para la tarea;
+- selección semántica bilingüe de fragmentos delimitados por declaraciones, que
+  prioriza código de producción y reduce documentación/scripts irrelevantes;
+- integración opcional con servidores LSP ya instalados para definiciones,
+  referencias, hover y diagnósticos;
+- consulta opcional de un `index.scip` existente mediante un CLI `scip` ya
+  instalado;
+- adaptadores de validación para Go, Rust, Node/TypeScript, Deno, Python,
+  PHP/Laravel, Ruby, Dart/Flutter, Swift, Elixir, .NET, Godot, Maven, Gradle,
+  CMake y Make; en Windows se omite un Makefile secundario con sintaxis POSIX
+  cuando existe un adaptador nativo del proyecto.
+
+No se descargan gramáticas, language servers, indexadores ni compiladores en
+runtime. Los builds oficiales usan `CGO_ENABLED=0` y el tag
+`grammar_set_core`, por lo que el ejecutable continúa siendo autocontenido.
+Las herramientas disponibles para el modelo son `code_intel_status`,
+`code_symbols`, `code_references`, `code_graph`, `code_context`,
+`code_semantic`, `code_scip_search`, `code_validate` y
+`code_format_validate`.
 
 ## Atajos principales
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lilith/li/internal/agents"
+	"github.com/lilith/li/internal/codeintel"
 	"github.com/lilith/li/internal/config"
 	"github.com/lilith/li/internal/hooks"
 	"github.com/lilith/li/internal/instructions"
@@ -54,6 +55,9 @@ type Config struct {
 	ParentIsFork bool
 	Skills       []skills.Skill
 	Agents       []agents.Agent
+	// CodeIntel shares the parent repository index when roots match. Worktree
+	// subagents transparently receive their own persistent index.
+	CodeIntel *codeintel.Manager
 	// Depth is 1 for a top-level subagent. MaxDepth follows Claude Code's
 	// current default of three subagent layers below the main conversation.
 	// LILITH_MAX_SUBAGENT_DEPTH or the Claude-compatible
@@ -182,6 +186,8 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 			provider = *providerFromStore
 			model = child.ModelID
 		}
+		ci := codeIntelForConfig(cfg)
+		child.Messages = mergeCodeIntelSystemMessage(child.Messages, ci.PromptBlock())
 		child.Messages = append(child.Messages, openai.Message{Role: "user", Content: req.Prompt})
 	} else {
 		now := timeNow()
@@ -217,8 +223,11 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 			if worktreeRoot != "" {
 				msgs = append(msgs, openai.Message{Role: "user", Content: "<fork_environment>\nWorking directory: " + filepathSlash(cfg.Root) + "\nThis fork is isolated in a git worktree.\n</fork_environment>"})
 			}
+			ci := codeIntelForConfig(cfg)
+			msgs = mergeCodeIntelSystemMessage(msgs, ci.PromptBlock())
 		} else {
-			msgs = []openai.Message{{Role: "system", Content: buildSystemPrompt(req.Agent, cfg.Root, cfg.Skills, cfg.Agents, depth < maxDepth, memoryDir)}}
+			ci := codeIntelForConfig(cfg)
+			msgs = []openai.Message{{Role: "system", Content: buildSystemPrompt(req.Agent, cfg.Root, cfg.Skills, cfg.Agents, depth < maxDepth, memoryDir, ci.PromptBlock())}}
 			// Claude's built-in Explore/Plan intentionally omit CLAUDE.md. Custom
 			// subagents receive the normal project instruction flow before the task.
 			if !strings.EqualFold(req.Agent.Name, "Explore") && !strings.EqualFold(req.Agent.Name, "Plan") {
@@ -240,6 +249,8 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 	if hookRunner != nil {
 		hookRunner.Root = cfg.Root
 	}
+
+	codeIntel := codeIntelForConfig(cfg)
 
 	localTodos := litodo.NewManager(nil)
 	mode := planstate.Build
@@ -296,7 +307,7 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 	}
 
 	var active []string
-	env := tools.Env{Root: cfg.Root, ConfigDir: cfg.ConfigDir, Skills: cfg.Skills, Todos: localTodos, AgentMode: mode, MemoryDir: memoryDir}
+	env := tools.Env{Root: cfg.Root, CodeIntel: codeIntel, ConfigDir: cfg.ConfigDir, Skills: cfg.Skills, Todos: localTodos, AgentMode: mode, MemoryDir: memoryDir}
 	env.DynamicTool = func(toolCtx context.Context, name string, args map[string]any) (string, error) {
 		if cfg.ParentMCP != nil && cfg.ParentMCP.Has(name) {
 			if !policy.allowsDynamic(name, cfg.ParentMCP.IsReadOnly(name)) {
@@ -612,7 +623,27 @@ func toolMessage(call openai.ToolCall, content string) openai.Message {
 	return openai.Message{Role: "tool", ToolCallID: call.ID, Name: call.Function.Name, Content: content}
 }
 
-func buildSystemPrompt(a agents.Agent, root string, catalog []skills.Skill, agentCatalog []agents.Agent, canDelegate bool, memoryDir string) string {
+func mergeCodeIntelSystemMessage(messages []openai.Message, profile string) []openai.Message {
+	profile = strings.TrimSpace(profile)
+	if profile == "" {
+		return messages
+	}
+	block := "<code_intelligence>\n" + profile + "\n</code_intelligence>"
+	out := append([]openai.Message(nil), messages...)
+	for i := range out {
+		if out[i].Role != "system" {
+			continue
+		}
+		if strings.Contains(out[i].Content, "<code_intelligence>") {
+			return out
+		}
+		out[i].Content = strings.TrimSpace(out[i].Content) + "\n\n" + block
+		return out
+	}
+	return append([]openai.Message{{Role: "system", Content: block}}, out...)
+}
+
+func buildSystemPrompt(a agents.Agent, root string, catalog []skills.Skill, agentCatalog []agents.Agent, canDelegate bool, memoryDir, codeIntelProfile string) string {
 	var b strings.Builder
 	prompt := strings.TrimSpace(a.Prompt)
 	if strings.TrimSpace(a.PluginRoot) != "" {
@@ -639,7 +670,19 @@ func buildSystemPrompt(a agents.Agent, root string, catalog []skills.Skill, agen
 	if preloaded := preloadSkills(a.Skills, catalog); preloaded != "" {
 		b.WriteString(preloaded)
 	}
+	if strings.TrimSpace(codeIntelProfile) != "" {
+		b.WriteString("\n\n<code_intelligence>\n")
+		b.WriteString(strings.TrimSpace(codeIntelProfile))
+		b.WriteString("\n</code_intelligence>")
+	}
 	return b.String()
+}
+
+func codeIntelForConfig(cfg Config) *codeintel.Manager {
+	if cfg.CodeIntel != nil && filepathClean(cfg.CodeIntel.Root()) == filepathClean(cfg.Root) {
+		return cfg.CodeIntel
+	}
+	return codeintel.New(cfg.Root, cfg.ConfigDir)
 }
 
 func preloadSkills(names []string, catalog []skills.Skill) string {
@@ -718,7 +761,9 @@ func (p toolPolicy) visible(name string, def tools.Definition) bool {
 
 func backgroundBuiltinAllowed(name string) bool {
 	switch name {
-	case "Agent", "read_files", "list_directory", "glob", "code_search", "run_terminal_command",
+	case "Agent", "read_files", "list_directory", "glob", "code_search", "code_intel_status",
+		"code_symbols", "code_references", "code_graph", "code_context",
+		"code_semantic", "code_scip_search", "run_terminal_command",
 		"str_replace", "apply_diff", "create_file", "read_url", "web_search", "todo_write",
 		"list_skills", "skill_read", "skill_search", "skill_files", "tool_search",
 		"memory_read", "memory_write":

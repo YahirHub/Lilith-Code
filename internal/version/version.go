@@ -4,4 +4,4 @@
 // release workflow. The builder, CLI and release tag all consume this value.
 package version
 
-const Current = "0.1.2"
+const Current = "0.2.0"

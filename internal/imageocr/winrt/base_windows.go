@@ -11,6 +11,7 @@ import (
 var (
 	modole32                      = syscall.NewLazyDLL("ole32.dll")
 	modcombase                    = syscall.NewLazyDLL("combase.dll")
+	modkernel32                   = syscall.NewLazyDLL("kernel32.dll")
 	procCoInitializeEx            = modole32.NewProc("CoInitializeEx")
 	procRoInitialize              = modcombase.NewProc("RoInitialize")
 	procRoActivateInstance        = modcombase.NewProc("RoActivateInstance")
@@ -18,6 +19,7 @@ var (
 	procWindowsCreateString       = modcombase.NewProc("WindowsCreateString")
 	procWindowsDeleteString       = modcombase.NewProc("WindowsDeleteString")
 	procWindowsGetStringRawBuffer = modcombase.NewProc("WindowsGetStringRawBuffer")
+	procRtlMoveMemory             = modkernel32.NewProc("RtlMoveMemory")
 )
 
 const (
@@ -102,6 +104,8 @@ func DeleteHString(hs HSTRING) {
 }
 
 // HStringToString 将 HSTRING 转换为 Go string
+//
+//go:nocheckptr
 func HStringToString(hs HSTRING) string {
 	if hs == 0 {
 		return ""
@@ -114,11 +118,18 @@ func HStringToString(hs HSTRING) string {
 	if ptr == 0 {
 		return ""
 	}
-	// 将 UTF-16 转换为 Go string
-	u16 := make([]uint16, length)
-	for i := uint32(0); i < length; i++ {
-		u16[i] = *(*uint16)(unsafe.Pointer(ptr + uintptr(i)*2))
+	if length == 0 {
+		return ""
 	}
+	// Copy through the Windows memory routine instead of converting the uintptr
+	// returned by WinRT into a Go pointer. This keeps the syscall boundary
+	// explicit and passes go vet's unsafeptr analysis on Windows.
+	u16 := make([]uint16, int(length))
+	procRtlMoveMemory.Call(
+		uintptr(unsafe.Pointer(&u16[0])),
+		ptr,
+		uintptr(length)*unsafe.Sizeof(u16[0]),
+	)
 	return syscall.UTF16ToString(u16)
 }
 

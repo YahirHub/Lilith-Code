@@ -66,6 +66,7 @@ if [ "$is_termux" -eq 1 ]; then
   (
     cd "$tmp/source"
     CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build \
+      -tags=grammar_set_core \
       -trimpath -buildvcs=false \
       -ldflags="-s -w -X main.commit=$commit" \
       -o "$tmp/li" ./cmd/li

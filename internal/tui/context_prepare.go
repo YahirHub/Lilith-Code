@@ -34,10 +34,11 @@ func (m *ChatModel) prepareRequestMessages(mode planstate.Mode) []openai.Message
 	// Keep the reusable prefix stable. Todo/Plan/path-scoped state belongs near
 	// the current turn; persistent project instructions sit immediately after the
 	// system prompt just like Claude Code's CLAUDE.md user-message layer.
-	msgs = append(msgs, openai.Message{
-		Role:    "system",
-		Content: systemPrompt(m.activeTools, m.skillsBlock(), m.agentsBlock(), "", ""),
-	})
+	systemContent := systemPrompt(m.activeTools, m.skillsBlock(), m.agentsBlock(), "", "")
+	if m.codeIntel != nil {
+		systemContent = appendCodeIntelSystemProfile(systemContent, m.codeIntel.PromptBlock())
+	}
+	msgs = append(msgs, openai.Message{Role: "system", Content: systemContent})
 	if projectInstructions := strings.TrimSpace(bundle.StaticPrompt()); projectInstructions != "" {
 		msgs = append(msgs, openai.Message{Role: "user", Content: projectInstructions})
 	}
@@ -46,6 +47,14 @@ func (m *ChatModel) prepareRequestMessages(mode planstate.Mode) []openai.Message
 	}
 	msgs = append(msgs, history...)
 	return msgs
+}
+
+func appendCodeIntelSystemProfile(systemContent, profile string) string {
+	profile = strings.TrimSpace(profile)
+	if profile == "" || strings.Contains(systemContent, "<code_intelligence>") {
+		return systemContent
+	}
+	return strings.TrimSpace(systemContent) + "\n\n<code_intelligence>\n" + profile + "\n</code_intelligence>"
 }
 
 // requestToolSchemas builds exactly the tool-schema payload sent with a model

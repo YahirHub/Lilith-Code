@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/lilith/li/internal/codeintel"
 	ligoal "github.com/lilith/li/internal/goal"
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/subagents"
@@ -96,6 +98,16 @@ func (m *ChatModel) planStatePointer() *planstate.State {
 	return &state
 }
 
+func (m *ChatModel) codeIntelFor(root string) *codeintel.Manager {
+	if strings.TrimSpace(root) == "" {
+		root = m.project
+	}
+	if m.codeIntel != nil && filepath.Clean(m.codeIntel.Root()) == filepath.Clean(root) {
+		return m.codeIntel
+	}
+	return codeintel.New(root, m.ctx.ConfigDir)
+}
+
 func (m *ChatModel) toolEnv(root string, mode planstate.Mode) tools.Env {
 	return m.toolEnvWithAgentEvents(root, mode, nil)
 }
@@ -113,8 +125,10 @@ func (m *ChatModel) toolEnvWithAgentEvents(root string, mode planstate.Mode, eve
 	}
 	parentMessages := m.forkContextMessages(mode)
 	parentTools := append([]string(nil), m.activeTools...)
+	codeIntel := m.codeIntelFor(root)
 	env := tools.Env{
 		Root:      root,
+		CodeIntel: codeIntel,
 		ConfigDir: m.ctx.ConfigDir,
 		Todos:     m.todos,
 		MemoryDir: m.mainMemoryDir(),
@@ -128,7 +142,7 @@ func (m *ChatModel) toolEnvWithAgentEvents(root string, mode planstate.Mode, eve
 			Client: m.ctx.Client, Providers: m.ctx.Providers, ConfigDir: m.ctx.ConfigDir, Root: root, StoreProject: m.project,
 			ParentProviderID: providerID, ParentModelID: modelID, ParentMode: mode,
 			ParentMessages: parentMessages, ParentToolNames: parentTools, Skills: skillCatalog,
-			Agents: agentCatalog, Depth: 1, Events: events, BackgroundContext: m.sessionCtx, ParentMCP: m.mcpRuntime,
+			Agents: agentCatalog, CodeIntel: codeIntel, Depth: 1, Events: events, BackgroundContext: m.sessionCtx, ParentMCP: m.mcpRuntime,
 			PluginHooks: m.loadClaudePluginHooks(),
 		}
 		if req.Background && backgroundTasksAllowed() {
