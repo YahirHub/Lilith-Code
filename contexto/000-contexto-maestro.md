@@ -175,7 +175,7 @@ Después de elegir el destino, `/fork` captura el estado actual y crea una sesi�
 5. Ejecutar formato, tests, race, vet y builds estáticos/multiplataforma cuando el entorno lo permita.
 6. Documentar el cambio en un MD numerado.
 7. Commit en español con el autor Git `YahirHub <217099863+YahirHub@users.noreply.github.com>`.
-8. Para publicar, cambiar únicamente `internal/version/version.go` y ejecutar manualmente el workflow **Publicar release**; éste prueba, compila `cmd/build`, crea checksums, tag y GitHub Release.
+8. Para publicar, cambiar únicamente `internal/version/version.go` y ejecutar manualmente el workflow **Publicar release**; éste prueba, compila `cmd/build`, crea checksums, adjunta instaladores y genera notas agrupadas desde los commits posteriores al tag anterior.
 
 ## 13. Validación objetivo
 
@@ -208,3 +208,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `093-vps-red-resiliente-y-releases-manuales.md`
 - `094-nombre-codex-ctrl-c-y-autor-git.md`
 - `095-corregir-prueba-rewind-en-workflow.md`
+- `096-notas-release-e-instaladores.md`

@@ -52,11 +52,39 @@ jobs:
       - name: Compilar binarios
         run: go run ./cmd/build build
 
-      - name: Generar sumas SHA-256
+      - name: Preparar instaladores y sumas SHA-256
         shell: bash
         run: |
+          cp install.sh install.ps1 install.cmd dist/
+          chmod +x dist/install.sh
           cd dist
-          sha256sum li-* > SHA256SUMS.txt
+          sha256sum li-* install.sh install.ps1 install.cmd > SHA256SUMS.txt
+
+      - name: Detectar release anterior
+        id: previous
+        shell: bash
+        run: |
+          PREVIOUS_TAG="$(git tag --list 'v*' --sort=-v:refname | head -n 1)"
+          echo "tag=$PREVIOUS_TAG" >> "$GITHUB_OUTPUT"
+          if [ -n "$PREVIOUS_TAG" ]; then
+            echo "Generando cambios desde $PREVIOUS_TAG"
+          else
+            echo "No existe un tag anterior; se documentará la primera versión."
+          fi
+
+      - name: Generar notas del release
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          python3 .github/scripts/release_notes.py \
+            --tag "$TAG" \
+            --previous-tag "$PREVIOUS_TAG" \
+            --repository "$REPOSITORY" \
+            --output dist/RELEASE_NOTES.md
+          cat dist/RELEASE_NOTES.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Crear tag y release
         env:
@@ -67,4 +95,4 @@ jobs:
           gh release create "$TAG" dist/* \
             --target "$GITHUB_SHA" \
             --title "Lilith $TAG" \
-            --generate-notes
+            --notes-file dist/RELEASE_NOTES.md

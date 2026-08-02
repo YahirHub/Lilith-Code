@@ -30,11 +30,29 @@ sobre tu repositorio y ofrece una TUI interactiva construida sobre tview/Tcell.
 - `Alt+↑`: recuperar al editor los mensajes pendientes de la cola.
 - `/exit`: cerrar Lilith de forma explícita.
 
+## Instalación rápida
+
+Linux:
+
+```bash
+curl -fsSL https://github.com/YahirHub/Lilith-Code/releases/latest/download/install.sh | bash
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://github.com/YahirHub/Lilith-Code/releases/latest/download/install.ps1 | iex
+```
+
+Los instaladores detectan la arquitectura, verifican SHA-256, configuran el
+`PATH` y reemplazan de forma segura una versión anterior. Consulta
+[`install.md`](./install.md) para instalar una versión concreta y ver todas las
+plataformas compatibles.
+
 ## Releases
 
 La versión se define en `internal/version/version.go`. Para publicar una nueva
 versión, cambia `version.Current`, haz commit y ejecuta manualmente el workflow
 **Publicar release** desde GitHub Actions. El workflow prueba el proyecto,
-ejecuta `cmd/build`, genera checksums y crea el tag y el GitHub Release.
-
-Consulta [`install.md`](./install.md) para las instrucciones de instalación.
+ejecuta `cmd/build`, genera checksums, adjunta los instaladores y crea notas
+agrupadas de forma automática con los commits realizados desde el tag anterior.
