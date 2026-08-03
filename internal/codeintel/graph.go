@@ -126,13 +126,7 @@ func (m *Manager) Graph(ctx context.Context, query string, limit int) (Repositor
 			}
 			targets := definitionsByQualified[normalizeCanonical(ref.QualifiedName)]
 			if len(targets) == 0 && ref.Kind == "call" {
-				// Method calls through variables/interfaces cannot be resolved from
-				// syntax alone. A small, bounded name set is still useful for an
-				// approximate repository flow without exploding the graph.
-				candidates := definitionsByName[strings.ToLower(ref.Name)]
-				if len(candidates) <= 8 {
-					targets = candidates
-				}
+				targets = graphCallTargets(record, ref, definitionsByName[strings.ToLower(ref.Name)])
 			}
 			for _, target := range targets {
 				targetID := symbolNodeID(target)
@@ -240,6 +234,65 @@ func (m *Manager) Graph(ctx context.Context, query string, limit int) (Repositor
 		}
 	}
 	return RepositoryGraph{Nodes: ranked, Edges: filteredEdges}, nil
+}
+
+func graphCallTargets(record FileRecord, ref Reference, candidates []Symbol) []Symbol {
+	if len(candidates) == 0 {
+		return nil
+	}
+	callables := make([]Symbol, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.Kind == "function" || candidate.Kind == "method" {
+			callables = append(callables, candidate)
+		}
+	}
+	candidates = callables
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	// A selector whose receiver is an import alias has a canonical package
+	// identity. Keep only definitions from that imported package.
+	if imported := normalizeCanonical(record.ImportAliases[ref.Receiver]); imported != "" {
+		var exact []Symbol
+		for _, candidate := range candidates {
+			qualified := normalizeCanonical(candidate.QualifiedName)
+			if strings.HasPrefix(qualified, imported+".") || qualified == imported+"."+strings.ToLower(candidate.Name) {
+				exact = append(exact, candidate)
+			}
+		}
+		if len(exact) == 1 {
+			return exact
+		}
+		return nil
+	}
+
+	// Bare calls are only safe to connect to the current package. Method calls
+	// through local variables/interfaces are kept only when the package offers a
+	// single unambiguous target. Avoid the previous name-only fan-out across
+	// unrelated packages, which produced plausible but false call edges.
+	currentPackage := normalizeCanonical(record.PackagePath)
+	var local []Symbol
+	for _, candidate := range candidates {
+		qualified := normalizeCanonical(candidate.QualifiedName)
+		if currentPackage != "" && strings.HasPrefix(qualified, currentPackage+".") {
+			local = append(local, candidate)
+			continue
+		}
+		if currentPackage == "" && candidate.Package != "" && strings.EqualFold(candidate.Package, record.Package) {
+			local = append(local, candidate)
+		}
+	}
+	if len(local) == 1 {
+		return local
+	}
+	if len(local) > 1 {
+		return nil
+	}
+	if ref.Receiver == "" && len(candidates) == 1 {
+		return candidates
+	}
+	return nil
 }
 
 func firstDefinition(values []Symbol) *Symbol {

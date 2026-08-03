@@ -20,21 +20,23 @@ import (
 // Output (stdout + stderr) is shown compactly with a preview window and a
 // "N earlier lines" hint so long runs don't blow up the transcript.
 type CommandPanel struct {
-	CallID     string
-	Index      int
-	Command    string // streamed from the tool call arguments
-	Timeout    int    // seconds, if the model set it
-	Done       bool
-	Failed     bool
-	Superseded bool
-	ExitCode   int
-	Stdout     string
-	Stderr     string
-	TimedOut   bool
-	Canceled   bool
-	StartedAt  time.Time
-	Elapsed    time.Duration
-	Expanded   bool
+	CallID        string
+	Index         int
+	Command       string // streamed from the tool call arguments
+	Shell         string // requested shell: auto/bash/sh/powershell/cmd
+	ResolvedShell string // shell kind actually used, parsed from tool output
+	Timeout       int    // seconds, if the model set it
+	Done          bool
+	Failed        bool
+	Superseded    bool
+	ExitCode      int
+	Stdout        string
+	Stderr        string
+	TimedOut      bool
+	Canceled      bool
+	StartedAt     time.Time
+	Elapsed       time.Duration
+	Expanded      bool
 }
 
 // IsCommandTool reports the tools rendered with a CommandPanel.
@@ -52,6 +54,9 @@ func (p *CommandPanel) Update(rawArgs string) {
 	if v, ok := partialJSONString(rawArgs, "command"); ok {
 		p.Command = v
 	}
+	if v, ok := partialJSONString(rawArgs, "shell"); ok {
+		p.Shell = v
+	}
 	if v, ok := partialJSONNumber(rawArgs, "timeout_seconds"); ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			p.Timeout = n
@@ -59,7 +64,10 @@ func (p *CommandPanel) Update(rawArgs string) {
 	}
 }
 
-var exitCodeRe = regexp.MustCompile(`(?m)^exit_code:\s*(-?\d+)`)
+var (
+	exitCodeRe      = regexp.MustCompile(`(?m)^exit_code:\s*(-?\d+)`)
+	resolvedShellRe = regexp.MustCompile(`(?m)^shell:\s*([A-Za-z0-9_-]+)`)
+)
 
 // Finish closes the panel with the shell's real output.
 func (p *CommandPanel) Finish(result string) {
@@ -68,6 +76,9 @@ func (p *CommandPanel) Finish(result string) {
 		p.Elapsed = time.Since(p.StartedAt)
 	}
 	trim := strings.TrimSpace(result)
+	if m := resolvedShellRe.FindStringSubmatch(result); len(m) == 2 {
+		p.ResolvedShell = strings.TrimSpace(m[1])
+	}
 	if strings.HasPrefix(trim, "error:") {
 		p.Failed = true
 		p.Stderr = sanitizeOutput(trim)
@@ -204,6 +215,11 @@ func (p *CommandPanel) View(s Styles, width int, selected bool) string {
 		timing = s.Muted.Render(fmt.Sprintf("Elapsed %s", humanizeDur(time.Since(p.StartedAt))))
 	default:
 		timing = s.Muted.Render("• running")
+	}
+	if shellLabel := strings.TrimSpace(p.ResolvedShell); shellLabel != "" {
+		timing += "  " + s.Muted.Render("shell: "+shellLabel)
+	} else if requested := strings.TrimSpace(p.Shell); requested != "" && requested != "auto" {
+		timing += "  " + s.Muted.Render("shell: "+requested)
 	}
 	if selected {
 		hint := "(ctrl+o expand)"

@@ -52,7 +52,7 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - `code_graph` debe devolver un subgrafo conectado: seleccionar semillas por la consulta y expandir relaciones vecinas antes de filtrar nodos.
 - El perfil `<code_intelligence>` pertenece al mensaje de sistema y nunca debe crear, alterar ni persistir turnos de usuario.
 - En Windows nativo, no ejecutar un adaptador Make secundario cuando el Makefile use asignaciones/utilidades POSIX o exista un adaptador principal compatible.
-- LSP y SCIP son capas opcionales: sólo usar ejecutables e índices ya presentes, nunca instalar o descargar componentes por cuenta propia.
+- LSP y SCIP son capas opcionales: sólo usar ejecutables e índices ya presentes, nunca instalar o descargar componentes por cuenta propia. No incrustar ni descargar `gopls`; cuando no esté disponible, `code_semantic` para Go debe usar el fallback estático interno basado en índice/go parser.
 - `code_format_validate` sólo puede modificar rutas explícitas dentro de la raíz; rechazar escapes `..` y no formatear un workspace completo cuando `changed_paths` esté vacío.
 - Las validaciones deben derivarse de manifests y herramientas reales del proyecto, y no inventar package managers o comandos.
 
@@ -64,6 +64,8 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - Reemplazar un archivo existente con `write_file` requiere `overwrite=true`; cuando el contenido se leyó antes, usar `expected_sha256` para detectar cambios observables. Para documentos largos, `append_file` debe recibir secciones completas y acotadas, reutilizando el SHA devuelto cuando sea posible.
 - `str_replace` y `apply_diff` siguen siendo la vía preferida para cambios localizados. Un mismatch debe incluir hash, tamaño, líneas y una región actual cercana; nunca aplicar reemplazo fuzzy destructivo por cuenta propia.
 - `run_terminal_command` debe rechazar antes de ejecutar heredocs incompletos y escrituras inline demasiado largas. El rechazo debe garantizar que no se creó un archivo parcial y orientar a `write_file`/`append_file`.
+- En Windows, `run_terminal_command` usa PowerShell para comandos neutrales, CMD para sintaxis CMD y Bash/sh sólo para sintaxis POSIX; en Linux/macOS/Termux usa Bash/sh. No ejecutar silenciosamente un comando con una shell incompatible. El parámetro `shell` permite selección explícita.
+- `write_file` acepta como máximo 1 MiB por llamada. `append_file` acepta 1 MiB por sección, no agrega saltos de línea y el archivo final se limita a 64 MiB; estas reglas deben permanecer visibles en schema, prompt y resultado.
 
 ### Proveedores y modelos
 

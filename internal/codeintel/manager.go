@@ -327,6 +327,9 @@ func (m *Manager) PromptBlock() string {
 	if p.Environment.Shell != "" {
 		fmt.Fprintf(&b, ", shell=%s", p.Environment.Shell)
 	}
+	if len(p.Environment.Shells) > 0 {
+		fmt.Fprintf(&b, ", shells=%s", strings.Join(p.Environment.Shells, ","))
+	}
 	if len(p.Project.Kinds) > 0 {
 		fmt.Fprintf(&b, ", project=%s", strings.Join(p.Project.Kinds, "+"))
 	}
@@ -345,10 +348,13 @@ func (m *Manager) PromptBlock() string {
 	if len(p.LSPServers) > 0 {
 		fmt.Fprintf(&b, ", lsp=%s", strings.Join(p.LSPServers, ","))
 	}
+	if p.Project.PrimaryLanguage == "go" && !stringSliceContains(p.LSPServers, "gopls") {
+		b.WriteString(", semantic=builtin-go")
+	}
 	if p.SCIPIndex != "" {
 		b.WriteString(", scip=index.scip")
 	}
-	b.WriteString(". Respect the detected OS, shell and package manager; never assume sudo, bash or POSIX paths on Windows or Termux. Prefer code_context/code_symbols/code_references before broad file reads; use code_semantic when an LSP server is available and code_validate after edits.")
+	b.WriteString(". Respect the detected OS, default shell and package manager. Use host-native syntax: PowerShell/CMD on Windows unless a command explicitly needs Bash; Bash/sh on Linux, macOS and Termux. Never assume sudo or POSIX paths on Windows or Termux. Prefer code_context/code_symbols/code_references before broad file reads; use code_semantic when an LSP server is available and code_validate after edits.")
 	return b.String()
 }
 
@@ -381,8 +387,13 @@ func (m *Manager) StatusText(ctx context.Context, refresh bool) (string, error) 
 	if !stats.UpdatedAt.IsZero() {
 		fmt.Fprintf(&b, " (updated %s)", stats.UpdatedAt.Format(time.RFC3339))
 	}
+	fmt.Fprintf(&b, "\nshell: %s", emptyAs(profile.Environment.Shell, "unavailable"))
+	fmt.Fprintf(&b, "\navailable_shells: %s", emptyAs(strings.Join(profile.Environment.Shells, ", "), "none detected"))
 	fmt.Fprintf(&b, "\nadapters: %s", emptyAs(strings.Join(profile.Adapters, ", "), "none detected"))
 	fmt.Fprintf(&b, "\nlsp: %s", emptyAs(strings.Join(profile.LSPServers, ", "), "none detected"))
+	if profile.Project.PrimaryLanguage == "go" && !stringSliceContains(profile.LSPServers, "gopls") {
+		b.WriteString("\ngo_semantic: builtin static fallback (definitions, references, hover declarations and syntax diagnostics)")
+	}
 	fmt.Fprintf(&b, "\nscip: %s", emptyAs(profile.SCIPIndex, "not detected"))
 	return b.String(), err
 }

@@ -173,7 +173,7 @@ Lilith incluye un motor independiente en `internal/codeintel`:
 - mantiene un índice incremental y transaccional bajo `~/.li/codeintel/`, nunca dentro del workspace, y expone su ruta física en el estado;
 - combina Tree-sitter con `go/ast` para indexar constantes/variables Go, nombres canónicos y referencias por alias de importación;
 - expone símbolos, referencias precisas cuando existe identidad calificada, un grafo conectado y contexto por declaraciones con ranking bilingüe orientado a código fuente;
-- puede consultar LSP e `index.scip` únicamente cuando ya existen en el sistema;
+- puede consultar LSP e `index.scip` únicamente cuando ya existen en el sistema; `gopls` nunca se incrusta ni se descarga y Go usa un fallback semántico estático interno cuando falta;
 - selecciona formatters, compiladores y tests mediante adaptadores para Go, Rust, Node/TypeScript, Deno, Python, PHP/Laravel, Ruby, Dart/Flutter, Swift, Elixir, .NET, Godot, Maven, Gradle, CMake y Make, sin instalar dependencias; en Windows descarta Makefiles POSIX secundarios;
 - rechaza rutas de validación que escapen de la raíz y no aplica formato global implícito.
 
@@ -184,8 +184,8 @@ El perfil ligero se agrega únicamente al mensaje de sistema del agente principa
 Las escrituras extensas del agente ya no dependen de heredocs o literales largos
 en `run_terminal_command`:
 
-- `write_file` recibe el contenido completo, exige `overwrite=true` para un destino existente y admite `expected_sha256`;
-- `append_file` construye documentos largos por secciones completas, bajo lock por ruta y con límite de tamaño;
+- `write_file` recibe el contenido completo, exige `overwrite=true` para un destino existente, admite `expected_sha256` y limita cada llamada a 1 MiB;
+- `append_file` construye documentos largos por secciones de hasta 1 MiB, no inserta saltos de línea automáticamente y limita el archivo final a 64 MiB;
 - `create_file`, `str_replace` y `apply_diff` usan el mismo backend atómico;
 - el backend escribe un temporal en el directorio del destino, preserva permisos, sincroniza, publica sin ventana de contenido parcial y verifica bytes/SHA-256;
 - la creación estricta usa publicación no-clobber para no sobrescribir un archivo que aparezca después del preflight;
@@ -195,6 +195,16 @@ en `run_terminal_command`:
 La TUI renderiza `write_file` y `append_file` como paneles de archivo. Cuando un
 modelo intenta reemplazar sin autorización, se interrumpe el stream de argumentos,
 se compacta el cuerpo rechazado y se devuelve `OVERWRITE_REQUIRED` sin tocar disco.
+
+## 10 quater. Shell nativa por sistema
+
+`run_terminal_command` selecciona el intérprete según host y sintaxis:
+
+- Windows usa PowerShell para comandos neutrales, CMD para sintaxis CMD y Bash/sh únicamente para sintaxis POSIX cuando está disponible;
+- Linux, macOS y Termux usan Bash con fallback a `sh`;
+- el parámetro `shell=auto|powershell|cmd|bash|sh` permite selección explícita;
+- una sintaxis que requiere una shell ausente se rechaza en vez de ejecutarse con otra incompatible;
+- la salida y el panel TUI muestran la shell realmente usada, y las redirecciones nulas se adaptan a `$null`, `NUL` o `/dev/null`.
 
 ## 11. Persistencia y seguridad
 
@@ -253,3 +263,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `099-reconexion-automatica-y-skills-internas.md`
 - `100-inteligencia-codigo-estatica.md`
 - `101-escritura-atomica-y-guard-heredoc.md`
+- `102-shells-nativas-y-semantica-go.md`

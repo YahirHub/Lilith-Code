@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/lilith/li/internal/config"
 )
@@ -56,32 +57,78 @@ var windowsBashCandidates = []string{
 	`C:\Program Files\Git\usr\bin\bash.exe`,
 }
 
+// ShellSpec describes a concrete command interpreter. It is intentionally
+// data-only so callers can choose syntax without spawning a helper process.
+type ShellSpec struct {
+	Kind   string
+	Path   string
+	Prefix []string
+}
+
+// ResolveShell locates a concrete shell by kind. Supported kinds are bash,
+// sh, posix, powershell and cmd. It never downloads a shell.
+func ResolveShell(kind string) (ShellSpec, bool) {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	switch kind {
+	case "bash":
+		if p, err := exec.LookPath("bash"); err == nil {
+			return ShellSpec{Kind: "bash", Path: p, Prefix: []string{"-c"}}, true
+		}
+		if runtime.GOOS == "windows" {
+			for _, candidate := range windowsBashCandidates {
+				if isExecutable(candidate) {
+					return ShellSpec{Kind: "bash", Path: candidate, Prefix: []string{"-c"}}, true
+				}
+			}
+		}
+	case "sh":
+		if p, err := exec.LookPath("sh"); err == nil {
+			return ShellSpec{Kind: "sh", Path: p, Prefix: []string{"-c"}}, true
+		}
+		if runtime.GOOS == "windows" {
+			if p := Lookup("busybox"); p != "" {
+				return ShellSpec{Kind: "sh", Path: p, Prefix: []string{"sh", "-c"}}, true
+			}
+		}
+	case "posix":
+		if spec, ok := ResolveShell("bash"); ok {
+			return spec, true
+		}
+		return ResolveShell("sh")
+	case "powershell", "pwsh":
+		for _, name := range []string{"pwsh", "powershell.exe", "powershell"} {
+			if p, err := exec.LookPath(name); err == nil {
+				return ShellSpec{Kind: "powershell", Path: p, Prefix: []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command"}}, true
+			}
+		}
+	case "cmd":
+		if runtime.GOOS != "windows" {
+			return ShellSpec{}, false
+		}
+		if comspec := strings.TrimSpace(os.Getenv("COMSPEC")); comspec != "" && isExecutable(comspec) {
+			return ShellSpec{Kind: "cmd", Path: comspec, Prefix: []string{"/D", "/S", "/C"}}, true
+		}
+		for _, name := range []string{"cmd.exe", "cmd"} {
+			if p, err := exec.LookPath(name); err == nil {
+				return ShellSpec{Kind: "cmd", Path: p, Prefix: []string{"/D", "/S", "/C"}}, true
+			}
+		}
+	}
+	return ShellSpec{}, false
+}
+
 // ShellCommand returns the executable and the argument prefix used to run a
 // command string, e.g. ("/bin/bash", []string{"-c"}).
 //
-// On Windows the order is: bash on PATH, Git for Windows bash, then the
-// managed busybox shell. Elsewhere: bash, then sh.
+// This legacy helper deliberately resolves a POSIX shell for hooks and build
+// compatibility. Interactive agent commands use internal/shell's host-aware
+// resolver instead.
 func ShellCommand() (string, []string, bool) {
-	if runtime.GOOS == "windows" {
-		if p, err := exec.LookPath("bash"); err == nil {
-			return p, []string{"-c"}, true
-		}
-		for _, c := range windowsBashCandidates {
-			if isExecutable(c) {
-				return c, []string{"-c"}, true
-			}
-		}
-		if p := Lookup("busybox"); p != "" {
-			return p, []string{"sh", "-c"}, true
-		}
+	spec, ok := ResolveShell("posix")
+	if !ok {
 		return "", nil, false
 	}
-	for _, name := range []string{"bash", "sh"} {
-		if p, err := exec.LookPath(name); err == nil {
-			return p, []string{"-c"}, true
-		}
-	}
-	return "", nil, false
+	return spec.Path, spec.Prefix, true
 }
 
 func isExecutable(path string) bool {

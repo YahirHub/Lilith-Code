@@ -1,5 +1,6 @@
-// Package shell runs shell commands portably: bash where it exists and the
-// managed busybox shell on Windows, with optional timeouts and bounded output.
+// Package shell runs commands with the host-appropriate interpreter. Windows
+// prefers PowerShell for neutral commands, keeps CMD available, and selects
+// Bash only for POSIX syntax; Linux, macOS and Termux prefer Bash/sh.
 package shell
 
 import (
@@ -12,15 +13,13 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/lilith/li/internal/toolchain"
 )
 
 // MaxOutputBytes caps each stream so a runaway command cannot exhaust memory.
 const MaxOutputBytes = 256 << 10
 
-// ErrNoShell means no POSIX shell is available on this machine.
-var ErrNoShell = errors.New("no hay shell POSIX disponible: ejecuta `go run ./cmd/build install` para instalar busybox")
+// ErrNoShell means no compatible command interpreter is available.
+var ErrNoShell = errors.New("no compatible shell is available on this host")
 
 // Request describes one command execution.
 type Request struct {
@@ -30,12 +29,15 @@ type Request struct {
 	// Timeout applies only when positive. Zero or a negative value means no
 	// deadline; the command still stops when the parent context is canceled.
 	Timeout time.Duration
+	// Shell selects auto, bash, sh, powershell or cmd. Empty means auto.
+	Shell string
 }
 
 // Result is the structured outcome of a command.
 type Result struct {
 	Command    string        `json:"command"`
 	Shell      string        `json:"shell"`
+	ShellKind  string        `json:"shellKind"`
 	Dir        string        `json:"startingCwd"`
 	Stdout     string        `json:"stdout"`
 	Stderr     string        `json:"stderr"`
@@ -47,15 +49,22 @@ type Result struct {
 	Truncated  bool          `json:"truncated"`
 }
 
-var nullRedirectPattern = regexp.MustCompile(`(?i)((?:&>>|&>|[0-9]*>>?)\s*)(?:'null'|"null"|null)([ \t\r\n;|&)]|$)`)
+var nullRedirectPattern = regexp.MustCompile(`(?i)((?:&>>|&>|[0-9]*>>?)\s*)(?:'null'|"null"|null|/dev/null|nul|\$null)([ \t\r\n;|&)]|$)`)
 
 // normalizeNullRedirects prevents a common cross-platform model mistake:
-// redirecting output to a literal file named "null". Lilith always runs a
-// POSIX shell, including BusyBox/Git Bash on Windows, so /dev/null is the
-// portable sink for these commands.
-func normalizeNullRedirects(command string) string {
+// redirecting output to a literal file named "null" or using another shell's
+// null device. The replacement follows the interpreter actually selected.
+func normalizeNullRedirects(command, shellKind string) string {
+	target := "/dev/null"
+	switch shellKind {
+	case ShellPowerShell:
+		target = "$null"
+	case ShellCmd:
+		target = "NUL"
+	}
+	replacement := `${1}` + strings.ReplaceAll(target, "$", "$$") + `${2}`
 	for {
-		next := nullRedirectPattern.ReplaceAllString(command, `${1}/dev/null${2}`)
+		next := nullRedirectPattern.ReplaceAllString(command, replacement)
 		if next == command {
 			return command
 		}
@@ -73,11 +82,11 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	if err := validateCommandSafety(command); err != nil {
 		return Result{}, err
 	}
-	command = normalizeNullRedirects(command)
-	shellPath, prefix, ok := toolchain.ShellCommand()
-	if !ok {
-		return Result{}, ErrNoShell
+	spec, err := resolveExecutionShell(req.Shell, command)
+	if err != nil {
+		return Result{}, err
 	}
+	command = normalizeNullRedirects(command, spec.Kind)
 
 	dir := req.Dir
 	if dir == "" {
@@ -94,8 +103,8 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	runCtx, cancel := withOptionalTimeout(ctx, req.Timeout)
 	defer cancel()
 
-	args := append(append([]string{}, prefix...), command)
-	cmd := exec.CommandContext(runCtx, shellPath, args...)
+	args := append(append([]string{}, spec.Prefix...), command)
+	cmd := exec.CommandContext(runCtx, spec.Path, args...)
 	cmd.Dir = dir
 	cmd.Stdin = nil
 	// Run the shell in its own process group / job so a cancel (from
@@ -113,12 +122,13 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	cmd.Stderr = &stderr
 
 	start := time.Now()
-	err := cmd.Run()
+	err = cmd.Run()
 	elapsed := time.Since(start)
 
 	res := Result{
 		Command:    command,
-		Shell:      shellPath,
+		Shell:      spec.Path,
+		ShellKind:  spec.Kind,
 		Dir:        dir,
 		Duration:   elapsed,
 		DurationMs: elapsed.Milliseconds(),

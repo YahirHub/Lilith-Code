@@ -81,8 +81,8 @@ func contentReport(content []byte, mode fs.FileMode) fileWriteReport {
 
 func formatWriteReport(action, rel string, expected, written int, report fileWriteReport) string {
 	return fmt.Sprintf(
-		"%s %s\nbytes_expected: %d\nbytes_written: %d\nlines: %d\nsha256: %s\natomic: yes",
-		action, rel, expected, written, report.Lines, report.SHA256,
+		"%s %s\nbytes_expected: %d\nbytes_written: %d\nlines: %d\nsha256: %s\natomic: yes\nper_call_limit: 1 MiB\nper_call_limit_bytes: %d\nlarger_document_tool: append_file",
+		action, rel, expected, written, report.Lines, report.SHA256, MaxNativeWriteBytes,
 	)
 }
 

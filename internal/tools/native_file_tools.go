@@ -39,7 +39,7 @@ func newWriteFileParameters() writeFileParameters {
 			},
 			Content: map[string]any{
 				"type":        "string",
-				"description": "Complete final content. The write is native and atomic; do not wrap it in shell commands, heredocs or base64.",
+				"description": "Complete final content. Maximum 1,048,576 bytes (1 MiB) per call. The write is native and atomic; do not wrap it in shell commands, heredocs or base64. For larger documents, create the first section with write_file and continue with append_file.",
 			},
 		},
 		Required: []string{"path", "content"},
@@ -77,7 +77,7 @@ func newAppendFileParameters() appendFileParameters {
 			},
 			Content: map[string]any{
 				"type":        "string",
-				"description": "Text to append. For long reports, append one complete section per call instead of using a shell heredoc.",
+				"description": "Text to append byte-for-byte. Maximum 1,048,576 bytes (1 MiB) per call; the resulting file may be at most 67,108,864 bytes (64 MiB). append_file does not insert a newline, so include required leading/trailing line breaks in content. For long reports, append one complete section per call.",
 			},
 		},
 		Required: []string{"path", "content"},
@@ -111,12 +111,12 @@ func PreflightWriteFile(root, rel string, overwrite bool) (result string, blocke
 func init() {
 	register(Definition{
 		Name: "write_file",
-		Description: "Write complete file content directly through Lilith without a shell. The operation uses a temporary file, verifies the exact byte count and SHA-256, then atomically replaces the destination. " +
+		Description: "Write complete file content directly through Lilith without a shell. Each call accepts at most 1,048,576 bytes (1 MiB); larger documents must be assembled with append_file. The operation uses a temporary file, verifies the exact byte count and SHA-256, then atomically replaces the destination. " +
 			"New files are allowed by default. Replacing an existing file requires `overwrite: true`; use optional `expected_sha256` to reject a destination whose observed content changed since it was read. " +
 			"Use this for generated reports or intentional full-file regeneration, not for small source edits where str_replace/apply_diff is safer.",
 		PromptSnippet: "Atomically create or intentionally replace a complete file without shell redirection",
 		PromptGuidelines: []string{
-			"Use write_file for complete generated documents and intentional full-file regeneration. Existing targets require overwrite=true; prefer expected_sha256 when replacing content you previously inspected.",
+			"Use write_file for complete generated documents up to 1 MiB per call and intentional full-file regeneration. Existing targets require overwrite=true; prefer expected_sha256 when replacing content you previously inspected. For larger documents, write the first complete section and continue with append_file.",
 			"Never create long files with shell heredocs, printf, PowerShell here-strings or base64. Pass the content directly to write_file, or build it section-by-section with append_file.",
 		},
 		Mutating:   true,
@@ -129,7 +129,7 @@ func init() {
 			}
 			content := []byte(str(args, "content"))
 			if len(content) > MaxNativeWriteBytes {
-				return "", fmt.Errorf("content is %d bytes; write_file accepts at most %d bytes per call. Use append_file in smaller complete sections", len(content), MaxNativeWriteBytes)
+				return "", fmt.Errorf("content is %d bytes; write_file accepts at most %d bytes (1 MiB) per call. Use append_file in smaller complete sections", len(content), MaxNativeWriteBytes)
 			}
 			mu := lockFile(full)
 			mu.Lock()
@@ -181,11 +181,11 @@ func init() {
 
 	register(Definition{
 		Name: "append_file",
-		Description: "Append text to a file directly without shell redirection. Lilith reads the current file under a per-path lock, combines it with the supplied content, writes a temporary file and atomically replaces the destination. " +
+		Description: "Append text byte-for-byte to a file directly without shell redirection. Each call accepts at most 1,048,576 bytes (1 MiB), the final file may be at most 67,108,864 bytes (64 MiB), and no newline is inserted automatically. Lilith reads the current file under a per-path lock, combines it with the supplied content, writes a temporary file and atomically replaces the destination. " +
 			"The final byte count and SHA-256 are verified. This is intended for long reports or logs assembled in bounded sections. `create_if_missing` defaults to true.",
 		PromptSnippet: "Atomically append a bounded section to a file without a shell heredoc",
 		PromptGuidelines: []string{
-			"Use append_file to build long reports one complete section at a time. Keep each call bounded, pass the previous result SHA-256 as expected_sha256 when chaining sections, and validate the final document with read_files or a line-count command.",
+			"Use append_file to build long reports one complete section at a time. Each section is limited to 1 MiB, the final file to 64 MiB, and append_file adds no newline automatically. Include the required line breaks in content, pass the previous result SHA-256 as expected_sha256 when chaining sections, and validate the final document.",
 			"Do not use shell heredocs or output redirection for large generated content; append_file cannot leave a partially appended destination.",
 		},
 		Mutating:   true,
@@ -198,7 +198,7 @@ func init() {
 			}
 			addition := []byte(str(args, "content"))
 			if len(addition) > MaxNativeWriteBytes {
-				return "", fmt.Errorf("content is %d bytes; append_file accepts at most %d bytes per call. Split the document into smaller complete sections", len(addition), MaxNativeWriteBytes)
+				return "", fmt.Errorf("content is %d bytes; append_file accepts at most %d bytes (1 MiB) per call. Split the document into smaller complete sections", len(addition), MaxNativeWriteBytes)
 			}
 			mu := lockFile(full)
 			mu.Lock()
@@ -209,7 +209,7 @@ func init() {
 				return "", inspectErr
 			}
 			if inspection.Exists && inspection.Size > MaxNativeFileBytes {
-				return "", fmt.Errorf("existing file is %d bytes; maximum final file size is %d bytes", inspection.Size, MaxNativeFileBytes)
+				return "", fmt.Errorf("existing file is %d bytes; append_file supports a maximum final size of %d bytes (64 MiB)", inspection.Size, MaxNativeFileBytes)
 			}
 			current, readErr := os.ReadFile(full)
 			exists := readErr == nil
@@ -231,7 +231,7 @@ func init() {
 				return "", fmt.Errorf("FILE_CHANGED: %s does not exist, but expected_sha256 was supplied. Re-read the path before appending", rel)
 			}
 			if len(current)+len(addition) > MaxNativeFileBytes {
-				return "", fmt.Errorf("append would produce %d bytes; maximum final file size is %d bytes", len(current)+len(addition), MaxNativeFileBytes)
+				return "", fmt.Errorf("append would produce %d bytes; append_file supports a maximum final size of %d bytes (64 MiB)", len(current)+len(addition), MaxNativeFileBytes)
 			}
 			combined := make([]byte, 0, len(current)+len(addition))
 			combined = append(combined, current...)
@@ -249,8 +249,8 @@ func init() {
 				return "", err
 			}
 			return fmt.Sprintf(
-				"appended %s\nbytes_appended: %d\ntotal_bytes: %d\nlines: %d\nsha256: %s\natomic: yes",
-				rel, len(addition), report.Bytes, report.Lines, report.SHA256,
+				"appended %s\nbytes_appended: %d\ntotal_bytes: %d\nlines: %d\nsha256: %s\natomic: yes\nnewline_added: no\nper_call_limit: 1 MiB\nper_call_limit_bytes: %d\nmax_final_size: 64 MiB\nmax_final_bytes: %d\nremaining_file_bytes: %d",
+				rel, len(addition), report.Bytes, report.Lines, report.SHA256, MaxNativeWriteBytes, MaxNativeFileBytes, MaxNativeFileBytes-report.Bytes,
 			), nil
 		},
 	})

@@ -101,6 +101,9 @@ func (m *Manager) Semantic(parent context.Context, request SemanticRequest) (Sem
 	profile := m.RefreshProfile()
 	spec, ok := selectLSP(profile, language)
 	if !ok {
+		if language == "go" {
+			return m.builtinGoSemantic(parent, operation, rel, source, request.Line, request.Column)
+		}
 		return SemanticResult{}, fmt.Errorf("no installed language server supports %s; syntax intelligence is still available", language)
 	}
 	ctx, cancel := context.WithTimeout(parent, 35*time.Second)

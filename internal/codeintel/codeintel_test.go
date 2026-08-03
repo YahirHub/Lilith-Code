@@ -620,3 +620,131 @@ func TestSourceCommandNamedBuildIsIndexedButGeneratedRootBuildIsSkipped(t *testi
 		t.Fatal("generated root build directory was indexed")
 	}
 }
+
+func TestBuiltinGoSemanticWorksWithoutGopls(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "go.mod", "module example.com/demo\n\ngo 1.24\n")
+	writeTestFile(t, root, "internal/version/version.go", `package version
+
+const Current = "0.2.0"
+`)
+	writeTestFile(t, root, "cmd/app/main.go", `package main
+
+import buildversion "example.com/demo/internal/version"
+
+func main() { println(buildversion.Current) }
+`)
+	manager := New(root, filepath.Join(t.TempDir(), "config"))
+	ctx := context.Background()
+
+	result, err := manager.builtinGoSemantic(ctx, "definition", "cmd/app/main.go", []byte(`package main
+
+import buildversion "example.com/demo/internal/version"
+
+func main() { println(buildversion.Current) }
+`), 5, 36)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Server != "builtin-go" {
+		t.Fatalf("server=%q; want builtin-go", result.Server)
+	}
+	payload, ok := result.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("definition result type=%T", result.Result)
+	}
+	defs, ok := payload["definitions"].([]Symbol)
+	if !ok || len(defs) != 1 || defs[0].QualifiedName != "example.com/demo/internal/version.Current" {
+		t.Fatalf("definitions=%#v", payload["definitions"])
+	}
+
+	hover, err := manager.builtinGoSemantic(ctx, "hover", "internal/version/version.go", []byte("package version\n\nconst Current = \"0.2.0\"\n"), 3, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hoverPayload := hover.Result.(map[string]any)
+	if !strings.Contains(hoverPayload["scope"].(string), "static syntax fallback") {
+		t.Fatalf("hover scope=%#v", hoverPayload)
+	}
+
+	refHover, err := manager.builtinGoSemantic(ctx, "hover", "cmd/app/main.go", []byte(`package main
+
+import buildversion "example.com/demo/internal/version"
+
+func main() { println(buildversion.Current) }
+`), 5, 36)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refPayload := refHover.Result.(map[string]any)
+	if got := refPayload["source_line"]; got != `const Current = "0.2.0"` {
+		t.Fatalf("imported hover declaration line=%#v", got)
+	}
+	if complete, _ := refPayload["type_complete"].(bool); complete {
+		t.Fatal("static fallback incorrectly claimed compiler-complete types")
+	}
+}
+
+func TestBuiltinGoSemanticDiagnostics(t *testing.T) {
+	manager, _ := newGoFixture(t)
+	result, err := manager.builtinGoSemantic(context.Background(), "diagnostics", "service/service.go", []byte("package service\nfunc broken( {\n"), 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, ok := result.Result.([]goDiagnostic)
+	if !ok || len(diagnostics) == 0 {
+		t.Fatalf("diagnostics=%#v", result.Result)
+	}
+	if diagnostics[0].Line <= 0 || diagnostics[0].Message == "" {
+		t.Fatalf("invalid diagnostic=%#v", diagnostics[0])
+	}
+}
+
+func TestGraphDoesNotFanOutAmbiguousSameNameCalls(t *testing.T) {
+	record := FileRecord{Package: "caller", PackagePath: "example.com/demo/caller"}
+	ref := Reference{Name: "contains", Kind: "call", Receiver: "rect"}
+	candidates := []Symbol{
+		{Name: "contains", Kind: "method", Package: "one", QualifiedName: "example.com/demo/one.Rect.contains"},
+		{Name: "contains", Kind: "method", Package: "two", QualifiedName: "example.com/demo/two.Box.contains"},
+	}
+	if targets := graphCallTargets(record, ref, candidates); len(targets) != 0 {
+		t.Fatalf("ambiguous cross-package call produced false targets: %#v", targets)
+	}
+}
+
+func TestGraphResolvesImportedPackageCallOnly(t *testing.T) {
+	record := FileRecord{
+		Package:       "caller",
+		PackagePath:   "example.com/demo/caller",
+		ImportAliases: map[string]string{"openai": "example.com/demo/openai"},
+	}
+	ref := Reference{Name: "Stream", Kind: "call", Receiver: "openai"}
+	candidates := []Symbol{
+		{Name: "Stream", Kind: "function", QualifiedName: "example.com/demo/openai.Stream"},
+		{Name: "Stream", Kind: "function", QualifiedName: "example.com/demo/other.Stream"},
+	}
+	targets := graphCallTargets(record, ref, candidates)
+	if len(targets) != 1 || targets[0].QualifiedName != "example.com/demo/openai.Stream" {
+		t.Fatalf("import-qualified targets=%#v", targets)
+	}
+}
+
+func TestSemanticUsesBuiltinGoFallbackWithoutGopls(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	root := t.TempDir()
+	writeTestFile(t, root, "go.mod", "module example.com/demo\n\ngo 1.24\n")
+	writeTestFile(t, root, "version/version.go", "package version\n\nconst Current = \"0.2.0\"\n")
+	manager := New(root, filepath.Join(t.TempDir(), "config"))
+	result, err := manager.Semantic(context.Background(), SemanticRequest{
+		Operation: "definition",
+		Path:      "version/version.go",
+		Line:      3,
+		Column:    8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Server != "builtin-go" {
+		t.Fatalf("server=%q; want builtin-go", result.Server)
+	}
+}

@@ -12,7 +12,8 @@ sobre tu repositorio y ofrece una TUI interactiva construida sobre tview/Tcell.
   **ChatGPT Codex** mediante OAuth o continuar con los modelos gratuitos de
   OpenCode Free.
 - Herramientas integradas para leer y editar archivos, buscar con ripgrep y
-  ejecutar comandos en shell POSIX (BusyBox en Windows).
+  ejecutar comandos con la shell adecuada: PowerShell/CMD en Windows, Bash/sh
+  en Linux, macOS y Termux, y Bash explícito cuando un comando usa sintaxis POSIX.
 - Sesiones persistentes que pueden retomarse con `li --continue`.
 - Transporte resiliente para VPS/SSH: si Internet o el proveedor se vuelven
   inaccesibles, conserva el turno, muestra un estado legible y reintenta
@@ -58,7 +59,9 @@ Incluye:
 - selección semántica bilingüe de fragmentos delimitados por declaraciones, que
   prioriza código de producción y reduce documentación/scripts irrelevantes;
 - integración opcional con servidores LSP ya instalados para definiciones,
-  referencias, hover y diagnósticos;
+  referencias, hover y diagnósticos; si Go no tiene `gopls`, Lilith usa un
+  fallback estático integrado para símbolos, definiciones/referencias,
+  información de declaración y diagnósticos de sintaxis;
 - consulta opcional de un `index.scip` existente mediante un CLI `scip` ya
   instalado;
 - adaptadores de validación para Go, Rust, Node/TypeScript, Deno, Python,
@@ -67,7 +70,9 @@ Incluye:
   cuando existe un adaptador nativo del proyecto.
 
 No se descargan gramáticas, language servers, indexadores ni compiladores en
-runtime. Los builds oficiales usan `CGO_ENABLED=0` y el tag
+runtime. `gopls` no se incrusta ni se instala automáticamente: sigue siendo una
+mejora externa opcional, mientras el fallback Go permanece dentro del binario.
+Los builds oficiales usan `CGO_ENABLED=0` y el tag
 `grammar_set_core`, por lo que el ejecutable continúa siendo autocontenido.
 Las herramientas disponibles para el modelo son `code_intel_status`,
 `code_symbols`, `code_references`, `code_graph`, `code_context`,
@@ -80,11 +85,13 @@ Lilith no necesita construir documentos largos mediante comandos de shell. El
 agente dispone de herramientas nativas que reciben el contenido como argumentos
 estructurados:
 
-- `write_file`: crea un documento completo o reemplaza uno existente únicamente
-  cuando se declara `overwrite=true`; puede validar el SHA-256 previamente leído;
-- `append_file`: agrega una sección completa y acotada, útil para reportes largos;
-  cada llamada estructurada se limita a 1 MiB y el documento puede crecer por
-  secciones verificadas;
+- `write_file`: crea o reemplaza el contenido completo de un archivo. Cada
+  llamada acepta exactamente hasta 1 MiB (1,048,576 bytes); para reemplazar un
+  destino existente exige `overwrite=true` y puede validar `expected_sha256`;
+- `append_file`: agrega bytes sin insertar saltos de línea automáticamente. Cada
+  llamada acepta hasta 1 MiB y el archivo final puede crecer hasta 64 MiB
+  (67,108,864 bytes); para documentos largos debe recibir secciones completas
+  con sus propios `\n` y encadenar `expected_sha256`;
 - `create_file`: conserva semántica estricta de archivo nuevo;
 - `str_replace` y `apply_diff`: realizan cambios localizados sobre código existente.
 
@@ -99,6 +106,25 @@ de escritura inline demasiado largos. Esto evita que un límite del proveedor,
 la TUI o el shell guarde un Markdown truncado. Para reportes extensos, el modelo
 debe usar `write_file` una sola vez cuando el contenido cabe o `append_file` por
 secciones, y revisar el conteo/hash devuelto al finalizar.
+
+
+## Ejecución de comandos por sistema
+
+`run_terminal_command` acepta `shell=auto|powershell|cmd|bash|sh`. En modo
+`auto`, Lilith analiza la sintaxis antes de ejecutar:
+
+- Windows usa PowerShell para comandos neutrales como `go test ./...`;
+- comandos con sintaxis CMD (`set VAR=...`, `%VAR%`, `dir`, `where`) usan
+  `cmd.exe`;
+- comandos con sintaxis POSIX (`VAR=value comando`, `mkdir -p`, `rm`, `sed`,
+  `/dev/null`) usan Bash/sh sólo cuando está disponible;
+- Linux, macOS y Termux prefieren Bash y usan `sh` como respaldo.
+
+La salida indica la shell realmente utilizada. Las redirecciones a null se
+normalizan a `/dev/null`, `$null` o `NUL` según el intérprete seleccionado. El
+modelo puede fijar una shell explícita cuando el comando depende de su sintaxis;
+si la shell requerida no existe, Lilith rechaza el comando en lugar de ejecutarlo
+con un intérprete incompatible.
 
 ## Atajos principales
 

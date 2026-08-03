@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	hostshell "github.com/lilith/li/internal/shell"
 )
 
 var manifestKinds = map[string]string{
@@ -72,6 +74,7 @@ var detectedToolNames = []string{
 	"python", "python3", "pytest", "ruff", "php", "composer", "godot", "godot4", "java", "mvn",
 	"gradle", "cmake", "make", "clang", "clang++", "gcc", "g++", "dotnet", "scip",
 	"deno", "dart", "flutter", "swift", "ruby", "bundle", "rake", "mix", "elixir",
+	"bash", "sh", "pwsh", "powershell", "cmd",
 	"gopls", "rust-analyzer", "typescript-language-server", "pyright-langserver", "pylsp",
 	"intelephense", "clangd", "jdtls", "kotlin-language-server", "lua-language-server",
 	"deno-language-server", "sourcekit-lsp", "ruby-lsp", "solargraph", "elixir-ls",
@@ -86,10 +89,8 @@ func detectEnvironment() Environment {
 	env.SSH = os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_CLIENT") != "" || os.Getenv("SSH_TTY") != ""
 	env.Container = os.Getenv("container") != "" || fileExists("/.dockerenv") || fileExists("/run/.containerenv")
 	env.Distribution = detectDistribution(env)
-	env.Shell = filepath.Base(strings.TrimSpace(os.Getenv("SHELL")))
-	if env.Shell == "." || env.Shell == "" {
-		env.Shell = filepath.Base(strings.TrimSpace(os.Getenv("COMSPEC")))
-	}
+	env.Shell = hostshell.DefaultKind()
+	env.Shells = hostshell.AvailableKinds()
 	env.Path = filepath.SplitList(os.Getenv("PATH"))
 	for _, name := range detectedToolNames {
 		if p, err := exec.LookPath(name); err == nil {

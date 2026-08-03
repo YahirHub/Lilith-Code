@@ -119,8 +119,8 @@ func init() {
 	})
 	register(Definition{
 		Name:          "code_semantic",
-		Description:   "Query an installed Language Server Protocol server for document symbols, definitions, references, hover/type information or diagnostics. The server is started only for this query; Lilith does not install it.",
-		PromptSnippet: "Use an installed language server for compiler-aware definitions, references and diagnostics",
+		Description:   "Query an installed Language Server Protocol server for document symbols, definitions, references, hover/type information or diagnostics. Lilith never installs or embeds gopls or another language server. When Go has no gopls, a fully static built-in fallback provides indexed definitions/references, declaration hover and parser diagnostics without weakening CGO_ENABLED=0 builds.",
+		PromptSnippet: "Use an installed language server or Lilith's static Go semantic fallback",
 		Parameters: map[string]any{"type": "object", "properties": map[string]any{
 			"operation": map[string]any{"type": "string", "enum": []string{"symbols", "definition", "references", "hover", "diagnostics"}},
 			"path":      map[string]any{"type": "string"},

@@ -160,13 +160,15 @@ historial heredado y la operación es idempotente.
 
 ## Riesgos y límites
 
-- LSP sigue dependiendo de que el usuario ya tenga un servidor compatible.
+- Los LSP externos siguen dependiendo de que el usuario ya tenga un servidor compatible. `gopls` no se incrusta ni se instala para conservar el binario único/estático; sin él, Go usa un fallback interno para definiciones, referencias, hover de declaración y diagnósticos sintácticos.
 - SCIP es una capa opcional y no genera índices.
 - El conjunto Core100 aumenta el tamaño del ejecutable, pero evita archivos
   externos y conserva la distribución estática.
-- El grafo sintáctico es heurístico para llamadas mediante interfaces/variables;
-  LSP/SCIP siguen siendo las capas de mayor precisión. Las referencias Go con
-  import calificado sí conservan identidad canónica.
+- El grafo sintáctico sigue siendo heurístico para llamadas mediante
+  interfaces/variables, pero ya no crea fan-out por nombre entre paquetes:
+  sólo conecta una llamada no calificada cuando existe un destino local único,
+  o un selector cuando su alias de importación resuelve un paquete único.
+  LSP/SCIP siguen siendo las capas de mayor precisión.
 - Los archivos mayores a 1 MiB y repositorios con más de 25 000 archivos fuente
   se limitan para proteger memoria y latencia.
 

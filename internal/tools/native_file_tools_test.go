@@ -269,3 +269,24 @@ func itoa(value int) string {
 	}
 	return string(digits[i:])
 }
+
+func TestNativeFileToolSchemasExplainLimitsAndNewlines(t *testing.T) {
+	writeDef, ok := Get("write_file")
+	if !ok {
+		t.Fatal("write_file not registered")
+	}
+	appendDef, ok := Get("append_file")
+	if !ok {
+		t.Fatal("append_file not registered")
+	}
+	for _, value := range []string{"1,048,576", "1 MiB", "append_file"} {
+		if !strings.Contains(writeDef.Description, value) {
+			t.Fatalf("write_file description missing %q: %s", value, writeDef.Description)
+		}
+	}
+	for _, value := range []string{"1,048,576", "67,108,864", "no newline"} {
+		if !strings.Contains(appendDef.Description, value) {
+			t.Fatalf("append_file description missing %q: %s", value, appendDef.Description)
+		}
+	}
+}

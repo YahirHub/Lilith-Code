@@ -18,6 +18,7 @@ type Environment struct {
 	SSH          bool              `json:"ssh,omitempty"`
 	Container    bool              `json:"container,omitempty"`
 	Shell        string            `json:"shell,omitempty"`
+	Shells       []string          `json:"shells,omitempty"`
 	Path         []string          `json:"path,omitempty"`
 	Tools        map[string]string `json:"tools,omitempty"`
 	PackageTools []string          `json:"package_tools,omitempty"`

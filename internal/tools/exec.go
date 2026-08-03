@@ -29,8 +29,8 @@ func init() {
 	register(Definition{
 		Name: "run_terminal_command",
 		Description: fmt.Sprintf(
-			"Run a shell command in the project directory (bash, or busybox sh on Windows) and return stdout, "+
-				"stderr and the exit code. Incomplete heredocs and oversized inline file-writing commands are rejected before execution; use write_file/append_file for generated content. `timeout_seconds` is optional: when omitted the command runs until it finishes or "+
+			"Run a command in the project directory with automatic shell selection and return stdout, "+
+				"stderr and the exit code. On Windows, neutral commands prefer PowerShell, CMD syntax uses cmd.exe, and POSIX syntax uses Bash when available; Linux/macOS/Termux prefer Bash/sh. Incomplete heredocs and oversized inline file-writing commands are rejected before execution; use write_file/append_file for generated content. `timeout_seconds` is optional: when omitted the command runs until it finishes or "+
 				"the user cancels it. Set a positive value only when a hard deadline is actually required. Output is tail-truncated to the last %d lines / %dKB per "+
 				"stream; when truncated the full stream is saved to a temp file whose path is reported so you can inspect "+
 				"it with read_files.",
@@ -39,14 +39,16 @@ func init() {
 		PromptSnippet: "Execute shell commands in the project directory",
 		PromptGuidelines: []string{
 			"Use run_terminal_command for builds, tests, git and shell inspection; prefer non-interactive commands. Omit timeout_seconds for long builds, installs and test suites unless a hard deadline is explicitly needed.",
+			"Keep commands native to the detected host. shell=auto chooses PowerShell for neutral Windows commands, cmd for clear CMD syntax, Bash for clear POSIX syntax, and Bash/sh on Linux, macOS and Termux. Set shell explicitly only when the command intentionally requires one syntax.",
 			"Do not generate long files with heredocs, printf, PowerShell here-strings or base64 in the terminal. Use write_file for complete content or append_file for bounded sections; unsafe inline writes are blocked before execution.",
-			"When discarding shell output use /dev/null. Never redirect to a literal file named null; Lilith normalizes common accidental null redirections defensively.",
+			"When discarding output, use the selected shell's null device (/dev/null for Bash/sh, $null for PowerShell, NUL for CMD). Lilith normalizes common cross-shell mistakes defensively.",
 		},
 		Mutating: true,
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"command":         map[string]any{"type": "string", "description": "Full command line to run."},
+				"command":         map[string]any{"type": "string", "description": "Full command line to run using the selected shell syntax."},
+				"shell":           map[string]any{"type": "string", "enum": []string{"auto", "bash", "sh", "powershell", "cmd"}, "description": "Interpreter to use. Defaults to auto, which selects syntax-aware host-native execution."},
 				"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "description": "Optional hard deadline in seconds. When omitted, the command has no execution timeout and runs until completion or user cancellation."},
 			},
 			"required": []string{"command"},
@@ -57,11 +59,13 @@ func init() {
 				Command: str(args, "command"),
 				Dir:     env.Root,
 				Timeout: timeout,
+				Shell:   str(args, "shell"),
 			})
 			if err != nil {
 				return "", err
 			}
 			var b strings.Builder
+			fmt.Fprintf(&b, "shell: %s (%s)\n", res.ShellKind, res.Shell)
 			fmt.Fprintf(&b, "exit_code: %d\n", res.ExitCode)
 			if res.TimedOut {
 				b.WriteString("timeout: yes\n")

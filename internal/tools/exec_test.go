@@ -30,3 +30,21 @@ func TestTerminalCommandSchemaDocumentsOptionalTimeout(t *testing.T) {
 		t.Fatalf("la descripción aún anuncia un timeout por defecto: %q", def.Description)
 	}
 }
+
+func TestTerminalCommandSchemaDocumentsShellSelection(t *testing.T) {
+	def, ok := Get("run_terminal_command")
+	if !ok {
+		t.Fatal("run_terminal_command no está registrado")
+	}
+	if !strings.Contains(def.Description, "PowerShell") || !strings.Contains(def.Description, "CMD syntax") || !strings.Contains(def.Description, "Bash") {
+		t.Fatalf("shell selection is not documented: %q", def.Description)
+	}
+	params, ok := def.Parameters.(map[string]any)
+	if !ok {
+		t.Fatalf("parameters type=%T", def.Parameters)
+	}
+	properties, _ := params["properties"].(map[string]any)
+	if _, ok := properties["shell"]; !ok {
+		t.Fatalf("shell parameter missing: %#v", properties)
+	}
+}

@@ -19,15 +19,18 @@ func TestNormalizeNullRedirects(t *testing.T) {
 		"mkdir -p src/null && echo done": "mkdir -p src/null && echo done",
 	}
 	for input, want := range tests {
-		if got := normalizeNullRedirects(input); got != want {
-			t.Errorf("normalizeNullRedirects(%q)=%q; want %q", input, got, want)
+		if got := normalizeNullRedirects(input, ShellBash); got != want {
+			t.Errorf("normalizeNullRedirects(%q, bash)=%q; want %q", input, got, want)
 		}
 	}
 }
 
 func TestRunDoesNotCreateLiteralNullRedirectFile(t *testing.T) {
+	if _, err := resolveExecutionShell(ShellBash, "printf x"); err != nil {
+		t.Skipf("bash is not available on this host: %v", err)
+	}
 	root := t.TempDir()
-	result, err := Run(context.Background(), Request{Command: "printf x > null", Dir: root})
+	result, err := Run(context.Background(), Request{Command: "printf x > null", Dir: root, Shell: ShellBash})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,5 +42,21 @@ func TestRunDoesNotCreateLiteralNullRedirectFile(t *testing.T) {
 	}
 	if result.Command != "printf x > /dev/null" {
 		t.Fatalf("normalized command=%q", result.Command)
+	}
+}
+
+func TestNormalizeNullRedirectsUsesSelectedShellDevice(t *testing.T) {
+	tests := []struct {
+		kind string
+		want string
+	}{
+		{ShellBash, "command > /dev/null"},
+		{ShellPowerShell, "command > $null"},
+		{ShellCmd, "command > NUL"},
+	}
+	for _, test := range tests {
+		if got := normalizeNullRedirects("command > null", test.kind); got != test.want {
+			t.Errorf("kind %s: got %q; want %q", test.kind, got, test.want)
+		}
 	}
 }
