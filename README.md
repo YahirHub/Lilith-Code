@@ -126,6 +126,12 @@ modelo puede fijar una shell explícita cuando el comando depende de su sintaxis
 si la shell requerida no existe, Lilith rechaza el comando en lugar de ejecutarlo
 con un intérprete incompatible.
 
+En PowerShell, Lilith configura la salida del proceso como UTF-8 sin BOM antes de
+ejecutar el comando. Esto evita que Windows PowerShell 5.1 convierta acentos o
+emojis mediante la página de códigos heredada cuando stdout/stderr están
+redirigidos. El comando solicitado permanece como la última sentencia para no
+alterar sus códigos de salida.
+
 ## Atajos principales
 
 - `Enter`: enviar el mensaje o agregar steering durante una tarea.

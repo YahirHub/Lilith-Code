@@ -205,6 +205,7 @@ se compacta el cuerpo rechazado y se devuelve `OVERWRITE_REQUIRED` sin tocar dis
 - el parámetro `shell=auto|powershell|cmd|bash|sh` permite selección explícita;
 - una sintaxis que requiere una shell ausente se rechaza en vez de ejecutarse con otra incompatible;
 - la salida y el panel TUI muestran la shell realmente usada, y las redirecciones nulas se adaptan a `$null`, `NUL` o `/dev/null`.
+- antes de un comando PowerShell se fuerza UTF-8 sin BOM en `[Console]::OutputEncoding` y `$OutputEncoding`; el comando solicitado queda al final para conservar stdout/stderr Unicode y su exit code.
 
 ## 11. Persistencia y seguridad
 
@@ -264,3 +265,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `100-inteligencia-codigo-estatica.md`
 - `101-escritura-atomica-y-guard-heredoc.md`
 - `102-shells-nativas-y-semantica-go.md`
+- `103-utf8-powershell.md`

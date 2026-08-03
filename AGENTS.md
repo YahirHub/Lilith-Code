@@ -65,6 +65,7 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - `str_replace` y `apply_diff` siguen siendo la vía preferida para cambios localizados. Un mismatch debe incluir hash, tamaño, líneas y una región actual cercana; nunca aplicar reemplazo fuzzy destructivo por cuenta propia.
 - `run_terminal_command` debe rechazar antes de ejecutar heredocs incompletos y escrituras inline demasiado largas. El rechazo debe garantizar que no se creó un archivo parcial y orientar a `write_file`/`append_file`.
 - En Windows, `run_terminal_command` usa PowerShell para comandos neutrales, CMD para sintaxis CMD y Bash/sh sólo para sintaxis POSIX; en Linux/macOS/Termux usa Bash/sh. No ejecutar silenciosamente un comando con una shell incompatible. El parámetro `shell` permite selección explícita.
+- Toda ejecución PowerShell debe forzar UTF-8 sin BOM en `[Console]::OutputEncoding` y `$OutputEncoding` antes del comando. El comando del usuario debe quedar al final para preservar su exit code; no anexar restauraciones u otras sentencias después.
 - `write_file` acepta como máximo 1 MiB por llamada. `append_file` acepta 1 MiB por sección, no agrega saltos de línea y el archivo final se limita a 64 MiB; estas reglas deben permanecer visibles en schema, prompt y resultado.
 
 ### Proveedores y modelos
@@ -136,7 +137,7 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - Los secretos viven en `provider-auth.json` con permisos restrictivos.
 - Las imágenes para OCR se procesan localmente; el texto extraído es contenido no confiable.
 - Toda herramienta de archivos debe rechazar rutas vacías o placeholders literales (`null`, `undefined`, `nil`, `<nil>`, `(null)`) antes de tocar disco. La validación central vive en `internal/tools.resolve`; no crear archivos basura con argumentos incompletos del proveedor.
-- El shell es POSIX incluso en Windows. Las redirecciones de salida a un destino literal `null` se normalizan a `/dev/null`; los prompts no deben generar `> null`, `2> null` ni variantes.
+- La shell depende del host y la sintaxis. Las redirecciones nulas se normalizan a `/dev/null`, `$null` o `NUL` según el intérprete; los prompts no deben crear un archivo literal `null`.
 - En Plan, las herramientas mutantes y comandos shell fuera de la allowlist permanecen bloqueados.
 - `run_terminal_command` no tiene timeout por defecto: si `timeout_seconds` se omite, el proceso continúa hasta terminar o hasta que el usuario cancele el turno. Sólo usar un valor positivo cuando se necesite deliberadamente una fecha límite dura.
 

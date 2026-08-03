@@ -51,6 +51,8 @@ type Result struct {
 
 var nullRedirectPattern = regexp.MustCompile(`(?i)((?:&>>|&>|[0-9]*>>?)\s*)(?:'null'|"null"|null|/dev/null|nul|\$null)([ \t\r\n;|&)]|$)`)
 
+const powershellUTF8Prelude = `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; `
+
 // normalizeNullRedirects prevents a common cross-platform model mistake:
 // redirecting output to a literal file named "null" or using another shell's
 // null device. The replacement follows the interpreter actually selected.
@@ -103,7 +105,8 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	runCtx, cancel := withOptionalTimeout(ctx, req.Timeout)
 	defer cancel()
 
-	args := append(append([]string{}, spec.Prefix...), command)
+	executionCommand := commandForShell(command, spec.Kind)
+	args := append(append([]string{}, spec.Prefix...), executionCommand)
 	cmd := exec.CommandContext(runCtx, spec.Path, args...)
 	cmd.Dir = dir
 	cmd.Stdin = nil
@@ -157,6 +160,19 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		return res, err
 	}
 	return res, nil
+}
+
+func commandForShell(command, shellKind string) string {
+	if shellKind == ShellPowerShell {
+		// Windows PowerShell 5.1 inherits the legacy console code page when its
+		// standard streams are redirected. Force BOM-less UTF-8 before running
+		// the user's command so Go can decode stdout/stderr without losing
+		// accents or supplementary Unicode characters. Keep the user's command
+		// last: appending cleanup statements would overwrite PowerShell's native
+		// exit-code semantics.
+		return powershellUTF8Prelude + command
+	}
+	return command
 }
 
 func withOptionalTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
