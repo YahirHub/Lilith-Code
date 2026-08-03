@@ -116,8 +116,9 @@ secciones, y revisar el conteo/hash devuelto al finalizar.
 - Windows usa PowerShell para comandos neutrales como `go test ./...`;
 - comandos con sintaxis CMD (`set VAR=...`, `%VAR%`, `dir`, `where`) usan
   `cmd.exe`;
-- comandos con sintaxis POSIX (`VAR=value comando`, `mkdir -p`, `rm`, `sed`,
-  `/dev/null`) usan Bash/sh sólo cuando está disponible;
+- comandos con sintaxis POSIX (`VAR=value comando`, `VAR=value; comando`,
+  asignaciones en líneas separadas, `mkdir -p`, `rm`, `sed`, `/dev/null`) usan
+  Bash/sh sólo cuando está disponible;
 - Linux, macOS y Termux prefieren Bash y usan `sh` como respaldo.
 
 La salida indica la shell realmente utilizada. Las redirecciones a null se
@@ -177,7 +178,9 @@ evitar incompatibilidades del ejecutable Android precompilado. Consulta
 
 La versión se define en `internal/version/version.go`. Para publicar una nueva
 versión, cambia `version.Current`, haz commit y ejecuta manualmente el workflow
-**Publicar release** desde GitHub Actions. El workflow prueba el proyecto,
+**Publicar release** desde GitHub Actions. Antes de probar, cada runner descarga
+el grafo completo con `go mod download all` y lo verifica, evitando que una
+entrada nueva todavía ausente de `go.sum` bloquee Windows. Después el workflow
 ejecuta `cmd/build`, genera checksums de los binarios y crea notas agrupadas con
 los commits realizados desde el tag anterior. Los instaladores no se adjuntan al
 release: siempre se descargan directamente desde el repositorio.

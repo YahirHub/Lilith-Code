@@ -23,10 +23,13 @@ func TestChooseShellKindUsesNativeWindowsDefault(t *testing.T) {
 func TestChooseShellKindDetectsWindowsSyntax(t *testing.T) {
 	available := shellAvailability{bash: true, sh: true, powershell: true, cmd: true}
 	tests := map[string]string{
-		`$env:CGO_ENABLED='0'; go build ./...`: ShellPowerShell,
-		`set CGO_ENABLED=0 && go build ./...`:  ShellCmd,
-		`CGO_ENABLED=0 go build ./...`:         ShellBash,
-		`mkdir -p dist && rm -f dist/li`:       ShellBash,
+		`$env:CGO_ENABLED='0'; go build ./...`:    ShellPowerShell,
+		`set CGO_ENABLED=0 && go build ./...`:     ShellCmd,
+		`CGO_ENABLED=0 go build ./...`:            ShellBash,
+		`VALUE=native-bash-ok; printf "$VALUE"`:   ShellBash,
+		"VALUE=native-bash-ok\nprintf \"$VALUE\"": ShellBash,
+		`ONLY_ASSIGNMENT=native-bash-ok`:          ShellBash,
+		`mkdir -p dist && rm -f dist/li`:          ShellBash,
 	}
 	for command, want := range tests {
 		got, err := chooseShellKind("windows", "auto", command, available)

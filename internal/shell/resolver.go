@@ -33,7 +33,7 @@ type resolvedShell struct {
 var (
 	powerShellSyntaxPattern = regexp.MustCompile(`(?i)(\$env:|\$[A-Za-z_][A-Za-z0-9_]*\s*=|\b(?:Get|Set|Test|Join|Write|Select|Where|ForEach)-[A-Za-z][A-Za-z0-9-]*\b|@['"]|\[System\.|\bparam\s*\()`)
 	cmdSyntaxPattern        = regexp.MustCompile(`(?i)(%[A-Za-z_][A-Za-z0-9_]*%|(^|[\r\n&|]\s*)(?:set(?:x)?\s+(?:"?[A-Za-z_][A-Za-z0-9_]*=)|if\s+(?:not\s+)?exist\b|for\s+/[A-Za-z]\b|dir(?:\s|$)|copy(?:\s|$)|del(?:\s|$)|type(?:\s|$)|where(?:\s|$)))`)
-	posixSyntaxPattern      = regexp.MustCompile(`(?m)(^|[;&|]\s*)[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]+\s+[^\s]|\$\(|\$\{|\[\[|/dev/null|(^|[;&|]\s*)(?:export|source|chmod|chown|grep|sed|awk|cat|tee|rm|cp|mv|find|xargs)\b|mkdir\s+-p\b|^#!\s*/(?:usr/bin/env\s+)?(?:ba)?sh\b`)
+	posixSyntaxPattern      = regexp.MustCompile(`(?m)(^|[;&|]\s*)[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]+(?:\s+[^\s]|[;\r\n]|$)|\$\(|\$\{|\[\[|/dev/null|(^|[;&|]\s*)(?:export|source|chmod|chown|grep|sed|awk|cat|tee|rm|cp|mv|find|xargs)\b|mkdir\s+-p\b|^#!\s*/(?:usr/bin/env\s+)?(?:ba)?sh\b`)
 )
 
 func normalizeRequestedShell(value string) (string, error) {

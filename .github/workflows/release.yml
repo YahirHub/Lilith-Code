@@ -23,9 +23,15 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Descargar y verificar dependencias Go
+        shell: powershell
+        run: |
+          go mod download all
+          go mod verify
+
       - name: Probar herramientas atómicas en Windows
         shell: powershell
-        run: go test -tags=grammar_set_core ./internal/tools ./internal/shell
+        run: go test -mod=readonly -tags=grammar_set_core ./internal/tools ./internal/shell
 
       - name: Probar instalador con Windows PowerShell 5.1
         shell: powershell
@@ -46,8 +52,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Descargar dependencias Go
-        run: go mod download
+      - name: Descargar y verificar dependencias Go
+        run: |
+          go mod download all
+          go mod verify
 
       - name: Leer versión del proyecto
         id: version

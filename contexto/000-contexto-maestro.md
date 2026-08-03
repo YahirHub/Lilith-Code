@@ -202,7 +202,7 @@ se compacta el cuerpo rechazado y se devuelve `OVERWRITE_REQUIRED` sin tocar dis
 
 `run_terminal_command` selecciona el intérprete según host y sintaxis:
 
-- Windows usa PowerShell para comandos neutrales, CMD para sintaxis CMD y Bash/sh únicamente para sintaxis POSIX cuando está disponible;
+- Windows usa PowerShell para comandos neutrales, CMD para sintaxis CMD y Bash/sh únicamente para sintaxis POSIX cuando está disponible; reconoce asignaciones `VAR=value` seguidas por comando, `;`, salto de línea o fin de entrada;
 - Linux, macOS y Termux usan Bash con fallback a `sh`;
 - el parámetro `shell=auto|powershell|cmd|bash|sh` permite selección explícita;
 - una sintaxis que requiere una shell ausente se rechaza en vez de ejecutarse con otra incompatible;
@@ -226,7 +226,7 @@ se compacta el cuerpo rechazado y se devuelve `OVERWRITE_REQUIRED` sin tocar dis
 5. Ejecutar formato, tests, race, vet y builds estáticos/multiplataforma cuando el entorno lo permita.
 6. Documentar el cambio en un MD numerado.
 7. Commit en español con el autor Git `YahirHub <217099863+YahirHub@users.noreply.github.com>`.
-8. Para publicar, cambiar `internal/version/version.go` y ejecutar manualmente el workflow **Publicar release**; éste prueba, compila Linux/Windows, crea checksums y genera notas agrupadas. Los instaladores se descargan desde la rama `main`; Termux compila desde el código en el dispositivo.
+8. Para publicar, cambiar `internal/version/version.go` y ejecutar manualmente el workflow **Publicar release**; sus runners ejecutan `go mod download all`, `go mod verify` y pruebas readonly antes de compilar Linux/Windows, crear checksums y generar notas agrupadas. Los instaladores se descargan desde la rama `main`; Termux compila desde el código en el dispositivo.
 
 ## 13. Validación objetivo
 
@@ -269,3 +269,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `102-shells-nativas-y-semantica-go.md`
 - `103-utf8-powershell.md`
 - `104-pegado-completo-provider-custom.md`
+- `105-runner-dependencias-y-posix-windows.md`
