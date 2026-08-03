@@ -86,6 +86,8 @@ Tipos de autenticación:
 Al abrir `/models`, Lilith consulta en segundo plano el catálogo de cada proveedor conectado. `Ctrl+R` repite la consulta sin bloquear la escritura de la letra `r` en el filtro. Los endpoints OpenAI-compatible usan `GET {baseURL}/models`; Codex usa su catálogo autenticado de cuenta. Los proveedores se actualizan en paralelo y un fallo conserva la caché anterior sin impedir los demás.
 Si el endpoint de catálogo responde 404, 405 o 501, el proveedor se considera compatible sólo con catálogo manual: no se presenta un error, no se eliminan modelos configurados y futuras aperturas de `/models` pueden volver a intentar el descubrimiento. Los fallos reales de red, autenticación o respuestas inválidas sí se reportan de forma no bloqueante.
 
+El alta de proveedores personalizados usa campos de una línea con viewport horizontal ligado al cursor. La URL base y la API key aceptan hasta 16,384 runes y el render usa el ancho real de la caja; pegar un endpoint largo nunca debe recortar el valor aunque sólo una sección sea visible en terminales estrechas.
+
 El proveedor OAuth integrado se muestra como **ChatGPT Codex** en onboarding, login, selectores y estado activo; Plus/Pro describe la suscripción requerida, no el nombre visible.
 
 Los modelos nuevos de proveedores custom se guardan en `providers.json`. Los de proveedores bundled se guardan en `provider-model-cache.json`, por lo que permanecen disponibles tras cambiar de pantalla, reiniciar o perder temporalmente la conexión.
@@ -266,3 +268,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `101-escritura-atomica-y-guard-heredoc.md`
 - `102-shells-nativas-y-semantica-go.md`
 - `103-utf8-powershell.md`
+- `104-pegado-completo-provider-custom.md`

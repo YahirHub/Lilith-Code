@@ -20,6 +20,11 @@ const (
 	stepModels
 )
 
+const (
+	customProviderNameLimit  = 2_048
+	customProviderValueLimit = 16_384
+)
+
 // CustomLoginModel is the sequential form for adding a custom OpenAI-compatible provider.
 type CustomLoginModel struct {
 	ctx         *AppContext
@@ -53,7 +58,7 @@ func NewCustomLogin(ctx *AppContext) CustomLoginModel {
 	ti.Prompt = "❯ "
 	ti.Placeholder = "MyOpenAI"
 	ti.Focus()
-	ti.CharLimit = 2048
+	ti.CharLimit = customProviderNameLimit
 	ti.PromptStyle = tuistyle.NewStyle().Foreground(ctx.Styles.Theme.Primary)
 	ti.TextStyle = tuistyle.NewStyle().Foreground(ctx.Styles.Theme.Foreground)
 	models := newAdaptiveTextArea("modelo, otro=1000000 · vacío = consultar /models", 1, 5)
@@ -155,15 +160,18 @@ func (m CustomLoginModel) back() (uikit.Model, uikit.Cmd) {
 
 func (m *CustomLoginModel) updateInputForStep() {
 	m.input.EchoMode = textinput.EchoNormal
+	m.input.CharLimit = customProviderNameLimit
 	m.input.SetValue("")
 	switch m.step {
 	case stepName:
 		m.input.Placeholder = "MyOpenAI"
 		m.input.SetValue(m.name)
 	case stepURL:
+		m.input.CharLimit = customProviderValueLimit
 		m.input.Placeholder = "https://api.openai.com/v1"
 		m.input.SetValue(m.url)
 	case stepKey:
+		m.input.CharLimit = customProviderValueLimit
 		m.input.Placeholder = "opcional · sk-... | env:OPENAI_API_KEY | vacío = sin token"
 		m.input.EchoMode = textinput.EchoPassword
 		m.input.EchoCharacter = '•'
@@ -299,7 +307,13 @@ func (m CustomLoginModel) layout() (string, []settingsHit) {
 			Disabled: m.fetching,
 		}))
 	} else {
-		c.block(settingsInput(s, settingsInputSpec{ID: "input", Content: m.input.View(), Width: w, Focused: true}))
+		copyInput := m.input
+		inputWidth := w - 4 - tuistyle.Width(copyInput.Prompt)
+		if inputWidth < 1 {
+			inputWidth = 1
+		}
+		copyInput.Width = inputWidth
+		c.block(settingsInput(s, settingsInputSpec{ID: "input", Content: copyInput.View(), Width: w, Focused: true}))
 	}
 	if m.notice != "" {
 		c.blank()

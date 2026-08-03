@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/lilith/li/internal/providers"
+	"github.com/lilith/li/internal/tui/uikit"
+	termansi "github.com/lilith/li/internal/tui/uikit/ansi"
 )
 
 func TestCustomLoginEmptyModelsFetchesAndPersists(t *testing.T) {
@@ -145,5 +148,46 @@ func TestCustomLoginMissingModelsEndpointRequestsManualModelsWithoutError(t *tes
 	}
 	if got.fetching {
 		t.Fatal("el formulario quedó bloqueado")
+	}
+}
+
+func TestCustomLoginPastePreservesLongEndpoint(t *testing.T) {
+	ctx := &AppContext{
+		Width:  100,
+		Styles: NewStyles(DefaultTheme()),
+	}
+	m := NewCustomLogin(ctx)
+	m.step = stepURL
+	m.updateInputForStep()
+	endpoint := "https://example.com/v1/" + strings.Repeat("segment-", 500)
+
+	next, _ := m.Update(uikit.KeyMsg{
+		Type:  uikit.KeyRunes,
+		Runes: []rune(endpoint),
+		Paste: true,
+	})
+	got := next.(CustomLoginModel)
+	if value := got.input.Value(); value != endpoint {
+		t.Fatalf("endpoint pegado truncado: got=%d runes want=%d", len([]rune(value)), len([]rune(endpoint)))
+	}
+	if got.input.CharLimit != customProviderValueLimit {
+		t.Fatalf("CharLimit URL = %d, want %d", got.input.CharLimit, customProviderValueLimit)
+	}
+}
+
+func TestCustomLoginURLFieldUsesAvailableSettingsWidth(t *testing.T) {
+	ctx := &AppContext{
+		Width:  100,
+		Styles: NewStyles(DefaultTheme()),
+	}
+	m := NewCustomLogin(ctx)
+	m.step = stepURL
+	m.updateInputForStep()
+	endpoint := "https://example.com/v1/chat/completions"
+	m.input.SetValue(endpoint)
+
+	plain := termansi.Strip(m.View())
+	if !strings.Contains(plain, endpoint+"▌") {
+		t.Fatalf("la URL completa no quedó visible con ancho disponible: %q", plain)
 	}
 }

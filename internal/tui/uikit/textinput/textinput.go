@@ -52,12 +52,25 @@ func (m *Model) CursorEnd() { m.pos = len(m.value) }
 
 func (m Model) View() string {
 	prompt := m.PromptStyle.Render(m.Prompt)
+	contentWidth := m.Width
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
 	if len(m.value) == 0 {
-		text := m.PlaceholderStyle.Render(m.Placeholder)
+		cursor := ""
+		available := contentWidth
 		if m.focused {
-			text = m.Cursor.Style.Render("▌") + text
+			cursor = m.Cursor.Style.Render("▌")
+			available--
 		}
-		return fit(prompt+text, m.Width+tuistyle.Width(m.Prompt))
+		if available < 0 {
+			available = 0
+		}
+		placeholder := ""
+		if available > 0 {
+			placeholder = fit(m.PlaceholderStyle.Render(m.Placeholder), available)
+		}
+		return prompt + cursor + placeholder
 	}
 	shown := append([]rune(nil), m.value...)
 	if m.EchoMode == EchoPassword {
@@ -69,11 +82,63 @@ func (m Model) View() string {
 			shown[i] = ch
 		}
 	}
-	before, after := string(shown[:m.pos]), string(shown[m.pos:])
+	before, after := horizontalWindow(shown, m.pos, contentWidth, m.focused)
+	content := before
 	if m.focused {
-		before += m.Cursor.Style.Render("▌")
+		content += m.Cursor.Style.Render("▌")
 	}
-	return fit(prompt+m.TextStyle.Render(before+after), m.Width+tuistyle.Width(m.Prompt))
+	content += after
+	return prompt + m.TextStyle.Render(content)
+}
+
+// horizontalWindow keeps the cursor visible without mutating or truncating the
+// stored value. Single-line settings fields can therefore show the end of a
+// pasted URL/API key instead of permanently rendering only its first columns.
+func horizontalWindow(value []rune, pos, width int, cursorVisible bool) (string, string) {
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > len(value) {
+		pos = len(value)
+	}
+	if width < 1 {
+		width = 1
+	}
+	available := width
+	if cursorVisible {
+		available--
+	}
+	if available < 0 {
+		available = 0
+	}
+
+	start := pos
+	used := 0
+	for start > 0 {
+		runeWidth := tuistyle.Width(string(value[start-1]))
+		if runeWidth < 0 {
+			runeWidth = 0
+		}
+		if used+runeWidth > available {
+			break
+		}
+		start--
+		used += runeWidth
+	}
+
+	end := pos
+	for end < len(value) {
+		runeWidth := tuistyle.Width(string(value[end]))
+		if runeWidth < 0 {
+			runeWidth = 0
+		}
+		if used+runeWidth > available {
+			break
+		}
+		used += runeWidth
+		end++
+	}
+	return string(value[start:pos]), string(value[pos:end])
 }
 
 func fit(s string, width int) string {

@@ -87,6 +87,7 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - Si un stream ya mostró contenido antes del corte, descartar sólo la respuesta parcial del request actual antes de reintentar; nunca duplicar texto, reasoning ni tool calls y nunca borrar el prompt del usuario.
 - Distinguir errores de red de errores definitivos de autenticación, payload o configuración. HTTP 4xx no recuperables deben seguir fallando de forma explícita.
 - Si `GET {baseURL}/models` responde 404, 405 o 501, tratar el catálogo como no soportado: conservar modelos manuales/caché y no mostrarlo como error.
+- Los campos de URL/API key del proveedor personalizado deben usar el ancho interior real de la caja y conservar una ventana horizontal alrededor del cursor. Renderizar una línea larga nunca puede truncar el valor almacenado ni imponer de nuevo el límite heredado de 2,048 runes.
 
 ### Agentes primarios
 

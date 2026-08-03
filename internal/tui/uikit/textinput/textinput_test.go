@@ -19,6 +19,25 @@ func TestSetValueLeavesCursorAtEnd(t *testing.T) {
 	}
 }
 
+func TestViewKeepsCursorVisibleAtEndWithoutTruncatingValue(t *testing.T) {
+	model := New()
+	model.Width = 12
+	endpoint := "https://example.com/v1/chat/completions"
+	model.SetValue(endpoint)
+	model.Focus()
+
+	plain := termansi.Strip(model.View())
+	if !strings.HasSuffix(plain, "completions▌") {
+		t.Fatalf("el viewport no siguió el cursor al final: %q", plain)
+	}
+	if got := model.Value(); got != endpoint {
+		t.Fatalf("View alteró el valor almacenado: %q", got)
+	}
+	if width := termansi.StringWidth(plain); width > termansi.StringWidth(model.Prompt)+model.Width {
+		t.Fatalf("View excedió el ancho: %d celdas en %q", width, plain)
+	}
+}
+
 func TestFitPreservesANSIWhileTruncating(t *testing.T) {
 	styled := tuistyle.NewStyle().Foreground(tuistyle.Color("#ff0000")).Render("abcdef")
 	got := fit(styled, 4)
