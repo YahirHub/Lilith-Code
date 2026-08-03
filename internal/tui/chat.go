@@ -4241,10 +4241,10 @@ func (m *ChatModel) skillsEnabled() bool {
 	return s.SkillsEnabled
 }
 
-// loadSkills descubre las skills compatibles de usuario + proyecto. El loader
-// sólo inspecciona metadata SKILL.md; los recursos grandes se consultan después
-// mediante skill_search/skill_files/skill_read.
-func (m *ChatModel) loadSkills() []skills.Skill {
+// loadSkillsCatalog descubre el catálogo completo compatible de usuario +
+// proyecto. Sólo inspecciona metadata SKILL.md; los recursos grandes se
+// consultan después mediante skill_search/skill_files/skill_read.
+func (m *ChatModel) loadSkillsCatalog() []skills.Skill {
 	base := skills.Load(skills.DefaultLoadOptions(m.ctx.ConfigDir, m.project))
 	settings, _ := config.Load(m.ctx.ConfigDir)
 	if !settings.ClaudeCompatibilityEnabled {
@@ -4269,6 +4269,24 @@ func (m *ChatModel) loadSkills() []skills.Skill {
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })
 	return skills.ApplyClaudeOverrides(m.ctx.ConfigDir, m.project, config.IsProjectTrusted(settings, m.project), out)
+}
+
+// loadSkills aplica las preferencias individuales de Lilith al catálogo. Una
+// skill desactivada desaparece de activación automática, paleta, agentes e
+// invocación manual, mientras el resto continúa disponible.
+func (m *ChatModel) loadSkills() []skills.Skill {
+	settings, _ := config.Load(m.ctx.ConfigDir)
+	return filterEnabledSkills(settings, m.loadSkillsCatalog())
+}
+
+func filterEnabledSkills(settings config.Settings, catalog []skills.Skill) []skills.Skill {
+	enabled := make([]skills.Skill, 0, len(catalog))
+	for _, sk := range catalog {
+		if config.IsSkillEnabled(settings, sk.Name) {
+			enabled = append(enabled, sk)
+		}
+	}
+	return enabled
 }
 
 // skillsBlock renderiza el bloque XML de skills disponibles cuando el toggle
@@ -4301,10 +4319,15 @@ func (m *ChatModel) invokeSkill(name, args string) uikit.Cmd {
 		m.AddError("Las skills están desactivadas. Actívalas en /config.")
 		return nil
 	}
-	list := m.loadSkills()
-	sk := skills.Find(list, name)
+	settings, _ := config.Load(m.ctx.ConfigDir)
+	catalog := m.loadSkillsCatalog()
+	sk := skills.Find(catalog, name)
 	if sk == nil {
 		m.AddError("Skill no encontrada: " + name + ". Revisa las carpetas de skills de Lilith/Claude/Agent del usuario o proyecto.")
+		return nil
+	}
+	if !config.IsSkillEnabled(settings, sk.Name) {
+		m.AddError("La skill " + name + " está desactivada. Actívala en /config > Skills.")
 		return nil
 	}
 	if !sk.UserInvocable {

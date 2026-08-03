@@ -31,6 +31,32 @@ sobre tu repositorio y ofrece una TUI interactiva construida sobre tview/Tcell.
   ya existen y selecciona validaciones reales por ecosistema.
 
 
+## Skills embebidas y configurables
+
+Lilith usa Agent Skills como instrucciones especializadas cargadas bajo demanda.
+El binario incluye la skill genérica `ponytail-development`, que conserva una
+metodología completa para proyectos de software: arquitectura simple, seguridad,
+contexto persistente, tareas trazables, pruebas, documentación, Git y entregas
+reproducibles. Su descripción se expone al modelo, pero el `SKILL.md` completo
+sólo se carga cuando una tarea de desarrollo coincide o cuando se invoca
+explícitamente:
+
+```text
+/skill:ponytail-development revisar e implementar este cambio
+```
+
+`/config > Skills` ofrece dos niveles de control:
+
+- interruptor maestro para toda la infraestructura de skills;
+- interruptor individual para cada skill detectada, incluida la interna.
+
+Las preferencias individuales se guardan en `~/.li/settings.json` como una lista
+de nombres desactivados. Las skills nuevas quedan habilitadas por defecto y una
+skill de usuario o proyecto con el mismo `name` continúa reemplazando la versión
+embebida. Una skill desactivada desaparece de la activación automática, la
+paleta, los agentes y la invocación manual, sin afectar las demás.
+
+
 ## Inteligencia de código estática
 
 Lilith incorpora `internal/codeintel`, compartido por el agente principal y los

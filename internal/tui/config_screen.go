@@ -15,6 +15,7 @@ type configSection string
 
 const (
 	configSectionGeneral  configSection = "general"
+	configSectionSkills   configSection = "skills"
 	configSectionSearch   configSection = "search"
 	configSectionSecurity configSection = "security"
 )
@@ -23,6 +24,7 @@ const configSectionNavFocus = "section-nav"
 
 var configSections = []configSection{
 	configSectionGeneral,
+	configSectionSkills,
 	configSectionSearch,
 	configSectionSecurity,
 }
@@ -88,8 +90,11 @@ func (c *ConfigScreen) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			}
 		}
 		c.focus = hit.id
+		if strings.HasPrefix(hit.id, "skill:") {
+			return c.toggleSkill(strings.TrimPrefix(hit.id, "skill:"))
+		}
 		switch hit.id {
-		case "skills":
+		case "skills-global":
 			return c.toggleSkills()
 		case "lilith-md":
 			return c.toggleSetting("lilith-md")
@@ -158,9 +163,12 @@ func (c *ConfigScreen) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			c.moveFocus(-1)
 			return c, nil
 		case "enter", " ":
+			if strings.HasPrefix(c.focus, "skill:") && c.section == configSectionSkills {
+				return c.toggleSkill(strings.TrimPrefix(c.focus, "skill:"))
+			}
 			switch c.focus {
-			case "skills":
-				if c.section == configSectionGeneral {
+			case "skills-global":
+				if c.section == configSectionSkills {
 					return c.toggleSkills()
 				}
 			case "lilith-md", "claude-md", "auto-memory", "hooks":
@@ -212,7 +220,9 @@ func (c *ConfigScreen) rotateSection(delta int) {
 func (c *ConfigScreen) focusFirstContent() {
 	switch c.section {
 	case configSectionGeneral:
-		c.focus = "skills"
+		c.focus = "lilith-md"
+	case configSectionSkills:
+		c.focus = "skills-global"
 	case configSectionSearch:
 		c.focus = "search-content"
 		c.search.ensureSelectedProvider()
@@ -224,7 +234,9 @@ func (c *ConfigScreen) focusFirstContent() {
 func (c *ConfigScreen) moveFocus(delta int) {
 	order := []string{"back"}
 	if c.section == configSectionGeneral {
-		order = []string{"skills", "lilith-md", "claude-md", "auto-memory", "hooks", "back"}
+		order = []string{"lilith-md", "claude-md", "auto-memory", "hooks", "back"}
+	} else if c.section == configSectionSkills {
+		order = c.skillFocusOrder()
 	} else if c.section == configSectionSecurity {
 		order = []string{"trusted-project", "back"}
 	}
@@ -265,6 +277,52 @@ func (c *ConfigScreen) toggleSkills() (uikit.Model, uikit.Cmd) {
 	return c, nil
 }
 
+func (c *ConfigScreen) skillFocusOrder() []string {
+	order := make([]string, 0, len(c.loaded)+2)
+	order = append(order, "skills-global")
+	for _, sk := range c.loaded {
+		order = append(order, "skill:"+sk.Name)
+	}
+	return append(order, "back")
+}
+
+func (c *ConfigScreen) toggleSkill(name string) (uikit.Model, uikit.Cmd) {
+	var selected *skills.Skill
+	for i := range c.loaded {
+		if strings.EqualFold(c.loaded[i].Name, strings.TrimSpace(name)) {
+			selected = &c.loaded[i]
+			break
+		}
+	}
+	if selected == nil {
+		c.danger = "Skill no encontrada: " + strings.TrimSpace(name)
+		return c, nil
+	}
+	enabled := !config.IsSkillEnabled(c.settings, selected.Name)
+	config.SetSkillEnabled(&c.settings, selected.Name, enabled)
+	if err := config.Save(c.ctx.ConfigDir, c.settings); err != nil {
+		c.danger = "No se pudo guardar: " + err.Error()
+		return c, nil
+	}
+	c.danger = ""
+	state := "desactivada"
+	if enabled {
+		state = "activada"
+	}
+	c.message = fmt.Sprintf("Skill %s %s.", selected.Name, state)
+	return c, nil
+}
+
+func (c *ConfigScreen) enabledSkillCount() int {
+	count := 0
+	for _, sk := range c.loaded {
+		if config.IsSkillEnabled(c.settings, sk.Name) {
+			count++
+		}
+	}
+	return count
+}
+
 func (c *ConfigScreen) layout() (string, []settingsHit) {
 	view, hits := c.fullLayout()
 	return c.visibleLayout(view, hits)
@@ -285,8 +343,6 @@ func (c *ConfigScreen) fullLayout() (string, []settingsHit) {
 
 	switch c.section {
 	case configSectionGeneral:
-		canvas.block(c.skillsFocusCard(w))
-		canvas.blank()
 		canvas.block(c.toggleFocusCard(w, "lilith-md", "Lilith / LILITH.md", "Carga LILITH.md o LI.md del usuario y del proyecto como instrucciones persistentes.", c.settings.ProjectInstructionsEnabled))
 		canvas.blank()
 		canvas.block(c.toggleFocusCard(w, "claude-md", "Claude / CLAUDE.md", "Compatibilidad con CLAUDE.md, CLAUDE.local.md, .claude/rules y .claude/commands.", c.settings.ClaudeCompatibilityEnabled))
@@ -301,6 +357,14 @@ func (c *ConfigScreen) fullLayout() (string, []settingsHit) {
 			Badge:       "INFO",
 			Width:       w,
 		}))
+		canvas.blank()
+		canvas.block(c.backFocusCard(w))
+	case configSectionSkills:
+		canvas.block(c.skillsGlobalFocusCard(w))
+		for _, sk := range c.loaded {
+			canvas.blank()
+			canvas.block(c.skillToggleFocusCard(w, sk))
+		}
 		canvas.blank()
 		canvas.block(c.backFocusCard(w))
 	case configSectionSearch:
@@ -319,7 +383,7 @@ func (c *ConfigScreen) fullLayout() (string, []settingsHit) {
 		canvas.block(c.backFocusCard(w))
 	}
 
-	if c.message != "" && c.section == configSectionGeneral {
+	if c.message != "" && c.section != configSectionSearch {
 		canvas.blank()
 		canvas.line(s.Success.Render("· " + settingsWrapPlain(c.message, w)))
 	}
@@ -422,6 +486,7 @@ func (c *ConfigScreen) focusedHitID() (id string, forceTop bool) {
 func (c *ConfigScreen) sectionPicker(width int) settingsBlock {
 	return settingsButtonGroup(c.ctx.Styles, width,
 		settingsButtonSpec{ID: "section:general", Label: "General", Active: c.section == configSectionGeneral, Focused: c.section == configSectionGeneral && c.focus == configSectionNavFocus},
+		settingsButtonSpec{ID: "section:skills", Label: "Skills", Active: c.section == configSectionSkills, Focused: c.section == configSectionSkills && c.focus == configSectionNavFocus},
 		settingsButtonSpec{ID: "section:search", Label: "Búsqueda", Active: c.section == configSectionSearch, Focused: c.section == configSectionSearch && c.focus == configSectionNavFocus},
 		settingsButtonSpec{ID: "section:security", Label: "Seguridad", Active: c.section == configSectionSecurity, Focused: c.section == configSectionSecurity && c.focus == configSectionNavFocus},
 	)
@@ -432,6 +497,8 @@ func (c *ConfigScreen) sectionSubtitle() string {
 		return c.search.nestedSubtitle()
 	}
 	switch c.section {
+	case configSectionSkills:
+		return "Habilidades reutilizables y metodología interna."
 	case configSectionSearch:
 		return "Motores de búsqueda y fuentes externas."
 	case configSectionSecurity:
@@ -503,7 +570,7 @@ func (c *ConfigScreen) toggleFocusCard(width int, id, title, description string,
 	return settingsBlock{text: text, hits: []settingsHit{{id: id, rect: settingsRect{w: tuistyle.Width(text), h: tuistyle.Height(text)}}}}
 }
 
-func (c *ConfigScreen) skillsFocusCard(width int) settingsBlock {
+func (c *ConfigScreen) skillsGlobalFocusCard(width int) settingsBlock {
 	s := c.ctx.Styles
 	inner := width - 4
 	if inner < 10 {
@@ -516,7 +583,7 @@ func (c *ConfigScreen) skillsFocusCard(width int) settingsBlock {
 		stateStyle = s.Success
 	}
 	marker := "  "
-	if c.focus == "skills" {
+	if c.focus == "skills-global" {
 		marker = "› "
 	}
 	title := marker + s.Title.Render("Skills")
@@ -527,14 +594,14 @@ func (c *ConfigScreen) skillsFocusCard(width int) settingsBlock {
 	}
 	lines := []string{
 		title + strings.Repeat(" ", gap) + status,
-		s.Muted.Render(settingsWrapPlain(fmt.Sprintf("%d skill(s) detectada(s). Activa o desactiva su carga automática.", len(c.loaded)), inner)),
+		s.Muted.Render(settingsWrapPlain(fmt.Sprintf("Interruptor maestro. %d de %d skill(s) habilitada(s) individualmente.", c.enabledSkillCount(), len(c.loaded)), inner)),
 	}
 	style := tuistyle.NewStyle().
 		Width(inner).
 		Padding(0, 1).
 		Border(tuistyle.RoundedBorder()).
 		BorderForeground(s.Theme.Border)
-	if c.focus == "skills" {
+	if c.focus == "skills-global" {
 		style = style.
 			BorderForeground(s.Theme.BorderFocus).
 			Background(s.Theme.SurfaceHover).
@@ -543,7 +610,64 @@ func (c *ConfigScreen) skillsFocusCard(width int) settingsBlock {
 	text := style.Render(strings.Join(lines, "\n"))
 	return settingsBlock{
 		text: text,
-		hits: []settingsHit{{id: "skills", rect: settingsRect{w: tuistyle.Width(text), h: tuistyle.Height(text)}}},
+		hits: []settingsHit{{id: "skills-global", rect: settingsRect{w: tuistyle.Width(text), h: tuistyle.Height(text)}}},
+	}
+}
+
+func (c *ConfigScreen) skillToggleFocusCard(width int, sk skills.Skill) settingsBlock {
+	s := c.ctx.Styles
+	inner := width - 4
+	if inner < 10 {
+		inner = 10
+	}
+	id := "skill:" + sk.Name
+	enabled := config.IsSkillEnabled(c.settings, sk.Name)
+	state := "OFF"
+	stateStyle := s.Muted
+	if enabled {
+		state = "ON"
+		stateStyle = s.Success
+	}
+	marker := "  "
+	if c.focus == id {
+		marker = "› "
+	}
+	title := marker + s.Title.Render(sk.Name)
+	status := stateStyle.Render("[" + state + "]")
+	gap := inner - tuistyle.Width(title) - tuistyle.Width(status)
+	if gap < 2 {
+		gap = 2
+	}
+	description := strings.TrimSpace(sk.Description)
+	if description == "" {
+		description = "Skill sin descripción."
+	}
+	description += " · origen: " + skillSourceLabel(sk.Source)
+	if !c.settings.SkillsEnabled {
+		description += " · interruptor maestro OFF"
+	}
+	lines := []string{
+		title + strings.Repeat(" ", gap) + status,
+		s.Muted.Render(settingsWrapPlain(description, inner)),
+	}
+	style := tuistyle.NewStyle().Width(inner).Padding(0, 1).Border(tuistyle.RoundedBorder()).BorderForeground(s.Theme.Border)
+	if c.focus == id {
+		style = style.BorderForeground(s.Theme.BorderFocus).Background(s.Theme.SurfaceHover).Bold(true)
+	}
+	text := style.Render(strings.Join(lines, "\n"))
+	return settingsBlock{text: text, hits: []settingsHit{{id: id, rect: settingsRect{w: tuistyle.Width(text), h: tuistyle.Height(text)}}}}
+}
+
+func skillSourceLabel(source string) string {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "builtin":
+		return "interna"
+	case "project":
+		return "proyecto"
+	case "user":
+		return "usuario"
+	default:
+		return "externa"
 	}
 }
 

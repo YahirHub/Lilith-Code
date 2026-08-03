@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestBundledDirMaterializesSkillInfrastructureWithoutProductSkills(t *testing.T) {
+func TestBundledDirMaterializesPonytailDevelopmentSkill(t *testing.T) {
 	t.Parallel()
 	configDir := filepath.Join(t.TempDir(), ".li")
 	dir := BundledDir(configDir)
@@ -18,8 +18,25 @@ func TestBundledDirMaterializesSkillInfrastructureWithoutProductSkills(t *testin
 	if err != nil {
 		t.Fatalf("read materialized embedded README: %v", err)
 	}
-	if !strings.Contains(string(data), "without product-specific built-in") {
+	if !strings.Contains(string(data), "ponytail-development") {
 		t.Fatalf("unexpected embedded README contents: %q", string(data))
+	}
+	skillData, err := os.ReadFile(filepath.Join(dir, "ponytail-development", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read materialized Ponytail skill: %v", err)
+	}
+	for _, want := range []string{"name: ponytail-development", "# Metodología universal", "# 27. Regla de oro"} {
+		if !strings.Contains(string(skillData), want) {
+			t.Fatalf("Ponytail skill missing %q", want)
+		}
+	}
+	loaded := Load(LoadOptions{BuiltinDir: dir})
+	ponytail := Find(loaded, "ponytail-development")
+	if ponytail == nil {
+		t.Fatalf("materialized Ponytail skill not discovered: %#v", loaded)
+	}
+	if ponytail.Source != "builtin" || !ponytail.UserInvocable || ponytail.Model != "inherit" {
+		t.Fatalf("unexpected Ponytail metadata: %#v", *ponytail)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".ready")); err != nil {
 		t.Fatalf("expected completed cache marker: %v", err)

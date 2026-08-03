@@ -23,6 +23,7 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - `internal/compaction/`: selección del corte, estimación, resumen iterativo y reconstrucción del contexto activo.
 - `internal/rewind/`: checkpoints de conversación, snapshots de workspace, restauración y forks aislados.
 - `internal/tools/`: herramientas del agente, incluidas shell, archivos, búsqueda, skills, subagentes, OCR e inteligencia de código.
+- `internal/skills/` y `assets/skills/`: runtime unificado de Agent Skills y catálogo genérico embebido dentro del binario.
 - `internal/codeintel/`: detección de host/proyecto, índice sintáctico persistente, Tree-sitter embebido, mapa de repositorio, adaptadores, LSP y SCIP opcionales.
 - `internal/plan/`, `internal/goal/`, `internal/todo/`: estados persistentes de Plan, Goal y tareas.
 - `contexto/`: decisiones y continuidad técnica numeradas.
@@ -68,6 +69,14 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - Toda ejecución PowerShell debe forzar UTF-8 sin BOM en `[Console]::OutputEncoding` y `$OutputEncoding` antes del comando. El comando del usuario debe quedar al final para preservar su exit code; no anexar restauraciones u otras sentencias después.
 - Los jobs de GitHub Actions que compilan o prueban con gramáticas deben ejecutar `go mod download all` y `go mod verify` antes de `go test -mod=readonly`; `go mod download` sin `all` puede descargar sólo archivos `go.mod` bajo carga perezosa y dejar ausente el checksum del ZIP.
 - `write_file` acepta como máximo 1 MiB por llamada. `append_file` acepta 1 MiB por sección, no agrega saltos de línea y el archivo final se limita a 64 MiB; estas reglas deben permanecer visibles en schema, prompt y resultado.
+
+### Skills
+
+- Las skills embebidas deben usar el mismo loader, precedencia y herramientas `skill_read`/`skill_search`/`skill_files` que las skills externas; no crear un segundo sistema de prompts internos.
+- `ponytail-development` es una metodología genérica de desarrollo, no documentación de instalación, compilación o releases de Lilith. Conservar su contenido completo salvo que el usuario actualice explícitamente la metodología.
+- `SkillsEnabled` es el interruptor maestro. `DisabledSkills` sólo guarda excepciones por nombre, normalizadas en minúsculas; una skill nueva debe quedar habilitada por defecto.
+- Una skill desactivada individualmente no puede aparecer en activación automática, paleta, agentes ni invocación manual. El catálogo crudo debe seguir disponible en `/config > Skills` para poder reactivarla.
+- La precedencia continúa siendo proyecto > usuario > embebida por `name`; desactivar un nombre afecta a la implementación efectiva que gane esa precedencia.
 
 ### Proveedores y modelos
 

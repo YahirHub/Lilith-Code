@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 )
 
 const (
@@ -25,6 +27,11 @@ type Settings struct {
 	// Lilith/Claude/Agent, tanto globales como del proyecto. Off por defecto:
 	// sólo se cargan cuando el usuario lo activa desde /config.
 	SkillsEnabled bool `json:"skillsEnabled,omitempty"`
+	// DisabledSkills conserva excepciones individuales al interruptor global.
+	// Los nombres se normalizan a minúsculas y cualquier skill no listada queda
+	// habilitada por defecto, incluidas las nuevas skills embebidas de una versión
+	// posterior.
+	DisabledSkills []string `json:"disabledSkills,omitempty"`
 	// ProjectInstructionsEnabled carga LILITH.md/LI.md. Es true por defecto para
 	// que un proyecto Lilith pueda llevar instrucciones sin configuración previa.
 	ProjectInstructionsEnabled bool `json:"projectInstructionsEnabled"`
@@ -40,6 +47,53 @@ type Settings struct {
 	// TrustedProjects authoriza settings/hooks ejecutables del proyecto. Los
 	// hooks globales del usuario no requieren esta aprobación explícita.
 	TrustedProjects []string `json:"trustedProjects,omitempty"`
+}
+
+// IsSkillEnabled reports whether an individual skill is allowed by settings.
+// The global SkillsEnabled switch is intentionally evaluated by the caller so
+// this helper can also render and edit per-skill state while the master switch
+// is off.
+func IsSkillEnabled(s Settings, name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	for _, disabled := range s.DisabledSkills {
+		if strings.EqualFold(strings.TrimSpace(disabled), name) {
+			return false
+		}
+	}
+	return true
+}
+
+// SetSkillEnabled updates the normalized disabled-skill set without changing
+// the global skills switch. Unknown names are valid so a preference survives a
+// temporarily missing project/user skill and applies again when it returns.
+func SetSkillEnabled(s *Settings, name string, enabled bool) {
+	if s == nil {
+		return
+	}
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return
+	}
+	set := make(map[string]struct{}, len(s.DisabledSkills)+1)
+	for _, existing := range s.DisabledSkills {
+		existing = strings.ToLower(strings.TrimSpace(existing))
+		if existing != "" {
+			set[existing] = struct{}{}
+		}
+	}
+	if enabled {
+		delete(set, name)
+	} else {
+		set[name] = struct{}{}
+	}
+	s.DisabledSkills = s.DisabledSkills[:0]
+	for existing := range set {
+		s.DisabledSkills = append(s.DisabledSkills, existing)
+	}
+	sort.Strings(s.DisabledSkills)
 }
 
 func Defaults() Settings {

@@ -35,6 +35,8 @@ internal/tui/                 chat y pantallas interactivas
 internal/tui/uikit/           componentes TUI propios
 internal/version/             versión SemVer única para binarios y releases
 internal/tools/               herramientas del agente
+internal/skills/              runtime y recursos de Agent Skills
+assets/skills/                skills genéricas embebidas en el binario
 internal/codeintel/           índice sintáctico, LSP, SCIP y validación por lenguaje
 internal/plan/                estado y políticas Plan
 internal/goal/                objetivos persistentes
@@ -119,6 +121,7 @@ Los estados se persisten en la sesión. Goal comparte las capacidades de impleme
 - Cancelación con Esc; `/exit` es la salida explícita.
 - TodoWrite, planes y goals se guardan en la sesión.
 - Skills y agentes pueden usar modelo heredado, explícito o lista de preferencias.
+- El binario incluye `ponytail-development`, una metodología universal de desarrollo conservada como Agent Skill. `/config > Skills` mantiene un interruptor maestro y excepciones individuales persistidas en `disabledSkills`; una skill desactivada no aparece en activación automática, paleta, agentes ni invocación manual.
 - MCP y plugins siguen ejecutándose aunque una pantalla auxiliar esté abierta.
 
 ## 8. Compactación automática de contexto

@@ -21,7 +21,7 @@ func testConfigContext(t *testing.T) *AppContext {
 	}
 }
 
-func TestConfigUsesCardsAndDoesNotRenderSkillNames(t *testing.T) {
+func TestConfigGeneralKeepsSkillCatalogInDedicatedSection(t *testing.T) {
 	ctx := testConfigContext(t)
 	m := &ConfigScreen{
 		ctx:      ctx,
@@ -32,13 +32,57 @@ func TestConfigUsesCardsAndDoesNotRenderSkillNames(t *testing.T) {
 		search:   newSearchConfigState(ctx),
 	}
 	view := m.View()
-	for _, want := range []string{"General", "Búsqueda", "Seguridad", "Skills", "1 skill(s) detectada(s)"} {
+	for _, want := range []string{"General", "Skills", "Búsqueda", "Seguridad", "Lilith / LILITH.md"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("config view missing %q", want)
 		}
 	}
 	if strings.Contains(view, "skill-que-no-debe-aparecer") {
-		t.Fatal("config must not render the discovered skills list")
+		t.Fatal("general section must not render the discovered skills list")
+	}
+}
+
+func TestConfigSkillsSectionTogglesIndividualSkill(t *testing.T) {
+	ctx := testConfigContext(t)
+	settings := config.Defaults()
+	settings.SkillsEnabled = true
+	m := &ConfigScreen{
+		ctx:      ctx,
+		settings: settings,
+		section:  configSectionSkills,
+		focus:    configSectionNavFocus,
+		loaded: []skills.Skill{{
+			Name:        "ponytail-development",
+			Description: "Professional software methodology.",
+			Source:      "builtin",
+		}},
+		search: newSearchConfigState(ctx),
+	}
+	view := stripANSI(m.View())
+	for _, want := range []string{"Interruptor maestro", "ponytail-development", "origen: interna", "[ON]"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("skills section missing %q:\n%s", want, view)
+		}
+	}
+
+	next, _ := m.Update(uikit.KeyMsg{Type: uikit.KeyDown})
+	m = next.(*ConfigScreen)
+	next, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyDown})
+	m = next.(*ConfigScreen)
+	if m.focus != "skill:ponytail-development" {
+		t.Fatalf("skill focus = %q", m.focus)
+	}
+	next, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyEnter})
+	m = next.(*ConfigScreen)
+	if config.IsSkillEnabled(m.settings, "ponytail-development") {
+		t.Fatal("skill preference was not disabled")
+	}
+	persisted, err := config.Load(ctx.ConfigDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.IsSkillEnabled(persisted, "ponytail-development") {
+		t.Fatal("disabled skill preference was not persisted")
 	}
 }
 
@@ -48,11 +92,17 @@ func TestConfigSectionArrowsOnlyWorkWhenTopNavigationHasFocus(t *testing.T) {
 
 	next, _ := m.Update(uikit.KeyMsg{Type: uikit.KeyRight})
 	m = next.(*ConfigScreen)
-	if m.section != configSectionSearch {
-		t.Fatalf("right on top nav section = %q, want search", m.section)
+	if m.section != configSectionSkills {
+		t.Fatalf("right on top nav section = %q, want skills", m.section)
 	}
 	if m.focus != configSectionNavFocus {
 		t.Fatalf("focus = %q, want top navigation", m.focus)
+	}
+
+	next, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyRight})
+	m = next.(*ConfigScreen)
+	if m.section != configSectionSearch {
+		t.Fatalf("second right on top nav section = %q, want search", m.section)
 	}
 
 	next, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyDown})
@@ -154,7 +204,7 @@ func TestConfigViewportFollowsFocusAndReturnsToHeader(t *testing.T) {
 	m := NewConfigScreen(ctx)
 
 	top := stripANSI(m.View())
-	for _, want := range []string{"Configuración", "General", "Búsqueda", "Seguridad"} {
+	for _, want := range []string{"Configuración", "General", "Skills", "Búsqueda", "Seguridad"} {
 		if !strings.Contains(top, want) {
 			t.Fatalf("initial config viewport missing %q:\n%s", want, top)
 		}
@@ -192,7 +242,7 @@ func TestConfigViewportFollowsFocusAndReturnsToHeader(t *testing.T) {
 		t.Fatalf("focus = %q, want section navigation", m.focus)
 	}
 	returned := stripANSI(m.View())
-	for _, want := range []string{"Configuración", "General", "Búsqueda", "Seguridad"} {
+	for _, want := range []string{"Configuración", "General", "Skills", "Búsqueda", "Seguridad"} {
 		if !strings.Contains(returned, want) {
 			t.Fatalf("returned config viewport missing %q:\n%s", want, returned)
 		}

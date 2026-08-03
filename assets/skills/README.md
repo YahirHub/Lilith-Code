@@ -1,11 +1,17 @@
 # Built-in Lilith skills
 
-This directory is reserved for optional built-in Agent Skills embedded in the
-`li` binary. Lilith currently ships **without product-specific built-in
-skills**: installation, compilation, updating and release procedures belong to
-repository documentation and CI, not to the model's skill catalog.
+This directory contains generic Agent Skills embedded in every `li` binary.
+Built-in skills use the same runtime, bounded resource readers and precedence
+rules as user/project skills; they are not a second prompt system.
 
-User and project skills continue to work normally from `~/.li/skills`,
-`<project>/.li/skills` and the compatible Claude/OpenCode locations. If a
-future generic skill is added here, it must be useful across projects and must
-not teach the model how to install, compile or publish Lilith itself.
+Currently bundled:
+
+- `ponytail-development`: professional software-project methodology focused on
+  persistent context, secure simplicity, testing, documentation and Git-based
+  delivery.
+
+Users can enable or disable skills globally and individually from `/config >
+Skills`. A user or project skill with the same `name` still overrides the
+built-in copy. Installation, compilation, updating and release procedures for
+Lilith itself remain repository documentation and CI responsibilities rather
+than product-specific model skills.
