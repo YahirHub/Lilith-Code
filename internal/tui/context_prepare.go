@@ -142,7 +142,13 @@ func compactToolArguments(raw string) string {
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
 		return compactText(raw, requestToolArgsMaxChars, "older tool input")
 	}
-	for _, key := range []string{"content", "old", "new", "patch", "diff", "replacement"} {
+	for _, key := range []string{
+		"content", "old", "new", "oldText", "newText", "old_text", "new_text",
+		"oldString", "newString", "old_string", "new_string", "search", "replace",
+		"searchText", "replaceText", "search_text", "replace_text",
+		"searchString", "replaceString", "search_string", "replace_string",
+		"patch", "diff", "replacement",
+	} {
 		value, ok := args[key].(string)
 		if !ok || len(value) <= 256 {
 			continue

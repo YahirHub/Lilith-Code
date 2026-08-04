@@ -4631,7 +4631,7 @@ func systemPrompt(activeTools []string, skillsBlock, agentsBlock, todoBlock, mod
 	for _, rule := range []string{
 		"Use only tool names present in the schemas for this turn; tool_search can discover additional capabilities when needed.",
 		"Never write partial files or placeholders such as `...`, `// rest of code`, `TODO: fill in`, or equivalent; changes must leave real files usable as-is.",
-		"For existing source files, prefer str_replace for precise replacements or apply_diff for unified patches. Both validate against the current on-disk file; read when you need context or after a mismatch/ambiguity.",
+		"For existing source files, prefer str_replace for precise replacements or apply_diff for unified patches. For str_replace, always send path plus both old and new, or a non-empty edits[] array; old must never be empty. Both tools validate against the current on-disk file; read when you need context or after a mismatch/ambiguity.",
 		"Use write_file for complete generated documents or intentional full-file regeneration; existing targets require overwrite=true. Use append_file for long reports built in bounded sections. Never use shell heredocs for large file content.",
 		"create_file is creation-only. The ambiguous legacy tool name `write` is unsupported.",
 		"Treat FILE_EXISTS, OVERWRITE_REQUIRED, USE_CREATE_FILE and WRITE_BLOCKED as policy redirects and follow the result instead of repeating a rejected payload unchanged.",

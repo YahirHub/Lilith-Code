@@ -254,14 +254,15 @@ func init() {
 	register(Definition{
 		Name: "str_replace",
 		Description: "Edit an existing file with one or more targeted text replacements. " +
-			"Pass either a single `old`/`new` pair OR an `edits` array `[{old, new}, ...]`; `edits` may also arrive as a JSON string and is normalized automatically. " +
+			"Pass either a complete single `old`/`new` pair OR a non-empty `edits` array `[{old, new}, ...]`; never send only `path`. `edits` may also arrive as a JSON string and is normalized automatically. " +
 			"Every edit is validated against the CURRENT file at execution time, so a separate read_files call is recommended for understanding the code but is not a runtime prerequisite. " +
 			"Each non-empty `old` must identify exactly one non-overlapping region of the original file; add nearby context when needed. " +
 			"Exact matching is tried first, then a pi.dev-compatible fuzzy pass normalizes line endings, Unicode NFKC, smart quotes/dashes/spaces and trailing whitespace while preserving unchanged bytes, UTF-8 BOM and the file's CRLF/LF style. " +
-			"`new` may be empty to delete. Pairs where `old == new` are harmless no-ops. Do not use str_replace to create files.",
+			"`new` may be empty to delete. Pairs where `old == new` are harmless no-ops. Compatibility aliases from Claude/Pi-style agents are accepted at runtime. Do not use str_replace to create files.",
 		PromptSnippet: "Make precise replacements in existing files, including multiple disjoint edits in one call",
 		PromptGuidelines: []string{
-			"Use str_replace for precise existing-file changes. Each old snippet must be non-empty and unique in the current file.",
+			"Use str_replace for precise existing-file changes. Always pass path plus either both old/new or a non-empty edits[] array; never call it with path alone.",
+			"Each old snippet must be non-empty and unique in the current file. To insert, include an existing anchor in old and repeat that anchor with the inserted text in new.",
 			"When changing multiple separate regions in one file, prefer one str_replace call with edits[]; all entries match the original file and must not overlap.",
 			"Keep old snippets as small as possible while still unique. If a match fails or is ambiguous, read the affected region and retry with current text.",
 		},
@@ -271,30 +272,37 @@ func init() {
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Path of the existing file to edit (project-relative or absolute).",
+					"minLength":   1,
+					"description": "Path of the existing file to edit (project-relative or absolute). Emit this first, then provide old/new or edits.",
 				},
 				"old": map[string]any{
 					"type":        "string",
-					"description": "Exact text to find. Non-empty, byte-for-byte, unique in the file. Ignored if `edits` is provided.",
+					"minLength":   1,
+					"description": "Required when edits is omitted. Exact CURRENT text to find; it must be non-empty and unique in the file.",
 				},
 				"new": map[string]any{
 					"type":        "string",
-					"description": "Replacement text for `old`. May be empty to delete the matched region. Ignored if `edits` is provided.",
+					"description": "Required when edits is omitted. Replacement text for old; may be empty only to delete the matched region.",
 				},
 				"edits": map[string]any{
 					"type":        "array",
-					"description": "Optional list of replacements to apply together. Each item is `{\"old\": string, \"new\": string}`. Matches are computed against the original file, so ranges must not overlap.",
+					"minItems":    1,
+					"description": "Alternative to old/new: one or more replacements applied together. Each item is `{\"old\": string, \"new\": string}` and old must be non-empty.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"old": map[string]any{"type": "string"},
-							"new": map[string]any{"type": "string"},
+							"old": map[string]any{"type": "string", "minLength": 1, "description": "Exact non-empty CURRENT text to find."},
+							"new": map[string]any{"type": "string", "description": "Replacement text; may be empty to delete."},
 						},
 						"required": []string{"old", "new"},
 					},
 				},
 			},
 			"required": []string{"path"},
+			"anyOf": []any{
+				map[string]any{"required": []string{"old", "new"}},
+				map[string]any{"required": []string{"edits"}},
+			},
 		},
 		Run: func(ctx context.Context, args map[string]any, env Env) (string, error) {
 			rel := str(args, "path")
@@ -639,23 +647,54 @@ func tokenSet(value string) map[string]bool {
 	return out
 }
 
-func stringField(args map[string]any, keys ...string) (string, bool) {
+// Models trained on other coding agents sometimes keep the host tool name but
+// emit that agent's argument vocabulary. Accept the common Claude/Pi-style
+// aliases without advertising them in the primary schema, so native calls stay
+// simple while compatible providers do not enter a retry loop.
+var strReplaceOldKeys = []string{
+	"old", "oldText", "old_text", "oldString", "old_string",
+	"search", "searchText", "search_text", "searchString", "search_string",
+}
+
+var strReplaceNewKeys = []string{
+	"new", "newText", "new_text", "newString", "new_string",
+	"replace", "replacement", "replaceText", "replace_text", "replaceString", "replace_string",
+}
+
+func strReplaceReceivedFields(args map[string]any) string {
+	keys := make([]string, 0, len(args))
+	for key := range args {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if len(keys) == 0 {
+		return "none"
+	}
+	return strings.Join(keys, ", ")
+}
+
+func strReplaceCompatibleString(values map[string]any, keys []string) (string, bool) {
 	for _, key := range keys {
-		v, ok := args[key]
+		value, ok := values[key]
 		if !ok {
 			continue
 		}
-		s, ok := v.(string)
-		if !ok {
-			return "", false
+		text, ok := value.(string)
+		if ok {
+			return text, true
 		}
-		return s, true
 	}
 	return "", false
 }
 
-// collectEdits accepts Lilith's native {old,new} shape plus the oldText/newText
-// aliases used by pi.dev. Some models serialize edits[] as a JSON string; pi
+func strReplacePair(values map[string]any) (oldText, newText string, oldOK, newOK bool) {
+	oldText, oldOK = strReplaceCompatibleString(values, strReplaceOldKeys)
+	newText, newOK = strReplaceCompatibleString(values, strReplaceNewKeys)
+	return oldText, newText, oldOK, newOK
+}
+
+// collectEdits accepts Lilith's native {old,new} shape plus common aliases used
+// by Claude/Pi-style agents. Some models serialize edits[] as a JSON string; pi
 // tolerates that, so Lilith normalizes it before validating as well.
 func collectEdits(args map[string]any) ([]editPair, error) {
 	var rawList []any
@@ -685,25 +724,23 @@ func collectEdits(args map[string]any) ([]editPair, error) {
 		if !ok {
 			return nil, fmt.Errorf("edits[%d] must be an object with `old` and `new` string fields", i)
 		}
-		old, oldOK := stringField(m, "old", "oldText")
-		newText, newOK := stringField(m, "new", "newText")
+		old, newText, oldOK, newOK := strReplacePair(m)
 		if !oldOK || !newOK {
-			return nil, fmt.Errorf("edits[%d] must contain string `old` and `new` fields", i)
+			return nil, fmt.Errorf("edits[%d] must contain a target and replacement string (use old/new; compatible aliases are accepted). received fields: %s", i, strReplaceReceivedFields(m))
 		}
 		if old == "" {
-			return nil, fmt.Errorf("edits[%d].old is empty. Use a real existing anchor; to insert, repeat that anchor inside `new`", i)
+			return nil, fmt.Errorf("edits[%d] target is empty. Use real current text as an anchor; to insert, repeat that anchor inside the replacement", i)
 		}
 		out = append(out, editPair{old: old, new: newText})
 	}
 
 	if len(out) == 0 {
-		old, oldOK := stringField(args, "old", "oldText")
-		newText, newOK := stringField(args, "new", "newText")
+		old, newText, oldOK, newOK := strReplacePair(args)
 		if !oldOK || old == "" {
-			return nil, errors.New("`old` must not be empty. Use exact current text as the target; to insert, reuse an existing anchor inside `new`. To create a file, use create_file")
+			return nil, fmt.Errorf("`old` must not be empty. Pass path plus old/new (aliases such as old_string/new_string are accepted) or a non-empty edits[] array. received fields: %s", strReplaceReceivedFields(args))
 		}
 		if !newOK {
-			newText = ""
+			return nil, fmt.Errorf("str_replace requires an explicit replacement string. Pass new (it may be empty only for an intentional deletion) or a compatible alias such as new_string. received fields: %s", strReplaceReceivedFields(args))
 		}
 		out = append(out, editPair{old: old, new: newText})
 	}

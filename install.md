@@ -22,11 +22,11 @@ Versión concreta:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh -o install.sh
-sh install.sh 0.2.2
+sh install.sh 0.2.3
 rm install.sh
 ```
 
-También se puede usar `LI_VERSION=v0.2.2` o `LI_REPOSITORY` para un fork.
+También se puede usar `LI_VERSION=v0.2.3` o `LI_REPOSITORY` para un fork.
 
 ## Termux en Android
 
@@ -69,7 +69,7 @@ directorio al `PATH` persistente del usuario y también a la sesión actual.
 Versión concreta:
 
 ```powershell
-$env:LI_VERSION = '0.2.2'
+$env:LI_VERSION = '0.2.3'
 irm https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.ps1 | iex
 ```
 
@@ -85,7 +85,7 @@ install.cmd
 Versión concreta:
 
 ```cmd
-install.cmd 0.2.2
+install.cmd 0.2.3
 ```
 
 ## Primer arranque
@@ -228,7 +228,10 @@ Límites actuales:
 - `write_file`: hasta 1 MiB por llamada;
 - `append_file`: hasta 1 MiB por sección y 64 MiB para el archivo final;
 - reemplazar un archivo existente requiere `overwrite=true`;
-- `expected_sha256` permite detectar cambios ocurridos desde la lectura previa.
+- `expected_sha256` permite detectar cambios ocurridos desde la lectura previa;
+- `str_replace` exige `path` más un par completo `old`/`new`, o un `edits[]` no vacío;
+- los alias compatibles `old_string`/`new_string`, `oldText`/`newText` y variantes equivalentes se normalizan sin perder la vista previa;
+- omitir `new` ya no se interpreta como borrado: una eliminación requiere enviarlo explícitamente como cadena vacía.
 
 ## Ejecución de comandos y shells
 

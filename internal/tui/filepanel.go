@@ -39,6 +39,16 @@ type FilePanel struct {
 	Expanded bool
 }
 
+var filePanelOldKeys = []string{
+	"old", "oldText", "old_text", "oldString", "old_string",
+	"search", "searchText", "search_text", "searchString", "search_string",
+}
+
+var filePanelNewKeys = []string{
+	"new", "newText", "new_text", "newString", "new_string",
+	"replace", "replacement", "replaceText", "replace_text", "replaceString", "replace_string",
+}
+
 // previewLines conserva el límite máximo histórico de la vista previa.
 const previewLines = 12
 
@@ -70,18 +80,29 @@ func (p *FilePanel) Update(rawArgs string) {
 		}
 	case "str_replace":
 		// Mientras los argumentos siguen llegando mantenemos el preview del
-		// par simple. Cuando el JSON queda completo, preferimos edits[] para
-		// representar correctamente los lotes multi-edición que usa pi.dev.
-		if v, ok := partialJSONString(rawArgs, "old"); ok {
+		// par simple. Modelos entrenados con Claude/Pi pueden conservar nombres
+		// como old_string/new_string aunque invoquen la tool nativa de Lilith.
+		// Cuando el JSON queda completo, preferimos edits[] para representar
+		// correctamente los lotes multi-edición.
+		if v, ok := partialJSONStringAny(rawArgs, filePanelOldKeys); ok {
 			p.Old = v
 		}
-		if v, ok := partialJSONString(rawArgs, "new"); ok {
+		if v, ok := partialJSONStringAny(rawArgs, filePanelNewKeys); ok {
 			p.New = v
 		}
 		if edits := parsePanelEdits(rawArgs); len(edits) > 0 {
 			p.Edits = edits
 		}
 	}
+}
+
+func partialJSONStringAny(raw string, keys []string) (string, bool) {
+	for _, key := range keys {
+		if value, ok := partialJSONString(raw, key); ok {
+			return value, true
+		}
+	}
+	return "", false
 }
 
 func parsePanelEdits(rawArgs string) []filePanelEdit {
@@ -111,8 +132,8 @@ func parsePanelEdits(rawArgs string) []filePanelEdit {
 		if !ok {
 			continue
 		}
-		old, _ := panelStringField(m, "old", "oldText")
-		newText, newOK := panelStringField(m, "new", "newText")
+		old, _ := panelStringField(m, filePanelOldKeys...)
+		newText, newOK := panelStringField(m, filePanelNewKeys...)
 		if old == "" || !newOK {
 			continue
 		}
@@ -148,9 +169,12 @@ func recoverStringifiedEdits(rawArgs string) (string, bool) {
 
 func panelStringField(values map[string]any, names ...string) (string, bool) {
 	for _, name := range names {
-		if value, ok := values[name]; ok {
-			s, ok := value.(string)
-			return s, ok
+		value, ok := values[name]
+		if !ok {
+			continue
+		}
+		if text, ok := value.(string); ok {
+			return text, true
 		}
 	}
 	return "", false

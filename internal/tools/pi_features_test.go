@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,5 +145,118 @@ func TestStrReplaceMismatchReportsCurrentHashAndNearbyLines(t *testing.T) {
 	}
 	if string(got) != content {
 		t.Fatalf("mismatch must not modify file: %q", got)
+	}
+}
+
+func TestStrReplaceAcceptsClaudeStyleFieldAliases(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "claude.go")
+	before := "channel := params.Channels\n"
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := Execute(context.Background(), "str_replace", map[string]any{
+		"path":       "claude.go",
+		"old_string": "params.Channels",
+		"new_string": "params.Channel",
+	}, Env{Root: dir})
+	if err != nil {
+		t.Fatalf("Claude-style aliases should be normalized: %v", err)
+	}
+	if !strings.Contains(out, "1 replacement") {
+		t.Fatalf("unexpected result: %q", out)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "channel := params.Channel\n" {
+		t.Fatalf("unexpected edited content: %q", got)
+	}
+}
+
+func TestStrReplaceAcceptsCompatibleAliasesInsideEdits(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "aliases.txt")
+	if err := os.WriteFile(path, []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Execute(context.Background(), "str_replace", map[string]any{
+		"path": "aliases.txt",
+		"edits": []any{
+			map[string]any{"oldText": "alpha", "newText": "ALPHA"},
+			map[string]any{"search_string": "beta", "replace_string": "BETA"},
+		},
+	}, Env{Root: dir})
+	if err != nil {
+		t.Fatalf("compatible edit aliases should be normalized: %v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != "ALPHA\nBETA\n" {
+		t.Fatalf("unexpected multi-edit result: %q", got)
+	}
+}
+
+func TestStrReplaceRequiresExplicitReplacement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "safe.txt")
+	before := []byte("keep me\n")
+	if err := os.WriteFile(path, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Execute(context.Background(), "str_replace", map[string]any{
+		"path": "safe.txt",
+		"old":  "keep me",
+	}, Env{Root: dir})
+	if err == nil || !strings.Contains(err.Error(), "explicit replacement") {
+		t.Fatalf("missing replacement must be rejected safely, got %v", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(before) {
+		t.Fatalf("missing replacement must not delete content: %q", got)
+	}
+}
+
+func TestStrReplaceSchemaRequiresPayloadAndNonEmptyOld(t *testing.T) {
+	def, ok := Get("str_replace")
+	if !ok {
+		t.Fatal("str_replace definition missing")
+	}
+	data, err := json.Marshal(def.Parameters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := string(data)
+	for _, want := range []string{`"anyOf"`, `"required":["old","new"]`, `"required":["edits"]`, `"minLength":1`, `"minItems":1`} {
+		if !strings.Contains(schema, want) {
+			t.Fatalf("str_replace schema missing %s: %s", want, schema)
+		}
+	}
+}
+
+func TestStrReplaceMissingTargetReportsReceivedFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "diagnostic.txt")
+	if err := os.WriteFile(path, []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Execute(context.Background(), "str_replace", map[string]any{
+		"path": "diagnostic.txt",
+		"new":  "ALPHA",
+	}, Env{Root: dir})
+	if err == nil {
+		t.Fatal("missing target should fail")
+	}
+	message := err.Error()
+	for _, want := range []string{"old_string/new_string", "received fields: new, path"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("missing diagnostic %q in %q", want, message)
+		}
 	}
 }

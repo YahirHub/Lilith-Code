@@ -147,3 +147,23 @@ func TestFilePanelRendersAppendFileAndOverwriteSkip(t *testing.T) {
 		t.Fatalf("overwrite requirement should be a skipped panel: %+v", p)
 	}
 }
+
+func TestFilePanelAcceptsClaudeStyleStrReplaceArguments(t *testing.T) {
+	p := &FilePanel{Tool: "str_replace"}
+	p.Update(`{"path":"bot.go","old_string":"params.Channels","new_string":"params.Channel"}`)
+	if p.Path != "bot.go" || p.Old != "params.Channels" || p.New != "params.Channel" {
+		t.Fatalf("Claude-style arguments not rendered: %+v", p)
+	}
+	add, del := p.stats()
+	if add != 1 || del != 1 {
+		t.Fatalf("unexpected Claude-style diff stats: +%d -%d", add, del)
+	}
+}
+
+func TestFilePanelAcceptsCompatibleAliasesInsideEdits(t *testing.T) {
+	p := &FilePanel{Tool: "str_replace"}
+	p.Update(`{"path":"events_test.go","edits":[{"search_string":"Message: slack.Msg{}","replace_string":"Msg: slack.Msg{}"}]}`)
+	if len(p.Edits) != 1 || p.Edits[0].Old != "Message: slack.Msg{}" || p.Edits[0].New != "Msg: slack.Msg{}" {
+		t.Fatalf("compatible edit aliases not rendered: %+v", p.Edits)
+	}
+}

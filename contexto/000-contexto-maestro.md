@@ -293,6 +293,8 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `111-runner-linux-y-go-mod-tidy.md`
 - `112-termux-clonado-superficial-y-version-0-2-1.md`
 - `113-chatmodel-puntero-go-vet.md`
+- `114-busquedas-terminal-acotadas.md`
+- `115-compatibilidad-argumentos-str-replace.md`
 
 ## 114 · Búsquedas de terminal acotadas y versión 0.2.2
 
@@ -301,3 +303,12 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - Los comandos complejos con pipes, redirecciones, conectores o saltos de línea no se reescriben.
 - Builds, tests e instalaciones conservan ejecución ilimitada cuando `timeout_seconds` se omite.
 - La versión central quedó en `0.2.2` para publicar esta corrección.
+
+
+## 115 · Compatibilidad de argumentos de `str_replace` y versión 0.2.3
+
+- El schema exige `path` más un par completo `old`/`new`, o un `edits[]` no vacío; `old` declara `minLength: 1` para impedir llamadas formadas sólo por la ruta.
+- El runtime acepta vocabularios habituales de otros agentes, incluidos `old_string`/`new_string`, `oldText`/`newText`, `search_string`/`replace_string` y variantes equivalentes, tanto en el par simple como dentro de `edits[]`.
+- La TUI usa los mismos alias para mostrar el diff real en lugar de un panel `+0`, y la compactación histórica reconoce esos campos para no reenviar cuerpos grandes.
+- Omitir el campo de reemplazo se rechaza sin modificar el archivo; una eliminación requiere una cadena vacía explícita.
+- La versión central quedó en `0.2.3` para publicar la corrección.

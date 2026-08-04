@@ -74,3 +74,15 @@ func TestAppendCodeIntelSystemProfileStaysOutOfUserTurn(t *testing.T) {
 		t.Fatalf("code-intelligence profile leaked into the user turn: %q", got[0].Content)
 	}
 }
+
+func TestCompactToolArgumentsCompactsCompatibleStrReplaceAliases(t *testing.T) {
+	large := strings.Repeat("target-line-", 800)
+	raw := `{"path":"a.go","old_string":"` + large + `","new_string":"` + large + ` updated"}`
+	got := compactToolArguments(raw)
+	if len(got) >= len(raw) {
+		t.Fatalf("compatible str_replace arguments were not compacted: got=%d raw=%d", len(got), len(raw))
+	}
+	if strings.Contains(got, large) || !strings.Contains(got, "older tool input compacted") {
+		t.Fatalf("unexpected compacted arguments: %s", got)
+	}
+}

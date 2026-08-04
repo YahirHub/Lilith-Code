@@ -168,6 +168,8 @@ func TestSystemPromptKeepsStableToolGuidanceAcrossLazyToolSets(t *testing.T) {
 	}
 	for _, want := range []string{
 		"validate against the current on-disk file",
+		"always send path plus both old and new",
+		"old must never be empty",
 		"Use write_file for complete generated documents",
 		"Use append_file for long reports",
 		"FILE_EXISTS, OVERWRITE_REQUIRED, USE_CREATE_FILE and WRITE_BLOCKED",
