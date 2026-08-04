@@ -124,12 +124,13 @@ def simulate_termux(installer: Path, repo: Path, root: Path) -> None:
         "#!/bin/sh\n"
         f"printf '%s\\n' \"$*\" >> '{pkg_log}'\n",
     )
+    git_log = root / "git.log"
     write_executable(
         fakebin / "git",
         "#!/bin/sh\n"
         f"fixture='{source_fixture}'\n"
+        f"printf '%s\\n' \"$*\" >> '{git_log}'\n"
         "case \"${1:-}\" in\n"
-        f"  ls-remote) printf '0123456789abcdef\\trefs/tags/v{CURRENT_VERSION}\\n';;\n"
         "  clone)\n"
         "    for last do :; done\n"
         "    mkdir -p \"$last\"\n"
@@ -183,6 +184,18 @@ def simulate_termux(installer: Path, repo: Path, root: Path) -> None:
         raise AssertionError("Termux installer must not edit .bashrc")
     if "-tags=grammar_set_core" not in go_log.read_text(encoding="utf-8"):
         raise AssertionError("Termux build did not embed the core grammar set")
+    git_invocations = git_log.read_text(encoding="utf-8").splitlines()
+    clone_invocations = [line for line in git_invocations if line.startswith("clone ")]
+    if len(clone_invocations) != 1:
+        raise AssertionError(f"Termux installer must perform one clone: {git_invocations!r}")
+    clone = clone_invocations[0]
+    for required in ("--depth 1", "--single-branch", "--no-tags"):
+        if required not in clone:
+            raise AssertionError(f"Termux shallow clone is missing {required}: {clone!r}")
+    if "--branch" in clone or any(line.startswith("ls-remote ") for line in git_invocations):
+        raise AssertionError(f"Termux installer must not resolve or pin tags/branches: {git_invocations!r}")
+    if "Clonando la versión más reciente de Lilith" not in output:
+        raise AssertionError("installer did not clone the repository default branch")
     if "Compilando con Go de Termux" not in output:
         raise AssertionError("installer did not use its native Termux build branch")
 

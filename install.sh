@@ -46,21 +46,8 @@ if [ "$is_termux" -eq 1 ]; then
   need go
 
   repository_url="${LI_TERMUX_REPOSITORY_URL:-https://github.com/$REPOSITORY.git}"
-  if [ "$REQUESTED_VERSION" = "latest" ]; then
-    ref="$(git ls-remote --refs --tags "$repository_url" 'refs/tags/v*' 2>/dev/null | awk '{sub("refs/tags/", "", $2); print $2}' | sort -V | tail -n 1)"
-    if [ -z "$ref" ]; then
-      ref="${LI_REPOSITORY_REF:-main}"
-      display_version="$ref"
-    else
-      display_version="$ref"
-    fi
-  else
-    case "$REQUESTED_VERSION" in v*) ref="$REQUESTED_VERSION" ;; *) ref="v$REQUESTED_VERSION" ;; esac
-    display_version="$ref"
-  fi
-
-  say "Clonando Lilith $display_version..."
-  git clone --depth 1 --branch "$ref" "$repository_url" "$tmp/source"
+  say "Clonando la versión más reciente de Lilith..."
+  git clone --depth 1 --single-branch --no-tags "$repository_url" "$tmp/source"
   commit="$(git -C "$tmp/source" rev-parse --short HEAD 2>/dev/null || printf 'none')"
   say "Compilando con Go de Termux..."
   (

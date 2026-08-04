@@ -34,7 +34,7 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 
 - El binario principal debe seguir siendo compatible con `CGO_ENABLED=0`.
 - Los builds de Lilith deben incluir `-tags=grammar_set_core`; las gramáticas de `gotreesitter` permanecen comprimidas y embebidas. No usar `grammar_blobs_external`, CGO ni archivos WASM/gramáticas externos en runtime.
-- Termux ARM64 se instala compilando nativamente desde el repositorio con Go de Termux; no publicar ni instalar un binario Android no verificado.
+- Termux ARM64 se instala compilando nativamente desde el último commit de la rama predeterminada. El instalador debe usar clon superficial (`--depth 1 --single-branch --no-tags`), sin resolver ni fijar tags/commits y sin publicar un binario Android no verificado.
 - En Termux usar `$PREFIX`, `$HOME`, `PATH` y `pkg`. No asumir `/bin/sh`, `/usr/local/bin`, `sudo`, systemd, glibc ni root.
 - Go objetivo: 1.24 o superior.
 - `tview` controla el runtime físico; la UI visible se construye con los componentes internos de Lilith.

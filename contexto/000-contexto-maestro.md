@@ -17,7 +17,7 @@ El proyecto conserva un diseño inspirado en agentes de terminal modernos, pero 
 - `rivo/uniseg` para ancho Unicode.
 - Cobra para la CLI.
 - Binario objetivo con `CGO_ENABLED=0`.
-- Termux ARM64 se instala desde `install.sh`: usa `pkg`, clona el tag estable y compila `cmd/li` nativamente; no se publica un asset Android no verificado.
+- Termux ARM64 se instala desde `install.sh`: usa `pkg`, clona sólo el último commit de la rama predeterminada con `--depth 1 --single-branch --no-tags` y compila `cmd/li` nativamente; no se fija tag ni se publica un asset Android no verificado.
 
 No quedan dependencias de Bubble Tea, Bubbles, Lip Gloss, Glamour ni otros módulos Charmbracelet. No deben reintroducirse.
 

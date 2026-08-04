@@ -22,11 +22,11 @@ Versión concreta:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh -o install.sh
-sh install.sh 0.2.0
+sh install.sh 0.2.1
 rm install.sh
 ```
 
-También se puede usar `LI_VERSION=v0.2.0` o `LI_REPOSITORY` para un fork.
+También se puede usar `LI_VERSION=v0.2.1` o `LI_REPOSITORY` para un fork.
 
 ## Termux en Android
 
@@ -40,20 +40,15 @@ curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.s
 En Termux no se descarga un binario Android del release. El instalador:
 
 1. instala o actualiza `git`, `golang` y `ripgrep` mediante `pkg`;
-2. detecta el último tag estable, o la versión indicada con `LI_VERSION`;
-3. clona el repositorio en `$HOME/.local/share/lilith/source`;
+2. clona únicamente el último commit de la rama predeterminada del repositorio;
+3. no descarga tags ni el historial completo;
 4. compila `./cmd/li` nativamente con Go de Termux;
 5. reemplaza de forma segura `$PREFIX/bin/li`.
 
-El código fuente conservado permite repetir una actualización y facilita el
-diagnóstico. Puede cambiarse su destino con `LI_TERMUX_SOURCE_DIR`.
-
-Versión concreta:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh | \
-  LI_VERSION=0.2.0 sh
-```
+El clon superficial se conserva en `$HOME/.local/share/lilith/source` para
+facilitar diagnóstico y actualizaciones. Puede cambiarse su destino con
+`LI_TERMUX_SOURCE_DIR`. En Termux no se fija `LI_VERSION`: cada ejecución
+compila el código más reciente publicado en la rama predeterminada.
 
 El runtime corrige además el argumento ejecutable duplicado que Android puede
 introducir al lanzar programas Go; sin esa normalización Cobra interpretaría la
@@ -74,7 +69,7 @@ directorio al `PATH` persistente del usuario y también a la sesión actual.
 Versión concreta:
 
 ```powershell
-$env:LI_VERSION = '0.2.0'
+$env:LI_VERSION = '0.2.1'
 irm https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.ps1 | iex
 ```
 
@@ -90,7 +85,7 @@ install.cmd
 Versión concreta:
 
 ```cmd
-install.cmd 0.2.0
+install.cmd 0.2.1
 ```
 
 ## Primer arranque
@@ -106,8 +101,8 @@ Después puede volver a esa pantalla con `/login`.
 ## Actualizar
 
 Vuelve a ejecutar el mismo comando de instalación. Linux y Windows reemplazan
-el ejecutable usando el release solicitado; Termux vuelve a clonar el tag y lo
-compila nativamente.
+el ejecutable usando el release solicitado; Termux vuelve a clonar únicamente
+el último commit de la rama predeterminada y lo compila nativamente.
 
 ```bash
 li version
