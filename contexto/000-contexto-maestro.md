@@ -215,6 +215,14 @@ se compacta el cuerpo rechazado y se devuelve `OVERWRITE_REQUIRED` sin tocar dis
 - la salida y el panel TUI muestran la shell realmente usada, y las redirecciones nulas se adaptan a `$null`, `NUL` o `/dev/null`.
 - antes de un comando PowerShell se fuerza UTF-8 sin BOM en `[Console]::OutputEncoding` y `$OutputEncoding`; el comando solicitado queda al final para conservar stdout/stderr Unicode y su exit code.
 
+
+## 10 quinquies. Documentación pública y referencia técnica
+
+- `README.md` presenta Lilith desde la perspectiva del usuario e incluye capturas reales bajo `docs/images/`.
+- Las pantallas se documentan mediante tablas HTML con descripciones funcionales, sin mezclar detalles internos.
+- `install.md` concentra instalación, compilación, pruebas, releases y explicaciones técnicas del runtime.
+- Las rutas de imágenes deben ser relativas al repositorio para que GitHub y el ZIP completo las rendericen sin servicios externos.
+
 ## 11. Persistencia y seguridad
 
 - Directorios y archivos sensibles usan permisos restrictivos.
@@ -280,3 +288,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `107-auditoria-orquestador-y-agentes.md`
 - `108-integridad-modulos-y-tests-windows.md`
 - `109-estabilizar-prueba-cancelacion-anidada-windows.md`
+- `110-documentacion-visual-y-unificacion-historial.md`

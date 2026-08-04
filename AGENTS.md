@@ -188,3 +188,9 @@ En pruebas concurrentes, señalizar el estado observado de forma síncrona en la
 - Cada cambio importante debe añadir o actualizar un MD numerado en `contexto/`.
 - No inventar URLs, repositorios, resultados de pruebas ni compatibilidad no ejecutada.
 - Entregar el proyecto completo con `.git` cuando el usuario trabaje reemplazando su copia mediante ZIP.
+
+### Documentación pública
+
+- `README.md` debe explicar qué puede hacer Lilith desde la perspectiva del usuario. Evitar allí detalles internos extensos de paquetes, locks, checksums, persistencia o implementación.
+- `install.md` concentra instalación, compilación, pruebas, releases y referencia técnica del runtime.
+- Las capturas públicas viven en `docs/images/` con nombres estables. Cuando se presenten varias pantallas, usar tablas HTML legibles con descripciones funcionales y texto alternativo; no enlazar imágenes desde rutas temporales externas.

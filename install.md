@@ -1,4 +1,4 @@
-# Instalación de Lilith
+# Instalación y referencia técnica de Lilith
 
 Los instaladores se descargan directamente desde la rama `main`. Esto permite
 corregir `install.sh`, `install.ps1` o `install.cmd` sin volver a compilar ni
@@ -133,3 +133,132 @@ CGO_ENABLED=0 go build -tags=grammar_set_core -trimpath -o li ./cmd/li
 
 `cmd/build` genera los binarios de release para Linux y Windows. Termux se
 compila en el propio dispositivo mediante `install.sh`.
+
+## Pruebas locales
+
+Desde CMD o PowerShell en Windows:
+
+```cmd
+test.cmd
+```
+
+Para ejecutar también `go vet`:
+
+```cmd
+test.cmd -Vet
+```
+
+El helper ejecuta estas validaciones:
+
+```bash
+go mod tidy -diff
+go test -mod=readonly -tags=grammar_set_core -count=1 -timeout=15m ./...
+go mod verify
+```
+
+No debe ejecutarse `go mod download all`: esa orden recorre módulos que no
+participan en la compilación y puede fallar por dependencias de herramientas o
+tests pertenecientes a terceros.
+
+Si Windows no puede resolver `sum.golang.org`, `test.cmd` prueba temporalmente
+`sum.golang.google.cn`, alias reconocido por Go para la misma base de checksums.
+Nunca desactiva `GOSUMDB` ni cambia la configuración global de Go.
+
+La regresión de cancelación anidada puede repetirse de manera aislada:
+
+```cmd
+go test -mod=readonly -tags=grammar_set_core -count=10 -run "^TestCancelParentTearsDownNestedAgentTree$" ./internal/subagents
+```
+
+## Skills y carga de instrucciones
+
+Lilith usa un único loader para skills embebidas, globales y específicas del
+proyecto. La precedencia es:
+
+```text
+proyecto > usuario > embebida
+```
+
+`SkillsEnabled` controla toda la infraestructura y `DisabledSkills` conserva las
+excepciones individuales por nombre. Una skill desactivada no se ofrece en la
+activación automática, la paleta, los agentes ni la invocación manual.
+
+La skill embebida `ponytail-development` se distribuye mediante `go:embed` y su
+contenido completo sólo se carga cuando la tarea coincide o se invoca
+explícitamente.
+
+## Orquestador y subagentes
+
+Las invocaciones `Agent`, `Task`, `task` y `agent` convergen en el mismo runtime.
+Un lote compuesto sólo por agentes puede ejecutarse en paralelo, pero los
+resultados regresan al proveedor en el orden original.
+
+La cancelación se hereda por todo el árbol. `/clear`, el cambio de sesión y la
+salida cancelan el trabajo background de la conversación anterior. Los eventos
+incluyen una generación de sesión para impedir que una finalización atrasada se
+muestre en otro chat.
+
+Las tareas background producen un evento terminal incluso si fallan antes de
+crear la sesión hija. Sus finalizaciones se persisten y se entregan una sola vez
+al agente padre antes de la siguiente solicitud del usuario.
+
+La reanudación por `task_id` utiliza el provider, modelo y worktree guardados. Si
+alguno ya no existe, la reanudación falla explícitamente en lugar de cambiar al
+modelo actual o trabajar sobre el checkout principal.
+
+## Inteligencia de código
+
+`internal/codeintel` es independiente de la TUI y se comparte entre el agente
+principal y los subagentes cuando trabajan sobre la misma raíz.
+
+El motor mantiene un índice incremental fuera del repositorio, bajo
+`~/.li/codeintel/`, utiliza Tree-sitter en Go puro con el conjunto Core100
+embebido y agrega una capa `go/ast` para proyectos Go. LSP y SCIP son mejoras
+opcionales: sólo se usan cuando sus ejecutables o índices ya existen.
+
+Las herramientas disponibles incluyen estado, símbolos, referencias, grafo,
+contexto, búsqueda semántica, SCIP, validación y formato validado.
+
+## Escritura segura de archivos
+
+`write_file` y `append_file` reciben contenido estructurado y no lo convierten en
+heredocs, `printf`, here-strings ni comandos de shell.
+
+Las escrituras completas se crean en un temporal del mismo directorio, se
+sincronizan, verifican y publican mediante reemplazo atómico. Una cancelación no
+puede dejar el destino truncado.
+
+Límites actuales:
+
+- `write_file`: hasta 1 MiB por llamada;
+- `append_file`: hasta 1 MiB por sección y 64 MiB para el archivo final;
+- reemplazar un archivo existente requiere `overwrite=true`;
+- `expected_sha256` permite detectar cambios ocurridos desde la lectura previa.
+
+## Ejecución de comandos y shells
+
+`run_terminal_command` acepta `shell=auto|powershell|cmd|bash|sh`.
+
+En Windows, el modo automático usa PowerShell para comandos neutrales, CMD para
+sintaxis CMD y Bash/sh para sintaxis POSIX cuando está disponible. En Linux,
+macOS y Termux se prefiere Bash y se usa `sh` como respaldo.
+
+PowerShell se configura como UTF-8 sin BOM antes de ejecutar el comando para
+conservar acentos y emojis. La sentencia solicitada permanece al final para no
+alterar el código de salida.
+
+La herramienta rechaza heredocs incompletos y escrituras inline demasiado
+largas antes de iniciar el proceso.
+
+## Releases
+
+La versión se define en `internal/version/version.go`. Para publicar una nueva
+versión:
+
+1. cambia `version.Current`;
+2. crea el commit correspondiente;
+3. ejecuta manualmente **Publicar release** desde GitHub Actions.
+
+Cada runner valida `go mod tidy -diff`, ejecuta las pruebas con
+`-mod=readonly`, verifica módulos con `go mod verify`, compila mediante
+`cmd/build` y genera los checksums de los binarios.
