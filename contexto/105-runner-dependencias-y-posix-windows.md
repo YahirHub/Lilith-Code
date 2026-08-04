@@ -1,5 +1,7 @@
 # 105 — Runner de dependencias y sintaxis POSIX en Windows
 
+> Nota posterior: la estrategia `go mod download all` fue reemplazada por la validación documentada en `108-integridad-modulos-y-tests-windows.md`, después de comprobar que descargaba módulos ajenos y no corregía un `go.sum` incompleto en el repositorio.
+
 ## Fallos observados
 
 El job Windows del workflow manual fallaba por dos causas independientes:

@@ -96,13 +96,99 @@ func StartBackground(cfg Config, req tools.AgentRequest) (tools.AgentResult, err
 		taskID = req.AllocatedTaskID
 	}
 	req.Background = true
+
+	// Reserve the task id before returning it to the caller. Otherwise two
+	// detached resumes can both report "running" and the loser may later emit a
+	// failed event with the same task id, corrupting the live panel of the winner.
+	var releaseTask func()
+	taskLeaseHeld := false
+	if strings.TrimSpace(cfg.Root) != "" {
+		storeProject := strings.TrimSpace(cfg.StoreProject)
+		if storeProject == "" {
+			storeProject = cfg.Root
+		}
+		var acquireErr error
+		releaseTask, acquireErr = newChildStore(cfg.ConfigDir, storeProject).acquire(taskID)
+		if acquireErr != nil {
+			return tools.AgentResult{}, acquireErr
+		}
+		taskLeaseHeld = true
+	}
+
+	// Run can fail before it creates/persists the child (model resolution,
+	// worktree setup, MCP startup, hooks, etc.). A detached caller has already
+	// received a task id at that point, so guarantee one terminal lifecycle
+	// event instead of leaving the parent panel stuck in "running" forever.
+	originalEvents := cfg.Events
+	var terminalMu sync.Mutex
+	terminalSeen := false
+	cfg.Events = func(event Event) {
+		if event.TaskID == taskID && IsTerminalEvent(event.Kind) {
+			terminalMu.Lock()
+			terminalSeen = true
+			terminalMu.Unlock()
+		}
+		if originalEvents != nil {
+			originalEvents(event)
+		}
+	}
 	go func() {
-		_, _ = Run(ctx, cfg, req)
+		if releaseTask != nil {
+			defer releaseTask()
+		}
+		_, runErr := run(ctx, cfg, req, taskLeaseHeld)
+		if runErr == nil {
+			return
+		}
+		terminalMu.Lock()
+		alreadyTerminal := terminalSeen
+		if !alreadyTerminal {
+			terminalSeen = true
+		}
+		terminalMu.Unlock()
+		if alreadyTerminal {
+			return
+		}
+		depth := cfg.Depth
+		if depth <= 0 {
+			depth = 1
+		}
+		kind := EventFailed
+		if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
+			kind = EventCanceled
+		}
+		if originalEvents != nil {
+			originalEvents(Event{
+				Kind: kind, TaskID: taskID, ParentTaskID: cfg.ParentTaskID,
+				AgentName: req.Agent.Name, Description: req.Description, Depth: depth,
+				Resumed: strings.TrimSpace(req.TaskID) != "", Background: true,
+				Content: runErr.Error(), At: timeNow(),
+			})
+		}
 	}()
 	return tools.AgentResult{TaskID: taskID, AgentName: req.Agent.Name, Text: "Subagente iniciado en background. El resultado llegará como notificación cuando termine.", Background: true, Resumed: strings.TrimSpace(req.TaskID) != ""}, nil
 }
 
+// Dispatch applies the host's background policy consistently. When detached
+// tasks are disabled, the request becomes a true foreground run: it uses
+// foreground permissions, emits foreground events and returns the final text.
+func Dispatch(ctx context.Context, cfg Config, req tools.AgentRequest, allowBackground bool) (tools.AgentResult, error) {
+	if req.Background && allowBackground {
+		return StartBackground(cfg, req)
+	}
+	req.Background = false
+	return Run(ctx, cfg, req)
+}
+
+func IsTerminalEvent(kind EventKind) bool {
+	return kind == EventCompleted || kind == EventFailed || kind == EventCanceled
+}
+
 func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentResult, error) {
+	return run(ctx, cfg, req, false)
+}
+
+func run(ctx context.Context, cfg Config, req tools.AgentRequest, taskLeaseHeld bool) (result tools.AgentResult, runErr error) {
 	if cfg.Client == nil {
 		return tools.AgentResult{}, errors.New("subagent client unavailable")
 	}
@@ -120,10 +206,9 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 		storeProject = cfg.Root
 	}
 	originalRoot := cfg.Root
-	provider, model, err := resolveModel(cfg.Providers, cfg.ParentProviderID, cfg.ParentModelID, req.Agent.Model, req.Model)
-	if err != nil {
-		return tools.AgentResult{}, err
-	}
+	var provider providers.Provider
+	var model string
+	var err error
 
 	settings, _ := config.Load(cfg.ConfigDir)
 	projectTrusted := config.IsProjectTrusted(settings, originalRoot)
@@ -160,6 +245,13 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 	resumed := false
 	var child *childSession
 	if strings.TrimSpace(req.TaskID) != "" {
+		if !taskLeaseHeld {
+			releaseTask, acquireErr := store.acquire(req.TaskID)
+			if acquireErr != nil {
+				return tools.AgentResult{}, acquireErr
+			}
+			defer releaseTask()
+		}
 		child, err = store.load(req.TaskID)
 		if err != nil {
 			return tools.AgentResult{}, fmt.Errorf("resume subagent %s: %w", req.TaskID, err)
@@ -171,29 +263,49 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 			return tools.AgentResult{}, fmt.Errorf("task %s belongs to a different project", child.ID)
 		}
 		if strings.TrimSpace(child.WorktreeRoot) != "" {
-			if info, statErr := os.Stat(child.WorktreeRoot); statErr == nil && info.IsDir() {
-				cfg.Root = child.WorktreeRoot
+			info, statErr := os.Stat(child.WorktreeRoot)
+			if statErr != nil || !info.IsDir() {
+				if statErr == nil {
+					statErr = errors.New("path is not a directory")
+				}
+				return tools.AgentResult{}, fmt.Errorf("task %s worktree is unavailable: %s: %w", child.ID, child.WorktreeRoot, statErr)
 			}
+			cfg.Root = child.WorktreeRoot
 		}
+		providerFromStore := cfg.Providers.FindProvider(strings.TrimSpace(child.ProviderID))
+		if providerFromStore == nil {
+			return tools.AgentResult{}, fmt.Errorf("task %s provider %q is no longer configured", child.ID, child.ProviderID)
+		}
+		model = strings.TrimSpace(child.ModelID)
+		if model == "" {
+			return tools.AgentResult{}, fmt.Errorf("task %s has no persisted model", child.ID)
+		}
+		provider = *providerFromStore
 		resumed = true
 		child.ParentTaskID = cfg.ParentTaskID
 		child.Description = req.Description
 		child.Depth = depth
 		child.Status = "running"
 		child.FinishedAt = time.Time{}
-		providerFromStore := cfg.Providers.FindProvider(child.ProviderID)
-		if providerFromStore != nil {
-			provider = *providerFromStore
-			model = child.ModelID
-		}
 		ci := codeIntelForConfig(cfg)
 		child.Messages = mergeCodeIntelSystemMessage(child.Messages, ci.PromptBlock())
 		child.Messages = append(child.Messages, openai.Message{Role: "user", Content: req.Prompt})
 	} else {
+		provider, model, err = resolveModel(cfg.Providers, cfg.ParentProviderID, cfg.ParentModelID, req.Agent.Model, req.Model)
+		if err != nil {
+			return tools.AgentResult{}, err
+		}
 		now := timeNow()
 		taskID := strings.TrimSpace(req.AllocatedTaskID)
 		if taskID == "" {
 			taskID = newTaskID()
+		}
+		if !taskLeaseHeld {
+			releaseTask, acquireErr := store.acquire(taskID)
+			if acquireErr != nil {
+				return tools.AgentResult{}, acquireErr
+			}
+			defer releaseTask()
 		}
 		worktreeRoot := ""
 		worktreeCustom := false
@@ -381,10 +493,7 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 			nested.Depth = depth + 1
 			nested.MaxDepth = maxDepth
 			nested.ParentTaskID = child.ID
-			if childReq.Background && backgroundTasksEnabled() {
-				return StartBackground(nested, childReq)
-			}
-			return Run(childCtx, nested, childReq)
+			return Dispatch(childCtx, nested, childReq, backgroundTasksEnabled())
 		}
 	}
 	env.ToolVisible = func(name string, def tools.Definition) bool { return policy.visible(name, def) }
@@ -418,10 +527,32 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 	}
 	if hookRunner.Count() > 0 {
 		input := map[string]any{"session_id": child.ID, "cwd": cfg.Root, "hook_event_name": "SubagentStart", "agent_type": req.Agent.Name}
-		if res, hookErr := hookRunner.Run(ctx, "SubagentStart", req.Agent.Name, input); hookErr != nil {
+		res, hookErr := hookRunner.Run(ctx, "SubagentStart", req.Agent.Name, input)
+		if hookErr == nil && res.Blocked {
+			hookErr = fmt.Errorf("subagent blocked by hook: %s", res.Reason)
+		}
+		if hookErr != nil {
+			child.Status = "failed"
+			child.FinishedAt = timeNow()
+			_ = store.save(child)
+			emit(cfg, Event{Kind: EventFailed, TaskID: child.ID, ParentTaskID: cfg.ParentTaskID, AgentName: req.Agent.Name, Description: req.Description, Model: model, Depth: depth, Resumed: resumed, Background: req.Background, Content: hookErr.Error(), At: child.FinishedAt})
 			return tools.AgentResult{}, hookErr
-		} else if res.Blocked {
-			return tools.AgentResult{}, fmt.Errorf("subagent blocked by hook: %s", res.Reason)
+		}
+	}
+	// From EventStarted onward every exit path must publish one terminal event.
+	// Most branches emit an exact lifecycle state themselves; this guard covers
+	// infrastructure failures such as a persistence error after a tool round.
+	originalEvents := cfg.Events
+	var lifecycleMu sync.Mutex
+	terminalSeen := false
+	cfg.Events = func(event Event) {
+		if event.TaskID == child.ID && IsTerminalEvent(event.Kind) {
+			lifecycleMu.Lock()
+			terminalSeen = true
+			lifecycleMu.Unlock()
+		}
+		if originalEvents != nil {
+			originalEvents(event)
 		}
 	}
 	emit(cfg, Event{
@@ -435,6 +566,36 @@ func Run(ctx context.Context, cfg Config, req tools.AgentRequest) (tools.AgentRe
 		}
 		input := map[string]any{"session_id": child.ID, "cwd": cfg.Root, "hook_event_name": "SubagentStop", "agent_type": req.Agent.Name, "status": child.Status}
 		_, _ = hookRunner.Run(context.Background(), "SubagentStop", req.Agent.Name, input)
+	}()
+	defer func() {
+		if runErr == nil {
+			return
+		}
+		lifecycleMu.Lock()
+		alreadyTerminal := terminalSeen
+		if !alreadyTerminal {
+			terminalSeen = true
+		}
+		lifecycleMu.Unlock()
+		if alreadyTerminal {
+			return
+		}
+		kind := EventFailed
+		child.Status = "failed"
+		if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			kind = EventCanceled
+			child.Status = "killed"
+		}
+		child.FinishedAt = timeNow()
+		_ = store.save(child)
+		if originalEvents != nil {
+			originalEvents(Event{
+				Kind: kind, TaskID: child.ID, ParentTaskID: cfg.ParentTaskID,
+				AgentName: req.Agent.Name, Description: req.Description, Model: model,
+				Depth: depth, Resumed: resumed, Background: req.Background,
+				Content: runErr.Error(), At: child.FinishedAt,
+			})
+		}
 	}()
 
 	turns := 0

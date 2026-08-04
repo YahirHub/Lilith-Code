@@ -67,7 +67,7 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - `run_terminal_command` debe rechazar antes de ejecutar heredocs incompletos y escrituras inline demasiado largas. El rechazo debe garantizar que no se creó un archivo parcial y orientar a `write_file`/`append_file`.
 - En Windows, `run_terminal_command` usa PowerShell para comandos neutrales, CMD para sintaxis CMD y Bash/sh sólo para sintaxis POSIX; las asignaciones `VAR=value` deben detectarse tanto antes de un comando como antes de `;`, salto de línea o fin de entrada. En Linux/macOS/Termux usa Bash/sh. No ejecutar silenciosamente un comando con una shell incompatible. El parámetro `shell` permite selección explícita.
 - Toda ejecución PowerShell debe forzar UTF-8 sin BOM en `[Console]::OutputEncoding` y `$OutputEncoding` antes del comando. El comando del usuario debe quedar al final para preservar su exit code; no anexar restauraciones u otras sentencias después.
-- Los jobs de GitHub Actions que compilan o prueban con gramáticas deben ejecutar `go mod download all` y `go mod verify` antes de `go test -mod=readonly`; `go mod download` sin `all` puede descargar sólo archivos `go.mod` bajo carga perezosa y dejar ausente el checksum del ZIP.
+- Toda dependencia directa debe llegar con sus checksums de contenido y `go.mod` versionados en `go.sum`. CI ejecuta `go mod tidy -diff`, después pruebas con `-mod=readonly` y finalmente `go mod verify`; no usar `go mod download all`, porque amplía innecesariamente las descargas a módulos ajenos a la compilación. Nunca desactivar `GOSUMDB` para ocultar errores de integridad.
 - `write_file` acepta como máximo 1 MiB por llamada. `append_file` acepta 1 MiB por sección, no agrega saltos de línea y el archivo final se limita a 64 MiB; estas reglas deben permanecer visibles en schema, prompt y resultado.
 
 ### Skills
@@ -77,6 +77,18 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - `SkillsEnabled` es el interruptor maestro. `DisabledSkills` sólo guarda excepciones por nombre, normalizadas en minúsculas; una skill nueva debe quedar habilitada por defecto.
 - Una skill desactivada individualmente no puede aparecer en activación automática, paleta, agentes ni invocación manual. El catálogo crudo debe seguir disponible en `/config > Skills` para poder reactivarla.
 - La precedencia continúa siendo proyecto > usuario > embebida por `name`; desactivar un nombre afecta a la implementación efectiva que gane esa precedencia.
+
+### Orquestador y subagentes
+
+- `Agent`, `Task`, `task` y `agent` deben converger en el mismo contrato; no crear runtimes paralelos para invocación manual, tool calls o agentes anidados.
+- Un lote compuesto sólo por llamadas `Agent` puede ejecutarse concurrentemente, pero los mensajes `tool` deben conservar el orden de las llamadas originales. Hooks y checkpoints mutables deben serializar sus fronteras.
+- El árbol de agentes hereda cancelación: cancelar el padre detiene hijos anidados; `/clear`, cambiar de sesión y salir cancelan todo background de la sesión anterior. Los eventos de una generación anterior nunca pueden entrar al chat nuevo.
+- Todo agente background debe producir exactamente un evento terminal visible aunque falle antes de crear la sesión hija. Sus finalizaciones se persisten y se entregan una sola vez al modelo padre en la siguiente solicitud, antes del prompt actual del usuario.
+- Si `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, una solicitud marcada background debe convertirse por completo a foreground: permisos, eventos y resultado final; no basta con esperar el mismo worker con política background.
+- Reanudar mediante `task_id` usa el provider/modelo guardados en la sesión hija. Si el provider desapareció, el modelo está vacío o el worktree ya no existe, fallar explícitamente; nunca heredar silenciosamente la selección actual ni volver al checkout principal.
+- Una sesión hija no puede ejecutarse o reanudarse dos veces simultáneamente dentro del proceso. La persistencia usa temporales únicos, permisos restrictivos, `Sync` y reemplazo; no compartir un nombre `.tmp` entre workers.
+- El perfil `<code_intelligence>` de un subagente debe contener exactamente un bloque de apertura/cierre y permanecer en el mensaje de sistema.
+- Los eventos terminales son idempotentes en la TUI: un replay no duplica errores, salida ni notificaciones.
 
 ### Proveedores y modelos
 
@@ -166,6 +178,8 @@ GOOS=android GOARCH=arm64 CGO_ENABLED=0 go test -tags=grammar_set_core ./cmd/li
 ```
 
 También probar manualmente la ruta o pantalla afectada en Windows Terminal y Linux cuando cambie la TUI. Para cambios de Termux, validar instalación limpia, actualización y teclado en un dispositivo Android ARM64 real.
+
+En pruebas concurrentes, señalizar el estado observado de forma síncrona en la frontera real (por ejemplo, al entrar a `Stream`), no desde una goroutine auxiliar cuya planificación dependa del sistema operativo. Separar los límites de arranque y cancelación, y detectar la terminación prematura para que un timeout no oculte el error original.
 
 ## Commits y documentación
 

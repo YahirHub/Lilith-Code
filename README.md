@@ -57,6 +57,38 @@ embebida. Una skill desactivada desaparece de la activación automática, la
 paleta, los agentes y la invocación manual, sin afectar las demás.
 
 
+## Orquestador y subagentes
+
+Lilith puede delegar tareas aisladas mediante la herramienta `Agent`, llamadas
+`@agente` o agentes compatibles con Claude/OpenCode. Las definiciones se
+descubren con precedencia proyecto > usuario > embebidas; el agente padre sólo
+recibe nombre y descripción, mientras el prompt completo se carga dentro del
+contexto hijo.
+
+El runtime mantiene estas garantías:
+
+- varias llamadas `Agent` independientes emitidas en el mismo lote se ejecutan
+  en paralelo, pero sus resultados regresan al proveedor en el orden original;
+- los hijos pueden delegar otros agentes hasta el límite de profundidad
+  configurado y toda la rama comparte cancelación;
+- una tarea foreground devuelve su resultado final y una tarea background
+  devuelve inmediatamente un `task_id`; si background está desactivado, la
+  misma solicitud usa semántica y permisos foreground completos;
+- las finalizaciones background se guardan en la sesión y se entregan una sola
+  vez al agente padre antes de su siguiente solicitud, sin desplazar el prompt
+  actual del usuario;
+- `/clear`, cambiar de sesión y salir cancelan el árbol background anterior y
+  descartan eventos atrasados para que no contaminen otra conversación;
+- `task_id` reanuda con el proveedor/modelo persistidos. Un worktree eliminado
+  provoca un error explícito: nunca se continúa silenciosamente sobre el
+  checkout principal;
+- una misma tarea no puede reanudarse concurrentemente dentro del proceso y su
+  estado se publica mediante temporales únicos antes del reemplazo.
+
+Los workflows de release prueban agentes, orquestación, restauración y TUI en
+Windows, además de ejecutar el runtime de agentes con `-race` en Linux.
+
+
 ## Inteligencia de código estática
 
 Lilith incorpora `internal/codeintel`, compartido por el agente principal y los
@@ -200,13 +232,47 @@ Windows descargan el binario del release y verifican SHA-256. Termux instala
 evitar incompatibilidades del ejecutable Android precompilado. Consulta
 [`install.md`](./install.md) para más opciones.
 
+## Pruebas locales
+
+Desde CMD en Windows ejecuta:
+
+```cmd
+test.cmd
+```
+
+El helper valida primero que `go.mod` y `go.sum` estén completos, ejecuta toda
+la suite con las gramáticas Core100 embebidas y verifica los módulos
+descargados. Para incluir `go vet`:
+
+```cmd
+test.cmd -Vet
+```
+
+También puede ejecutarse directamente sin el helper:
+
+```bash
+go mod tidy -diff
+go test -mod=readonly -tags=grammar_set_core -count=1 -timeout=15m ./...
+go mod verify
+```
+
+No es necesario ejecutar `go mod download all`: esa orden recorre módulos que
+no participan en la compilación y puede fallar por dependencias de herramientas
+o tests pertenecientes a terceros. Si Windows no puede resolver
+`sum.golang.org`, `test.cmd` intenta temporalmente `sum.golang.google.cn`, el
+alias reconocido por Go para la misma base de checksums. Si ninguno resuelve,
+el helper continúa usando el `go.sum` versionado y Go sólo requerirá acceso a la
+base cuando aparezca un checksum nuevo. Nunca desactiva `GOSUMDB` ni modifica
+la configuración global de Go.
+
 ## Releases
 
 La versión se define en `internal/version/version.go`. Para publicar una nueva
 versión, cambia `version.Current`, haz commit y ejecuta manualmente el workflow
-**Publicar release** desde GitHub Actions. Antes de probar, cada runner descarga
-el grafo completo con `go mod download all` y lo verifica, evitando que una
-entrada nueva todavía ausente de `go.sum` bloquee Windows. Después el workflow
+**Publicar release** desde GitHub Actions. Antes de probar, cada runner ejecuta
+`go mod tidy -diff` para rechazar un `go.mod` o `go.sum` incompleto. Las pruebas
+readonly descargan únicamente los módulos que realmente usan y después
+`go mod verify` comprueba su integridad. El workflow
 ejecuta `cmd/build`, genera checksums de los binarios y crea notas agrupadas con
 los commits realizados desde el tag anterior. Los instaladores no se adjuntan al
 release: siempre se descargan directamente desde el repositorio.

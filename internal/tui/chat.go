@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lilith/li/internal/tui/uikit"
@@ -99,13 +100,18 @@ type ChatModel struct {
 	cancel        context.CancelFunc
 	requestCancel context.CancelFunc
 	// sessionCtx outlives individual turns so background subagents can keep
-	// running while the parent is idle. It is canceled only when Lilith exits.
+	// running while the parent is idle. It is canceled when Lilith exits, the
+	// conversation is cleared or another persisted session becomes active.
 	sessionCtx    context.Context
 	sessionCancel context.CancelFunc
-	agentEventCh  chan subagents.Event
-	mcpRuntime    *mcp.Runtime
-	mcpSignature  string
-	mcpLoading    bool
+	// agentGeneration isolates event streams across /clear and session resume.
+	// Background workers from an older session may finish after cancellation;
+	// their captured generation prevents stale events entering the new chat.
+	agentGeneration atomic.Uint64
+	agentEventCh    chan agentEventEnvelope
+	mcpRuntime      *mcp.Runtime
+	mcpSignature    string
+	mcpLoading      bool
 	// Completed detached workers are delivered to the model at the next safe
 	// request boundary, matching Claude's later-turn completion notification.
 	pendingBackgroundAgentMessages []openai.Message
@@ -354,9 +360,14 @@ type manualAgentResultMsg struct {
 // into the TUI state loop. Token/reasoning deltas can be very frequent; batching them
 // keeps parallel workers observable without forcing a full transcript render
 // for every provider chunk.
+type agentEventEnvelope struct {
+	generation uint64
+	event      subagents.Event
+}
+
 type agentEventBatchMsg struct {
-	events []subagents.Event
-	ch     <-chan subagents.Event
+	events []agentEventEnvelope
+	ch     <-chan agentEventEnvelope
 	done   bool
 }
 
@@ -467,7 +478,7 @@ func cmdElapsedTick() uikit.Cmd {
 	return uikit.Tick(time.Second, func(time.Time) uikit.Msg { return cmdElapsedTickMsg{} })
 }
 
-func agentEventPump(ch <-chan subagents.Event) uikit.Cmd {
+func agentEventPump(ch <-chan agentEventEnvelope) uikit.Cmd {
 	if ch == nil {
 		return nil
 	}
@@ -476,7 +487,7 @@ func agentEventPump(ch <-chan subagents.Event) uikit.Cmd {
 		if !ok {
 			return agentEventStreamDoneMsg{}
 		}
-		events := make([]subagents.Event, 0, 32)
+		events := make([]agentEventEnvelope, 0, 32)
 		events = append(events, first)
 		timer := time.NewTimer(35 * time.Millisecond)
 		defer timer.Stop()
@@ -517,31 +528,130 @@ func (m *ChatModel) applyAgentEvent(event subagents.Event) {
 		m.messages = append(m.messages, ChatMessage{Kind: MsgAgent, Agent: panel, Time: event.At})
 	}
 	panel.Apply(event)
-	if event.Background && (event.Kind == subagents.EventCompleted || event.Kind == subagents.EventFailed || event.Kind == subagents.EventCanceled) {
+	if event.Background && subagents.IsTerminalEvent(event.Kind) {
 		status := "completed"
 		if event.Kind == subagents.EventFailed {
 			status = "failed"
 		} else if event.Kind == subagents.EventCanceled {
 			status = "canceled"
 		}
-		content := strings.TrimSpace(event.Content)
-		if content == "" {
-			content = "No textual result."
-		}
-		note := fmt.Sprintf("<background_agent_completion task_id=\"%s\" agent=\"%s\" status=\"%s\">\n%s\n</background_agent_completion>", event.TaskID, event.AgentName, status, content)
-		m.pendingBackgroundAgentMessages = append(m.pendingBackgroundAgentMessages, openai.Message{Role: "user", Content: note})
+		m.queueBackgroundAgentCompletion(event.TaskID, event.AgentName, status, event.Content, event.At)
 	}
 	m.invalidateTranscriptCache()
+}
+
+func backgroundAgentCompletionMessage(taskID, agentName, status, content string, finishedAt time.Time) openai.Message {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		content = "No textual result."
+	}
+	attrs := fmt.Sprintf("task_id=\"%s\" agent=\"%s\" status=\"%s\"", taskID, agentName, status)
+	if !finishedAt.IsZero() {
+		attrs += " finished_at=\"" + finishedAt.UTC().Format(time.RFC3339Nano) + "\""
+	}
+	note := "<background_agent_completion " + attrs + ">\n" + content + "\n</background_agent_completion>"
+	return openai.Message{Role: "user", Content: note}
+}
+
+func backgroundAgentCompletionRecorded(messages []openai.Message, taskID string, finishedAt time.Time) bool {
+	taskMarker := `task_id="` + taskID + `"`
+	finishedMarker := ""
+	if !finishedAt.IsZero() {
+		finishedMarker = `finished_at="` + finishedAt.UTC().Format(time.RFC3339Nano) + `"`
+	}
+	for _, msg := range messages {
+		if !strings.Contains(msg.Content, "<background_agent_completion ") || !strings.Contains(msg.Content, taskMarker) {
+			continue
+		}
+		if finishedMarker == "" || strings.Contains(msg.Content, finishedMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+// migrateLegacyBackgroundAgentCompletion upgrades the pre-finished_at marker
+// in place. That suppresses one duplicate after upgrade without making every
+// later resume of the same task id look already delivered forever.
+func migrateLegacyBackgroundAgentCompletion(messages []openai.Message, taskID string, finishedAt time.Time) bool {
+	if finishedAt.IsZero() {
+		return false
+	}
+	taskMarker := `task_id="` + taskID + `"`
+	finishedAttr := ` finished_at="` + finishedAt.UTC().Format(time.RFC3339Nano) + `"`
+	for i := range messages {
+		content := messages[i].Content
+		if !strings.Contains(content, "<background_agent_completion ") || !strings.Contains(content, taskMarker) || strings.Contains(content, `finished_at="`) {
+			continue
+		}
+		end := strings.Index(content, ">")
+		if end < 0 {
+			continue
+		}
+		messages[i].Content = content[:end] + finishedAttr + content[end:]
+		return true
+	}
+	return false
+}
+
+func (m *ChatModel) queueBackgroundAgentCompletion(taskID, agentName, status, content string, finishedAt time.Time) {
+	if m == nil || strings.TrimSpace(taskID) == "" {
+		return
+	}
+	if backgroundAgentCompletionRecorded(m.history, taskID, finishedAt) || backgroundAgentCompletionRecorded(m.pendingBackgroundAgentMessages, taskID, finishedAt) {
+		return
+	}
+	m.pendingBackgroundAgentMessages = append(m.pendingBackgroundAgentMessages, backgroundAgentCompletionMessage(taskID, agentName, status, content, finishedAt))
+}
+
+func (m *ChatModel) recoverPendingBackgroundAgentMessages() {
+	if m == nil {
+		return
+	}
+	for _, msg := range m.messages {
+		panel := msg.Agent
+		if msg.Kind != MsgAgent || panel == nil || !panel.Background || panel.FinishedAt.IsZero() {
+			continue
+		}
+		status := ""
+		switch strings.ToLower(strings.TrimSpace(panel.Status)) {
+		case "completed":
+			status = "completed"
+		case "failed":
+			status = "failed"
+		case "killed", "canceled":
+			status = "canceled"
+		default:
+			continue
+		}
+		if migrateLegacyBackgroundAgentCompletion(m.history, panel.TaskID, panel.FinishedAt) {
+			m.invalidateContextUsage()
+			continue
+		}
+		m.queueBackgroundAgentCompletion(panel.TaskID, panel.Name, status, panel.Output, panel.FinishedAt)
+	}
 }
 
 func (m *ChatModel) deliverBackgroundAgentMessages() {
 	if len(m.pendingBackgroundAgentMessages) == 0 {
 		return
 	}
-	for _, msg := range m.pendingBackgroundAgentMessages {
-		m.appendHistory(msg)
-	}
+	pending := append([]openai.Message(nil), m.pendingBackgroundAgentMessages...)
 	m.pendingBackgroundAgentMessages = nil
+
+	// On a fresh user turn, submit() has already appended the user's prompt.
+	// Keep that prompt as the final instruction while placing detached-worker
+	// completions immediately before it. During tool/goal continuations the last
+	// protocol message is not a normal user prompt, so appending is correct.
+	last := len(m.history) - 1
+	if last >= 0 && m.history[last].Role == "user" && !strings.Contains(m.history[last].Content, "<background_agent_completion ") {
+		currentPrompt := m.history[last]
+		m.history = append(m.history[:last], pending...)
+		m.history = append(m.history, currentPrompt)
+		m.invalidateContextUsage()
+		return
+	}
+	m.appendHistory(pending...)
 }
 
 // hasRunningCommand devuelve true si algún CommandPanel sigue vivo.
@@ -616,11 +726,12 @@ func NewChat(ctx *AppContext) ChatModel {
 		planQuestion:       newPlanQuestionDock(ctx),
 		sessionCtx:         sessionCtx,
 		sessionCancel:      sessionCancel,
-		agentEventCh:       make(chan subagents.Event, 512),
+		agentEventCh:       make(chan agentEventEnvelope, 512),
 		assistantActive:    -1,
 		networkNoticeIndex: -1,
 		contextCacheDirty:  true,
 	}
+	m.agentGeneration.Store(1)
 	m.loadAgents()
 	m.syncAgentModePresentation()
 	m.runSessionHook("SessionStart")
@@ -1280,6 +1391,7 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 			recoveredLive = true
 		}
 		repaired := m.repairDanglingToolHistory()
+		m.recoverPendingBackgroundAgentMessages()
 		if recoveredLive || repaired {
 			// Promote the recovered checkpoint to a stable snapshot immediately;
 			// the stale sidecar is removed and future requests see repaired tool
@@ -1384,6 +1496,7 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 	if panels := m.panels(); len(panels) > 0 {
 		m.panelSel = len(panels) - 1
 	}
+	m.recoverPendingBackgroundAgentMessages()
 	if m.repairDanglingToolHistory() {
 		m.persist()
 	} else {
@@ -1553,8 +1666,35 @@ func (m *ChatModel) AddError(text string) {
 	m.refreshTranscript(true)
 }
 
+// finalizeRunningAgentPanels closes the visual lifecycle before a session
+// boundary. Events from the canceled workers are intentionally discarded by
+// the next generation, so the old session itself must not remain persisted as
+// "running" forever when it is reopened later.
+func (m *ChatModel) finalizeRunningAgentPanels(reason string) bool {
+	if m == nil || len(m.agentPanels) == 0 {
+		return false
+	}
+	now := time.Now()
+	changed := false
+	for _, panel := range m.agentPanels {
+		if panel == nil || !strings.EqualFold(strings.TrimSpace(panel.Status), "running") {
+			continue
+		}
+		panel.Apply(subagents.Event{Kind: subagents.EventCanceled, TaskID: panel.TaskID, AgentName: panel.Name, Background: panel.Background, At: now})
+		if note := strings.TrimSpace(reason); note != "" {
+			panel.Output = appendAgentLine(panel.Output, note)
+		}
+		changed = true
+	}
+	return changed
+}
+
 func (m *ChatModel) Clear() {
 	m.endTurn()
+	if m.finalizeRunningAgentPanels("Cancelado al cerrar o cambiar la sesión.") {
+		m.persist()
+	}
+	m.resetAgentSessionContext()
 	m.streaming = false
 	m.thinking = false
 	m.working = false
@@ -1571,6 +1711,7 @@ func (m *ChatModel) Clear() {
 	m.cmdPanels = nil
 	m.cmdByCall = nil
 	m.agentPanels = nil
+	m.pendingBackgroundAgentMessages = nil
 	m.panelSel = 0
 	m.panelPinned = false
 	m.thinkingActive = nil
@@ -2487,11 +2628,24 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 		return m, nil
 
 	case agentEventBatchMsg:
-		for _, event := range v.events {
-			m.applyAgentEvent(event)
+		terminalBackground := false
+		for _, envelope := range v.events {
+			if !m.applyAgentEventEnvelope(envelope) {
+				continue
+			}
+			event := envelope.event
+			terminalBackground = terminalBackground || (event.Background && subagents.IsTerminalEvent(event.Kind))
 		}
 		refreshCmd := m.refreshTranscriptStreaming(!m.userScrolled)
-		liveCmd := m.requestLivePersist()
+		var liveCmd uikit.Cmd
+		if terminalBackground && m.activeTurnID == 0 {
+			// Detached workers can finish while the main chat is idle. Persist the
+			// terminal panel now so a process restart can recover and deliver its
+			// completion notification exactly once on the next user request.
+			m.persist()
+		} else {
+			liveCmd = m.requestLivePersist()
+		}
 		if v.done {
 			return m, uikit.Batch(refreshCmd, liveCmd)
 		}
@@ -3333,6 +3487,9 @@ func (m *ChatModel) submit(val string) (uikit.Model, uikit.Cmd) {
 	if strings.EqualFold(strings.TrimSpace(val), "/exit") {
 		if m.activeTurnID != 0 {
 			m.cancelTurn()
+		}
+		if m.finalizeRunningAgentPanels("Cancelado al cerrar Lilith.") {
+			m.persist()
 		}
 		m.runSessionHook("SessionEnd")
 		if m.sessionCancel != nil {
@@ -4183,20 +4340,45 @@ func backgroundTasksAllowed() bool {
 	return strings.TrimSpace(os.Getenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS")) != "1"
 }
 
+func (m *ChatModel) resetAgentSessionContext() {
+	if m == nil {
+		return
+	}
+	if m.sessionCancel != nil {
+		m.sessionCancel()
+	}
+	m.sessionCtx, m.sessionCancel = context.WithCancel(context.Background())
+	m.agentGeneration.Add(1)
+}
+
 func (m *ChatModel) agentEventSink() subagents.EventSink {
+	if m == nil {
+		return nil
+	}
+	generation := m.agentGeneration.Load()
+	sessionCtx := m.sessionCtx
 	return func(event subagents.Event) {
-		if m == nil || m.agentEventCh == nil {
+		if m.agentGeneration.Load() != generation || m.agentEventCh == nil {
 			return
 		}
-		if m.sessionCtx == nil {
-			m.agentEventCh <- event
+		envelope := agentEventEnvelope{generation: generation, event: event}
+		if sessionCtx == nil {
+			m.agentEventCh <- envelope
 			return
 		}
 		select {
-		case m.agentEventCh <- event:
-		case <-m.sessionCtx.Done():
+		case m.agentEventCh <- envelope:
+		case <-sessionCtx.Done():
 		}
 	}
+}
+
+func (m *ChatModel) applyAgentEventEnvelope(envelope agentEventEnvelope) bool {
+	if m == nil || envelope.generation != m.agentGeneration.Load() {
+		return false
+	}
+	m.applyAgentEvent(envelope.event)
+	return true
 }
 
 // loadAgents discovers Claude-compatible subagents from bundled, user and

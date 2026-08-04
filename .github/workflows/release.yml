@@ -23,15 +23,25 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Descargar y verificar dependencias Go
+      - name: Validar manifiestos Go
         shell: powershell
-        run: |
-          go mod download all
-          go mod verify
+        run: go mod tidy -diff
 
       - name: Probar herramientas atómicas en Windows
         shell: powershell
-        run: go test -mod=readonly -tags=grammar_set_core ./internal/tools ./internal/shell
+        run: go test -mod=readonly -count=1 -tags=grammar_set_core ./internal/tools ./internal/shell
+
+      - name: Probar orquestador, agentes y restauración en Windows
+        shell: powershell
+        run: go test -mod=readonly -count=1 -timeout=10m -tags=grammar_set_core ./internal/agents ./internal/subagents ./internal/tui
+
+      - name: Repetir cancelación anidada en Windows
+        shell: powershell
+        run: go test -mod=readonly -run '^TestCancelParentTearsDownNestedAgentTree$' -count=5 -timeout=2m -tags=grammar_set_core ./internal/subagents
+
+      - name: Verificar integridad de módulos descargados
+        shell: powershell
+        run: go mod verify
 
       - name: Probar instalador con Windows PowerShell 5.1
         shell: powershell
@@ -52,10 +62,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Descargar y verificar dependencias Go
-        run: |
-          go mod download all
-          go mod verify
+      - name: Validar manifiestos Go
+        run: go mod tidy -diff
 
       - name: Leer versión del proyecto
         id: version
@@ -78,10 +86,16 @@ jobs:
             exit 1
           fi
 
+      - name: Probar concurrencia del orquestador
+        run: go test -mod=readonly -count=1 -race -timeout=10m -tags=grammar_set_core ./internal/agents ./internal/subagents
+
       - name: Ejecutar pruebas y análisis estático
         run: |
-          go test -tags=grammar_set_core ./...
-          go vet -tags=grammar_set_core ./...
+          go test -mod=readonly -count=1 -timeout=15m -tags=grammar_set_core ./...
+          go vet -mod=readonly -tags=grammar_set_core ./...
+
+      - name: Verificar integridad de módulos descargados
+        run: go mod verify
 
       - name: Verificar binario estático con gramáticas embebidas
         shell: bash

@@ -3,10 +3,14 @@ package subagents
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/lilith/li/internal/agents"
 	"github.com/lilith/li/internal/providers"
@@ -470,6 +474,13 @@ func TestRunForkInheritsConversationAndDropsDanglingToolCall(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptContainsSingleCodeIntelBlock(t *testing.T) {
+	prompt := buildSystemPrompt(agents.Agent{Name: "worker", Prompt: "Work."}, t.TempDir(), nil, nil, false, "", "indexed symbols")
+	if strings.Count(prompt, "<code_intelligence>") != 1 || strings.Count(prompt, "</code_intelligence>") != 1 {
+		t.Fatalf("malformed code intelligence block: %q", prompt)
+	}
+}
+
 func TestMergeCodeIntelSystemMessageDoesNotCreateUserTurn(t *testing.T) {
 	messages := []openai.Message{{Role: "system", Content: "base"}, {Role: "user", Content: "task"}}
 	merged := mergeCodeIntelSystemMessage(messages, "profile")
@@ -589,5 +600,459 @@ func TestCollectResetsPartialOutputAfterNetworkInterruption(t *testing.T) {
 	}
 	if !foundReset {
 		t.Fatalf("missing stream reset event: %#v", events)
+	}
+}
+
+func TestStartBackgroundEmitsTerminalFailureForEarlyError(t *testing.T) {
+	events := make(chan Event, 4)
+	cfg := Config{
+		Client: &fakeStreamer{}, ConfigDir: t.TempDir(), Root: t.TempDir(),
+		Events: func(event Event) { events <- event },
+	}
+	result, err := StartBackground(cfg, tools.AgentRequest{
+		Agent: agents.Agent{Name: "worker"}, Prompt: "work", Description: "early failure",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-events:
+		if event.Kind != EventFailed || event.TaskID != result.TaskID || !event.Background {
+			t.Fatalf("event=%#v result=%#v", event, result)
+		}
+		if !strings.Contains(event.Content, "provider") && !strings.Contains(event.Content, "model") {
+			t.Fatalf("unexpected early failure: %q", event.Content)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("background early failure did not emit a terminal event")
+	}
+}
+
+func TestDispatchDisabledBackgroundUsesForegroundSemantics(t *testing.T) {
+	fake := &fakeStreamer{}
+	var events []Event
+	cfg := Config{
+		Client: fake, ConfigDir: t.TempDir(), Root: t.TempDir(), ParentProviderID: "p", ParentModelID: "m",
+		Providers: providers.Config{Providers: []providers.Provider{{ID: "p", Name: "P", Models: []providers.Model{{ID: "m"}}}}},
+		Events:    func(event Event) { events = append(events, event) },
+	}
+	result, err := Dispatch(context.Background(), cfg, tools.AgentRequest{
+		Agent: agents.Agent{Name: "worker"}, Prompt: "work", Background: true,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Background || result.Text != "isolated result" {
+		t.Fatalf("result=%#v", result)
+	}
+	if len(events) == 0 {
+		t.Fatal("missing lifecycle events")
+	}
+	for _, event := range events {
+		if event.Background {
+			t.Fatalf("foreground fallback leaked background event: %#v", event)
+		}
+	}
+	if events[len(events)-1].Kind != EventCompleted {
+		t.Fatalf("terminal event=%#v", events[len(events)-1])
+	}
+}
+
+func TestResumeUsesPersistedProviderAndModel(t *testing.T) {
+	configDir := t.TempDir()
+	root := t.TempDir()
+	store := newChildStore(configDir, root)
+	child := &childSession{
+		ID: "agent-resume", AgentName: "worker", Status: "completed", Project: filepathClean(root),
+		ProviderID: "stored", ModelID: "stored-model", CreatedAt: time.Now(),
+		Messages: []openai.Message{{Role: "system", Content: "worker"}, {Role: "assistant", Content: "previous"}},
+	}
+	if err := store.save(child); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeStreamer{}
+	cfg := Config{
+		Client: fake, ConfigDir: configDir, Root: root,
+		ParentProviderID: "missing-parent", ParentModelID: "missing-model",
+		Providers: providers.Config{Providers: []providers.Provider{{ID: "stored", Name: "Stored", Models: []providers.Model{{ID: "stored-model"}}}}},
+	}
+	result, err := Run(context.Background(), cfg, tools.AgentRequest{
+		Agent: agents.Agent{Name: "worker", Model: "also-missing"}, TaskID: child.ID, Prompt: "continue",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Resumed || len(fake.requests) != 1 {
+		t.Fatalf("result=%#v requests=%d", result, len(fake.requests))
+	}
+	request := fake.requests[0]
+	if request.Provider.ID != "stored" || request.Model != "stored-model" {
+		t.Fatalf("resume used %s/%s", request.Provider.ID, request.Model)
+	}
+}
+
+func TestResumeRejectsUnavailableWorktree(t *testing.T) {
+	configDir := t.TempDir()
+	root := t.TempDir()
+	store := newChildStore(configDir, root)
+	child := &childSession{
+		ID: "agent-missing-worktree", AgentName: "worker", Status: "completed", Project: filepathClean(root),
+		WorktreeRoot: filepath.Join(t.TempDir(), "removed"), ProviderID: "p", ModelID: "m", CreatedAt: time.Now(),
+		Messages: []openai.Message{{Role: "system", Content: "worker"}},
+	}
+	if err := store.save(child); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeStreamer{}
+	cfg := Config{
+		Client: fake, ConfigDir: configDir, Root: root,
+		Providers: providers.Config{Providers: []providers.Provider{{ID: "p", Name: "P", Models: []providers.Model{{ID: "m"}}}}},
+	}
+	_, err := Run(context.Background(), cfg, tools.AgentRequest{
+		Agent: agents.Agent{Name: "worker"}, TaskID: child.ID, Prompt: "continue",
+	})
+	if err == nil || !strings.Contains(err.Error(), "worktree is unavailable") {
+		t.Fatalf("expected unavailable worktree error, got %v", err)
+	}
+	if len(fake.requests) != 0 {
+		t.Fatal("model started after isolation was lost")
+	}
+}
+
+type nestedCancelStreamer struct {
+	mu           sync.Mutex
+	requestCount int
+	childStarted chan struct{}
+	once         sync.Once
+}
+
+func (s *nestedCancelStreamer) Stream(ctx context.Context, _ openai.Request) <-chan openai.Chunk {
+	s.mu.Lock()
+	index := s.requestCount
+	s.requestCount++
+	s.mu.Unlock()
+	ch := make(chan openai.Chunk, 2)
+	if index == 0 {
+		var call openai.ToolCall
+		call.ID = "call-child"
+		call.Type = "function"
+		call.Function.Name = "Agent"
+		call.Function.Arguments = `{"description":"nested check","prompt":"wait until canceled","subagent_type":"child"}`
+		ch <- openai.Chunk{ToolCalls: []openai.ToolCall{call}}
+		close(ch)
+		return ch
+	}
+
+	// Reaching Stream is the observable child-start boundary. Signal it before
+	// launching the blocking producer so this test measures orchestration, not
+	// how quickly the Windows scheduler happens to run a newly-created goroutine.
+	s.once.Do(func() { close(s.childStarted) })
+	go func() {
+		<-ctx.Done()
+		ch <- openai.Chunk{Err: ctx.Err()}
+		close(ch)
+	}()
+	return ch
+}
+
+func (s *nestedCancelStreamer) requests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.requestCount
+}
+
+func TestCancelParentTearsDownNestedAgentTree(t *testing.T) {
+	streamer := &nestedCancelStreamer{childStarted: make(chan struct{})}
+	events := make(chan Event, 32)
+	root := t.TempDir()
+	configDir := t.TempDir()
+	cfg := Config{
+		Client: streamer, ConfigDir: configDir, Root: root, ParentProviderID: "p", ParentModelID: "m",
+		Providers: providers.Config{Providers: []providers.Provider{{ID: "p", Name: "P", Models: []providers.Model{{ID: "m"}}}}},
+		Agents:    []agents.Agent{{Name: "child", Description: "nested child", Prompt: "Wait."}},
+		Depth:     1, MaxDepth: 3, Events: func(event Event) { events <- event },
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := Run(ctx, cfg, tools.AgentRequest{Agent: agents.Agent{Name: "parent", Description: "parent"}, Prompt: "delegate"})
+		resultCh <- err
+	}()
+
+	startTimer := time.NewTimer(10 * time.Second)
+	defer startTimer.Stop()
+	select {
+	case <-streamer.childStarted:
+		cancel()
+	case err := <-resultCh:
+		cancel()
+		t.Fatalf("parent exited before nested child started: err=%v requests=%d", err, streamer.requests())
+	case <-startTimer.C:
+		cancel()
+		t.Fatalf("nested child did not start before deadline: requests=%d", streamer.requests())
+	}
+
+	stopTimer := time.NewTimer(5 * time.Second)
+	defer stopTimer.Stop()
+	select {
+	case err := <-resultCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("run error=%v", err)
+		}
+	case <-stopTimer.C:
+		t.Fatalf("agent tree did not stop after parent cancellation: requests=%d", streamer.requests())
+	}
+
+	var parentCanceled, childCanceled bool
+	for {
+		select {
+		case event := <-events:
+			if event.Kind != EventCanceled {
+				continue
+			}
+			if event.ParentTaskID == "" {
+				parentCanceled = true
+			} else {
+				childCanceled = true
+			}
+		default:
+			if !parentCanceled || !childCanceled {
+				t.Fatalf("cancellation events parent=%v child=%v", parentCanceled, childCanceled)
+			}
+			return
+		}
+	}
+}
+
+func TestPureAgentToolBatchRunsConcurrentlyAndPreservesOrder(t *testing.T) {
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	env := tools.Env{
+		Agents: []agents.Agent{
+			{Name: "first", Description: "first worker"},
+			{Name: "second", Description: "second worker"},
+		},
+		RunAgent: func(_ context.Context, req tools.AgentRequest) (tools.AgentResult, error) {
+			started <- req.Agent.Name
+			<-release
+			return tools.AgentResult{TaskID: "task-" + req.Agent.Name, AgentName: req.Agent.Name, Text: req.Agent.Name + " done"}, nil
+		},
+	}
+	calls := make([]openai.ToolCall, 2)
+	for i, name := range []string{"first", "second"} {
+		calls[i].ID = "call-" + name
+		calls[i].Type = "function"
+		calls[i].Function.Name = "Agent"
+		calls[i].Function.Arguments = fmt.Sprintf(`{"description":"run %s","prompt":"do %s","subagent_type":"%s"}`, name, name, name)
+	}
+	resultCh := make(chan []openai.Message, 1)
+	go func() {
+		resultCh <- executeToolCalls(context.Background(), Config{}, "parent", tools.AgentRequest{Agent: agents.Agent{Name: "parent"}}, "m", 1, calls, env)
+	}()
+
+	seen := map[string]bool{}
+	for len(seen) < 2 {
+		select {
+		case name := <-started:
+			seen[name] = true
+		case <-time.After(2 * time.Second):
+			close(release)
+			t.Fatalf("agent batch serialized or stalled; started=%v", seen)
+		}
+	}
+	close(release)
+	results := <-resultCh
+	if len(results) != 2 || results[0].ToolCallID != "call-first" || results[1].ToolCallID != "call-second" {
+		t.Fatalf("result order=%#v", results)
+	}
+	if !strings.Contains(results[0].Content, "first done") || !strings.Contains(results[1].Content, "second done") {
+		t.Fatalf("results=%#v", results)
+	}
+}
+
+type holdStreamer struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *holdStreamer) Stream(_ context.Context, _ openai.Request) <-chan openai.Chunk {
+	ch := make(chan openai.Chunk, 2)
+	go func() {
+		s.once.Do(func() { close(s.started) })
+		<-s.release
+		ch <- openai.Chunk{Delta: "resumed"}
+		close(ch)
+	}()
+	return ch
+}
+
+func TestConcurrentResumeOfSameTaskIsRejected(t *testing.T) {
+	configDir := t.TempDir()
+	root := t.TempDir()
+	store := newChildStore(configDir, root)
+	child := &childSession{
+		ID: "agent-exclusive", AgentName: "worker", Status: "completed", Project: filepathClean(root),
+		ProviderID: "p", ModelID: "m", CreatedAt: time.Now(),
+		Messages: []openai.Message{{Role: "system", Content: "worker"}},
+	}
+	if err := store.save(child); err != nil {
+		t.Fatal(err)
+	}
+	streamer := &holdStreamer{started: make(chan struct{}), release: make(chan struct{})}
+	cfg := Config{
+		Client: streamer, ConfigDir: configDir, Root: root,
+		Providers: providers.Config{Providers: []providers.Provider{{ID: "p", Name: "P", Models: []providers.Model{{ID: "m"}}}}},
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := Run(context.Background(), cfg, tools.AgentRequest{Agent: agents.Agent{Name: "worker"}, TaskID: child.ID, Prompt: "first"})
+		firstDone <- err
+	}()
+	select {
+	case <-streamer.started:
+	case <-time.After(2 * time.Second):
+		close(streamer.release)
+		t.Fatal("first resume did not start")
+	}
+	_, err := Run(context.Background(), cfg, tools.AgentRequest{Agent: agents.Agent{Name: "worker"}, TaskID: child.ID, Prompt: "second"})
+	if err == nil || !strings.Contains(err.Error(), "already running") {
+		close(streamer.release)
+		t.Fatalf("expected exclusive task error, got %v", err)
+	}
+	close(streamer.release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConcurrentBackgroundResumeIsRejectedBeforeDetach(t *testing.T) {
+	configDir := t.TempDir()
+	root := t.TempDir()
+	store := newChildStore(configDir, root)
+	child := &childSession{
+		ID: "agent-background-exclusive", AgentName: "worker", Status: "completed", Project: filepathClean(root),
+		ProviderID: "p", ModelID: "m", CreatedAt: time.Now(),
+		Messages: []openai.Message{{Role: "system", Content: "worker"}},
+	}
+	if err := store.save(child); err != nil {
+		t.Fatal(err)
+	}
+	streamer := &holdStreamer{started: make(chan struct{}), release: make(chan struct{})}
+	events := make(chan Event, 16)
+	cfg := Config{
+		Client: streamer, ConfigDir: configDir, Root: root,
+		Providers: providers.Config{Providers: []providers.Provider{{ID: "p", Name: "P", Models: []providers.Model{{ID: "m"}}}}},
+		Events:    func(event Event) { events <- event },
+	}
+	first, err := StartBackground(cfg, tools.AgentRequest{Agent: agents.Agent{Name: "worker"}, TaskID: child.ID, Prompt: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Background || first.TaskID != child.ID {
+		t.Fatalf("first=%#v", first)
+	}
+	select {
+	case <-streamer.started:
+	case <-time.After(2 * time.Second):
+		close(streamer.release)
+		t.Fatal("first background resume did not start")
+	}
+	if _, err := StartBackground(cfg, tools.AgentRequest{Agent: agents.Agent{Name: "worker"}, TaskID: child.ID, Prompt: "second"}); err == nil || !strings.Contains(err.Error(), "already running") {
+		close(streamer.release)
+		t.Fatalf("expected immediate exclusive task error, got %v", err)
+	}
+	close(streamer.release)
+
+	terminal := 0
+	deadline := time.After(2 * time.Second)
+	for terminal == 0 {
+		select {
+		case event := <-events:
+			if IsTerminalEvent(event.Kind) {
+				terminal++
+				if event.Kind != EventCompleted {
+					t.Fatalf("winner was corrupted by duplicate resume: %#v", event)
+				}
+			}
+		case <-deadline:
+			t.Fatal("background winner did not finish")
+		}
+	}
+	for {
+		select {
+		case event := <-events:
+			if IsTerminalEvent(event.Kind) {
+				terminal++
+			}
+		default:
+			if terminal != 1 {
+				t.Fatalf("terminal events=%d", terminal)
+			}
+			return
+		}
+	}
+}
+
+func TestChildStoreAcquireRejectsInvalidTaskID(t *testing.T) {
+	store := newChildStore(t.TempDir(), t.TempDir())
+	for _, id := range []string{"", ".", "..", "../escape", `folder\escape`, "bad:id", "task id"} {
+		if release, err := store.acquire(id); err == nil {
+			release()
+			t.Fatalf("invalid id %q was accepted", id)
+		}
+	}
+}
+
+type breakStoreAfterStartStreamer struct {
+	root string
+}
+
+func (s *breakStoreAfterStartStreamer) Stream(_ context.Context, _ openai.Request) <-chan openai.Chunk {
+	_ = os.RemoveAll(s.root)
+	_ = os.WriteFile(s.root, []byte("block session directory"), 0o600)
+	ch := make(chan openai.Chunk, 1)
+	ch <- openai.Chunk{Delta: "done"}
+	close(ch)
+	return ch
+}
+
+func TestRunEmitsTerminalFailureWhenPersistenceBreaksAfterStart(t *testing.T) {
+	configDir := t.TempDir()
+	root := t.TempDir()
+	store := newChildStore(configDir, root)
+	streamer := &breakStoreAfterStartStreamer{root: store.root}
+	var events []Event
+	cfg := Config{
+		Client: streamer, ConfigDir: configDir, Root: root, ParentProviderID: "p", ParentModelID: "m",
+		Providers: providers.Config{Providers: []providers.Provider{{ID: "p", Name: "P", Models: []providers.Model{{ID: "m"}}}}},
+		Events:    func(event Event) { events = append(events, event) },
+	}
+	_, err := Run(context.Background(), cfg, tools.AgentRequest{Agent: agents.Agent{Name: "worker"}, Prompt: "work"})
+	if err == nil {
+		t.Fatal("expected persistence failure")
+	}
+	if len(events) < 2 || events[0].Kind != EventStarted || events[len(events)-1].Kind != EventFailed {
+		t.Fatalf("lifecycle=%#v error=%v", events, err)
+	}
+	terminal := 0
+	for _, event := range events {
+		if IsTerminalEvent(event.Kind) {
+			terminal++
+		}
+	}
+	if terminal != 1 {
+		t.Fatalf("terminal events=%d lifecycle=%#v", terminal, events)
+	}
+}
+
+func TestChildStoreSaveRejectsInvalidTaskID(t *testing.T) {
+	store := newChildStore(t.TempDir(), t.TempDir())
+	for _, id := range []string{"", ".", "..", "../escape", `folder\\escape`, "bad:id", "task id"} {
+		err := store.save(&childSession{ID: id})
+		if err == nil || !strings.Contains(err.Error(), "invalid subagent task id") {
+			t.Fatalf("id=%q err=%v", id, err)
+		}
 	}
 }

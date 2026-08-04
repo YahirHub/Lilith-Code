@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/lilith/li/internal/codeintel"
 	ligoal "github.com/lilith/li/internal/goal"
@@ -126,6 +127,7 @@ func (m *ChatModel) toolEnvWithAgentEvents(root string, mode planstate.Mode, eve
 	parentMessages := m.forkContextMessages(mode)
 	parentTools := append([]string(nil), m.activeTools...)
 	codeIntel := m.codeIntelFor(root)
+	var toolLifecycleMu sync.Mutex
 	env := tools.Env{
 		Root:      root,
 		CodeIntel: codeIntel,
@@ -145,12 +147,11 @@ func (m *ChatModel) toolEnvWithAgentEvents(root string, mode planstate.Mode, eve
 			Agents: agentCatalog, CodeIntel: codeIntel, Depth: 1, Events: events, BackgroundContext: m.sessionCtx, ParentMCP: m.mcpRuntime,
 			PluginHooks: m.loadClaudePluginHooks(),
 		}
-		if req.Background && backgroundTasksAllowed() {
-			return subagents.StartBackground(cfg, req)
-		}
-		return subagents.Run(ctx, cfg, req)
+		return subagents.Dispatch(ctx, cfg, req, backgroundTasksAllowed())
 	}
 	env.BeforeTool = func(ctx context.Context, name string, args map[string]any) (map[string]any, error) {
+		toolLifecycleMu.Lock()
+		defer toolLifecycleMu.Unlock()
 		runner := m.toolHookRunner()
 		// Capture before either the tool or any Pre/PostToolUse hook can mutate
 		// the workspace. Hooks are external commands, so even a nominally
@@ -181,6 +182,8 @@ func (m *ChatModel) toolEnvWithAgentEvents(root string, mode planstate.Mode, eve
 		return args, nil
 	}
 	env.AfterTool = func(ctx context.Context, name string, args map[string]any, output string, runErr error) (string, error) {
+		toolLifecycleMu.Lock()
+		defer toolLifecycleMu.Unlock()
 		runner := m.toolHookRunner()
 		if runner.Count() == 0 {
 			return output, nil

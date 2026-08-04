@@ -121,6 +121,9 @@ Los estados se persisten en la sesión. Goal comparte las capacidades de impleme
 - Cancelación con Esc; `/exit` es la salida explícita.
 - TodoWrite, planes y goals se guardan en la sesión.
 - Skills y agentes pueden usar modelo heredado, explícito o lista de preferencias.
+- El orquestador ejecuta en paralelo los lotes puros de `Agent` preservando el orden protocolario de resultados. La cancelación se propaga a hijos anidados y `/clear`/cambio de sesión separan generaciones de eventos para impedir contaminación entre conversaciones.
+- Las tareas background siempre terminan con evento `completed`, `failed` o `canceled`; su panel se persiste y la notificación se entrega exactamente una vez antes del siguiente prompt actual. Desactivar background fuerza semántica foreground completa.
+- `task_id` reanuda con provider/modelo persistidos, rechaza reanudaciones concurrentes y falla de forma cerrada si el worktree aislado desapareció. Las sesiones hijas se publican mediante temporales únicos y reemplazo después de `Sync`.
 - El binario incluye `ponytail-development`, una metodología universal de desarrollo conservada como Agent Skill. `/config > Skills` mantiene un interruptor maestro y excepciones individuales persistidas en `disabledSkills`; una skill desactivada no aparece en activación automática, paleta, agentes ni invocación manual.
 - MCP y plugins siguen ejecutándose aunque una pantalla auxiliar esté abierta.
 
@@ -229,7 +232,7 @@ se compacta el cuerpo rechazado y se devuelve `OVERWRITE_REQUIRED` sin tocar dis
 5. Ejecutar formato, tests, race, vet y builds estáticos/multiplataforma cuando el entorno lo permita.
 6. Documentar el cambio en un MD numerado.
 7. Commit en español con el autor Git `YahirHub <217099863+YahirHub@users.noreply.github.com>`.
-8. Para publicar, cambiar `internal/version/version.go` y ejecutar manualmente el workflow **Publicar release**; sus runners ejecutan `go mod download all`, `go mod verify` y pruebas readonly antes de compilar Linux/Windows, crear checksums y generar notas agrupadas. Los instaladores se descargan desde la rama `main`; Termux compila desde el código en el dispositivo.
+8. Para publicar, cambiar `internal/version/version.go` y ejecutar manualmente el workflow **Publicar release**; sus runners validan `go mod tidy -diff`, ejecutan pruebas readonly y luego `go mod verify` antes de compilar Linux/Windows, crear checksums y generar notas agrupadas. Los instaladores se descargan desde la rama `main`; Termux compila desde el código en el dispositivo.
 
 ## 13. Validación objetivo
 
@@ -273,3 +276,7 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `103-utf8-powershell.md`
 - `104-pegado-completo-provider-custom.md`
 - `105-runner-dependencias-y-posix-windows.md`
+- `106-skill-embebida-metodologia-ponytail.md`
+- `107-auditoria-orquestador-y-agentes.md`
+- `108-integridad-modulos-y-tests-windows.md`
+- `109-estabilizar-prueba-cancelacion-anidada-windows.md`

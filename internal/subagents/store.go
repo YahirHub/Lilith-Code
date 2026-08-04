@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lilith/li/internal/providers/openai"
@@ -40,6 +42,8 @@ type childSession struct {
 
 type childStore struct{ root string }
 
+var activeChildTasks sync.Map
+
 func newChildStore(configDir, project string) *childStore {
 	sum := sha256.Sum256([]byte(strings.ToLower(filepath.ToSlash(filepath.Clean(project)))))
 	base := filepath.Base(filepath.Clean(project))
@@ -50,9 +54,14 @@ func newChildStore(configDir, project string) *childStore {
 }
 
 func (s *childStore) save(c *childSession) error {
-	if c == nil || strings.TrimSpace(c.ID) == "" {
+	if c == nil {
 		return nil
 	}
+	id := strings.TrimSpace(c.ID)
+	if !validTaskID(id) {
+		return errors.New("invalid subagent task id")
+	}
+	c.ID = id
 	if err := os.MkdirAll(s.root, storeDirMode); err != nil {
 		return err
 	}
@@ -62,17 +71,64 @@ func (s *childStore) save(c *childSession) error {
 	if err != nil {
 		return err
 	}
-	final := filepath.Join(s.root, c.ID+".json")
-	tmp := final + ".tmp"
-	if err := os.WriteFile(tmp, data, storeFileMode); err != nil {
+	final := filepath.Join(s.root, id+".json")
+	tmp, err := os.CreateTemp(s.root, id+"-*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, final)
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(storeFileMode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, final)
+}
+
+func validTaskID(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" || id == "." || id == ".." || len(id) > 128 {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func (s *childStore) acquire(id string) (func(), error) {
+	id = strings.TrimSpace(id)
+	if !validTaskID(id) {
+		return func() {}, errors.New("invalid subagent task id")
+	}
+	key := filepath.Clean(s.root) + "\x00" + id
+	if _, loaded := activeChildTasks.LoadOrStore(key, struct{}{}); loaded {
+		return func() {}, fmt.Errorf("subagent task %s is already running", id)
+	}
+	return func() { activeChildTasks.Delete(key) }, nil
 }
 
 func (s *childStore) load(id string) (*childSession, error) {
 	id = strings.TrimSpace(id)
-	if id == "" || strings.ContainsAny(id, `/\\`) {
+	if !validTaskID(id) {
 		return nil, errors.New("invalid subagent task id")
 	}
 	data, err := os.ReadFile(filepath.Join(s.root, id+".json"))

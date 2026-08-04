@@ -101,6 +101,9 @@ func (p *AgentPanel) Apply(e subagents.Event) {
 	case subagents.EventToolFinished:
 		p.finishTool(e)
 	case subagents.EventCompleted:
+		if p.terminalEventApplied("completed", e.At) {
+			return
+		}
 		p.Status = "completed"
 		p.FinishedAt = e.At
 		// A completion event carries the authoritative final text. Streaming may
@@ -109,15 +112,28 @@ func (p *AgentPanel) Apply(e subagents.Event) {
 			p.Output = appendAgentVisualTail("", e.Content)
 		}
 	case subagents.EventFailed:
+		if p.terminalEventApplied("failed", e.At) {
+			return
+		}
 		p.Status = "failed"
 		p.FinishedAt = e.At
 		if strings.TrimSpace(e.Content) != "" {
 			p.Output = appendAgentVisualTail(p.Output, "\nError: "+e.Content)
 		}
 	case subagents.EventCanceled:
+		if p.terminalEventApplied("killed", e.At) {
+			return
+		}
 		p.Status = "killed"
 		p.FinishedAt = e.At
 	}
+}
+
+func (p *AgentPanel) terminalEventApplied(status string, at time.Time) bool {
+	if p == nil || p.Status != status || p.FinishedAt.IsZero() || at.IsZero() {
+		return false
+	}
+	return p.FinishedAt.Equal(at)
 }
 
 func (p *AgentPanel) startTool(e subagents.Event) {
@@ -211,7 +227,7 @@ func (p *AgentPanel) View(s Styles, width int) string {
 	}
 	statusLabel := agentStatusLabel(p.Status)
 	accent := t.Secondary
-	if p.Status == "failed" || p.Status == "killed" {
+	if p.Status == "failed" || p.Status == "killed" || p.Status == "canceled" {
 		accent = t.Danger
 	} else if p.Status == "completed" {
 		accent = t.Success
@@ -320,7 +336,7 @@ func agentStatusLabel(status string) string {
 		return "completado"
 	case "failed":
 		return "falló"
-	case "killed":
+	case "killed", "canceled":
 		return "cancelado"
 	default:
 		return "ejecutando"
