@@ -64,3 +64,22 @@ func TestTargetsDoNotPublishBrokenTermuxArtifact(t *testing.T) {
 		}
 	}
 }
+
+func TestTargetsIncludeWindowsCrossCompilation(t *testing.T) {
+	t.Parallel()
+	want := map[string]bool{
+		"windows/amd64/li-windows-amd64.exe": false,
+		"windows/arm64/li-windows-arm64.exe": false,
+	}
+	for _, target := range targets {
+		key := target.GOOS + "/" + target.GOARCH + "/" + target.Output
+		if _, ok := want[key]; ok {
+			want[key] = true
+		}
+	}
+	for key, found := range want {
+		if !found {
+			t.Fatalf("falta target de compilación cruzada: %s", key)
+		}
+	}
+}

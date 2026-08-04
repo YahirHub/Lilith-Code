@@ -11,44 +11,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  probar-instalador-windows:
-    runs-on: windows-latest
-    steps:
-      - name: Descargar código
-        uses: actions/checkout@v4
-
-      - name: Configurar Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Validar manifiestos Go
-        shell: powershell
-        run: go mod tidy -diff
-
-      - name: Probar herramientas atómicas en Windows
-        shell: powershell
-        run: go test -mod=readonly -count=1 -tags=grammar_set_core ./internal/tools ./internal/shell
-
-      - name: Probar orquestador, agentes y restauración en Windows
-        shell: powershell
-        run: go test -mod=readonly -count=1 -timeout=10m -tags=grammar_set_core ./internal/agents ./internal/subagents ./internal/tui
-
-      - name: Repetir cancelación anidada en Windows
-        shell: powershell
-        run: go test -mod=readonly -run '^TestCancelParentTearsDownNestedAgentTree$' -count=5 -timeout=2m -tags=grammar_set_core ./internal/subagents
-
-      - name: Verificar integridad de módulos descargados
-        shell: powershell
-        run: go mod verify
-
-      - name: Probar instalador con Windows PowerShell 5.1
-        shell: powershell
-        run: .\.github\scripts\test_install_ps1.ps1
-
   release:
-    needs: probar-instalador-windows
     runs-on: ubuntu-latest
     steps:
       - name: Descargar código
@@ -61,9 +24,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-
-      - name: Validar manifiestos Go
-        run: go mod tidy -diff
 
       - name: Leer versión del proyecto
         id: version
@@ -86,13 +46,37 @@ jobs:
             exit 1
           fi
 
+      - name: Validar manifiestos Go
+        run: go mod tidy -diff
+
+      - name: Ejecutar pruebas unitarias
+        run: go test -mod=readonly -count=1 -timeout=15m -tags=grammar_set_core ./...
+
       - name: Probar concurrencia del orquestador
         run: go test -mod=readonly -count=1 -race -timeout=10m -tags=grammar_set_core ./internal/agents ./internal/subagents
 
-      - name: Ejecutar pruebas y análisis estático
+      - name: Repetir cancelación anidada
+        run: go test -mod=readonly -run '^TestCancelParentTearsDownNestedAgentTree$' -count=5 -timeout=2m -tags=grammar_set_core ./internal/subagents
+
+      - name: Ejecutar análisis estático
+        run: go vet -mod=readonly -tags=grammar_set_core ./...
+
+      - name: Compilar tests sensibles para Windows
+        shell: bash
         run: |
-          go test -mod=readonly -count=1 -timeout=15m -tags=grammar_set_core ./...
-          go vet -mod=readonly -tags=grammar_set_core ./...
+          set -euo pipefail
+          mkdir -p .tmp/windows-tests
+          while read -r package name; do
+            GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+              go test -mod=readonly -tags=grammar_set_core -c \
+              -o ".tmp/windows-tests/${name}.test.exe" "$package"
+          done <<'PACKAGES'
+          ./internal/tools tools
+          ./internal/shell shell
+          ./internal/subagents subagents
+          ./internal/tui tui
+          PACKAGES
+          rm -rf .tmp/windows-tests
 
       - name: Verificar integridad de módulos descargados
         run: go mod verify
@@ -114,7 +98,11 @@ jobs:
           sh -n install.sh
           python3 .github/scripts/test_install_sh.py
 
-      - name: Compilar binarios
+      - name: Probar selección del instalador PowerShell
+        shell: pwsh
+        run: ./.github/scripts/test_install_ps1.ps1
+
+      - name: Compilar binarios Linux y Windows
         run: go run ./cmd/build build
 
       - name: Generar sumas SHA-256

@@ -259,6 +259,18 @@ versión:
 2. crea el commit correspondiente;
 3. ejecuta manualmente **Publicar release** desde GitHub Actions.
 
-Cada runner valida `go mod tidy -diff`, ejecuta las pruebas con
-`-mod=readonly`, verifica módulos con `go mod verify`, compila mediante
-`cmd/build` y genera los checksums de los binarios.
+El workflow usa un único runner `ubuntu-latest` para reducir consumo. Primero
+valida `go mod tidy -diff`, ejecuta las pruebas con `-mod=readonly`, aplica
+`go vet` y `go mod verify`, y después publica desde el mismo job.
+
+Como Lilith se construye con `CGO_ENABLED=0`, el builder puede generar desde
+Linux los binarios `linux/amd64`, `linux/arm64`, `linux/armv7`,
+`windows/amd64` y `windows/arm64` cambiando `GOOS` y `GOARCH`; no necesita
+MinGW ni un runner Windows.
+
+Antes del release también se compilan —sin ejecutarlos— los binarios de test
+Windows de `internal/tools`, `internal/shell`, `internal/subagents` e
+`internal/tui`. Esto detecta errores de compilación específicos del sistema.
+La ejecución real de Windows PowerShell 5.1, CMD y del runtime `.exe` no puede
+reproducirse en Ubuntu, por lo que los cambios dependientes de esas rutas deben
+validarse además localmente con `test.cmd` en Windows.

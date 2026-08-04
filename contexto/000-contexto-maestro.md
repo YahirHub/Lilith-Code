@@ -240,7 +240,7 @@ se compacta el cuerpo rechazado y se devuelve `OVERWRITE_REQUIRED` sin tocar dis
 5. Ejecutar formato, tests, race, vet y builds estáticos/multiplataforma cuando el entorno lo permita.
 6. Documentar el cambio en un MD numerado.
 7. Commit en español con el autor Git `YahirHub <217099863+YahirHub@users.noreply.github.com>`.
-8. Para publicar, cambiar `internal/version/version.go` y ejecutar manualmente el workflow **Publicar release**; sus runners validan `go mod tidy -diff`, ejecutan pruebas readonly y luego `go mod verify` antes de compilar Linux/Windows, crear checksums y generar notas agrupadas. Los instaladores se descargan desde la rama `main`; Termux compila desde el código en el dispositivo.
+8. Para publicar, cambiar `internal/version/version.go` y ejecutar manualmente el workflow **Publicar release**. Usa un único runner Ubuntu: valida `go mod tidy -diff`, ejecuta pruebas readonly, race/vet y `go mod verify`, compila tests Windows sin ejecutarlos y genera desde Linux los binarios Linux/Windows con `CGO_ENABLED=0`, antes de crear checksums y notas agrupadas. La ejecución nativa de PowerShell 5.1/CMD se valida localmente con `test.cmd` cuando corresponda. Los instaladores se descargan desde la rama `main`; Termux compila desde el código en el dispositivo.
 
 ## 13. Validación objetivo
 
@@ -289,3 +289,4 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `108-integridad-modulos-y-tests-windows.md`
 - `109-estabilizar-prueba-cancelacion-anidada-windows.md`
 - `110-documentacion-visual-y-unificacion-historial.md`
+- `111-runner-linux-y-go-mod-tidy.md`
