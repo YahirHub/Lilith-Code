@@ -19,6 +19,9 @@ var (
 )
 
 func validateCommandSafety(command string) error {
+	if err := validateRepositorySearch(command); err != nil {
+		return err
+	}
 	starts := heredocStartPattern.FindAllStringSubmatchIndex(command, -1)
 	for _, match := range starts {
 		if len(match) < 4 {

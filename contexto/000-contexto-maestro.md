@@ -293,3 +293,11 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `111-runner-linux-y-go-mod-tidy.md`
 - `112-termux-clonado-superficial-y-version-0-2-1.md`
 - `113-chatmodel-puntero-go-vet.md`
+
+## 114 · Búsquedas de terminal acotadas y versión 0.2.2
+
+- `run_terminal_command` prioriza `code_search` para búsquedas de código y aplica un timeout seguro de 30 segundos a `grep` recursivo, `rg`, `find` y `git grep` cuando no se indicó uno explícito.
+- Un `grep -r/-R` simple sin ruta se rechaza antes de crear el proceso y orienta a `code_search` o a una ruta concreta.
+- Los comandos complejos con pipes, redirecciones, conectores o saltos de línea no se reescriben.
+- Builds, tests e instalaciones conservan ejecución ilimitada cuando `timeout_seconds` se omite.
+- La versión central quedó en `0.2.2` para publicar esta corrección.

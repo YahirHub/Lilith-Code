@@ -18,13 +18,30 @@ func TestTerminalCommandTimeoutExplicitIsPreserved(t *testing.T) {
 	}
 }
 
+func TestTerminalCommandSearchGetsSafetyTimeout(t *testing.T) {
+	got := terminalCommandTimeout(map[string]any{"command": `grep -rn "needle"`})
+	if got != repositorySearchTimeout {
+		t.Fatalf("repository search timeout = %s; want %s", got, repositorySearchTimeout)
+	}
+}
+
+func TestTerminalCommandExplicitSearchTimeoutWins(t *testing.T) {
+	got := terminalCommandTimeout(map[string]any{"command": `grep -rn "needle"`, "timeout_seconds": float64(90)})
+	if got != 90*time.Second {
+		t.Fatalf("explicit search timeout = %s; want 90s", got)
+	}
+}
+
 func TestTerminalCommandSchemaDocumentsOptionalTimeout(t *testing.T) {
 	def, ok := Get("run_terminal_command")
 	if !ok {
 		t.Fatal("run_terminal_command no está registrado")
 	}
-	if !strings.Contains(def.Description, "when omitted the command runs until it finishes") {
-		t.Fatalf("la descripción no documenta la ejecución sin límite: %q", def.Description)
+	if !strings.Contains(def.Description, "builds/tests/installations run until completion") {
+		t.Fatalf("la descripción no documenta la ejecución sin límite para trabajos largos: %q", def.Description)
+	}
+	if !strings.Contains(def.Description, "30-second safety deadline") {
+		t.Fatalf("la descripción no documenta el límite de búsquedas: %q", def.Description)
 	}
 	if strings.Contains(strings.ToLower(def.Description), "default 30") {
 		t.Fatalf("la descripción aún anuncia un timeout por defecto: %q", def.Description)

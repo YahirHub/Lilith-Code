@@ -21,8 +21,9 @@ import (
 // to a temp file so the model can inspect it with read_files if needed. This
 // mirrors pi.dev's bash tool behaviour.
 const (
-	bashOutputMaxLines = 200
-	bashOutputMaxBytes = 32 << 10
+	bashOutputMaxLines      = 200
+	bashOutputMaxBytes      = 32 << 10
+	repositorySearchTimeout = 30 * time.Second
 )
 
 func init() {
@@ -30,15 +31,15 @@ func init() {
 		Name: "run_terminal_command",
 		Description: fmt.Sprintf(
 			"Run a command in the project directory with automatic shell selection and return stdout, "+
-				"stderr and the exit code. On Windows, neutral commands prefer PowerShell, CMD syntax uses cmd.exe, and POSIX syntax uses Bash when available; Linux/macOS/Termux prefer Bash/sh. Incomplete heredocs and oversized inline file-writing commands are rejected before execution; use write_file/append_file for generated content. `timeout_seconds` is optional: when omitted the command runs until it finishes or "+
-				"the user cancels it. Set a positive value only when a hard deadline is actually required. Output is tail-truncated to the last %d lines / %dKB per "+
+				"stderr and the exit code. On Windows, neutral commands prefer PowerShell, CMD syntax uses cmd.exe, and POSIX syntax uses Bash when available; Linux/macOS/Termux prefer Bash/sh. Incomplete heredocs and oversized inline file-writing commands are rejected before execution; use write_file/append_file for generated content. `timeout_seconds` is optional: when omitted, builds/tests/installations run until completion or cancellation, while repository searches (recursive grep, rg, find and git grep) receive a 30-second safety deadline. Recursive grep without an explicit target is rejected before execution so the model can use code_search or provide a concrete path. Output is tail-truncated to the last %d lines / %dKB per "+
 				"stream; when truncated the full stream is saved to a temp file whose path is reported so you can inspect "+
 				"it with read_files.",
 			bashOutputMaxLines, bashOutputMaxBytes/1024,
 		),
 		PromptSnippet: "Execute shell commands in the project directory",
 		PromptGuidelines: []string{
-			"Use run_terminal_command for builds, tests, git and shell inspection; prefer non-interactive commands. Omit timeout_seconds for long builds, installs and test suites unless a hard deadline is explicitly needed.",
+			"Use code_search for repository text/source lookups. Use run_terminal_command for builds, tests, git and shell inspection; avoid recursive grep when code_search or rg with an explicit path/glob is sufficient.",
+			"Omit timeout_seconds for long builds, installs and test suites unless a hard deadline is explicitly needed. Repository search commands receive a 30-second safety deadline when omitted.",
 			"Keep commands native to the detected host. shell=auto chooses PowerShell for neutral Windows commands, cmd for clear CMD syntax, Bash for clear POSIX syntax, and Bash/sh on Linux, macOS and Termux. Set shell explicitly only when the command intentionally requires one syntax.",
 			"Do not generate long files with heredocs, printf, PowerShell here-strings or base64 in the terminal. Use write_file for complete content or append_file for bounded sections; unsafe inline writes are blocked before execution.",
 			"When discarding output, use the selected shell's null device (/dev/null for Bash/sh, $null for PowerShell, NUL for CMD). Lilith normalizes common cross-shell mistakes defensively.",
@@ -49,7 +50,7 @@ func init() {
 			"properties": map[string]any{
 				"command":         map[string]any{"type": "string", "description": "Full command line to run using the selected shell syntax."},
 				"shell":           map[string]any{"type": "string", "enum": []string{"auto", "bash", "sh", "powershell", "cmd"}, "description": "Interpreter to use. Defaults to auto, which selects syntax-aware host-native execution."},
-				"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "description": "Optional hard deadline in seconds. When omitted, the command has no execution timeout and runs until completion or user cancellation."},
+				"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "description": "Optional hard deadline in seconds. When omitted, long-running builds/tests/installations are unlimited, while repository search commands use a 30-second safety deadline."},
 			},
 			"required": []string{"command"},
 		},
@@ -69,6 +70,9 @@ func init() {
 			fmt.Fprintf(&b, "exit_code: %d\n", res.ExitCode)
 			if res.TimedOut {
 				b.WriteString("timeout: yes\n")
+				if shell.IsRepositorySearchCommand(str(args, "command")) {
+					b.WriteString("hint: narrow the path/glob or use code_search for repository content\n")
+				}
 			}
 			if res.Canceled {
 				b.WriteString("canceled: yes\n")
@@ -169,10 +173,13 @@ func init() {
 
 func terminalCommandTimeout(args map[string]any) time.Duration {
 	seconds := intArg(args, "timeout_seconds", 0)
-	if seconds <= 0 {
-		return 0
+	if seconds > 0 {
+		return time.Duration(seconds) * time.Second
 	}
-	return time.Duration(seconds) * time.Second
+	if shell.IsRepositorySearchCommand(str(args, "command")) {
+		return repositorySearchTimeout
+	}
+	return 0
 }
 
 // boolArg extracts an optional boolean tool argument.

@@ -22,11 +22,11 @@ Versión concreta:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh -o install.sh
-sh install.sh 0.2.1
+sh install.sh 0.2.2
 rm install.sh
 ```
 
-También se puede usar `LI_VERSION=v0.2.1` o `LI_REPOSITORY` para un fork.
+También se puede usar `LI_VERSION=v0.2.2` o `LI_REPOSITORY` para un fork.
 
 ## Termux en Android
 
@@ -69,7 +69,7 @@ directorio al `PATH` persistente del usuario y también a la sesión actual.
 Versión concreta:
 
 ```powershell
-$env:LI_VERSION = '0.2.1'
+$env:LI_VERSION = '0.2.2'
 irm https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.ps1 | iex
 ```
 
@@ -85,7 +85,7 @@ install.cmd
 Versión concreta:
 
 ```cmd
-install.cmd 0.2.1
+install.cmd 0.2.2
 ```
 
 ## Primer arranque
@@ -244,6 +244,13 @@ alterar el código de salida.
 
 La herramienta rechaza heredocs incompletos y escrituras inline demasiado
 largas antes de iniciar el proceso.
+
+Para búsquedas dentro del repositorio debe preferirse `code_search`. Cuando el
+agente usa un `grep -r` o `grep -R` simple sin una ruta explícita, Lilith lo
+rechaza antes de crear el proceso y le indica que use `code_search` o una ruta
+concreta. Las búsquedas mediante `grep` recursivo, `rg`, `find` y `git grep`
+reciben un límite seguro de 30 segundos si no se indicó `timeout_seconds`;
+compilaciones, tests e instalaciones continúan sin timeout implícito.
 
 ## Releases
 
