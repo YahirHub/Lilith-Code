@@ -42,7 +42,7 @@ func TestRewindCommandRejectsActiveTurn(t *testing.T) {
 	if command == nil {
 		t.Fatal("/rewind is not registered")
 	}
-	if cmd := command.Run(ctx, &model, ""); cmd != nil {
+	if cmd := command.Run(ctx, model, ""); cmd != nil {
 		t.Fatal("/rewind must not open while a turn is active")
 	}
 	if len(model.messages) == 0 || !strings.Contains(model.messages[len(model.messages)-1].Content, "sólo puede ejecutarse") {
@@ -59,14 +59,14 @@ func TestRewindCommandRejectsDirectCommandAndBackgroundAgent(t *testing.T) {
 
 	direct := NewChat(ctx)
 	direct.beginRewindExternalOperation()
-	if cmd := command.Run(ctx, &direct, ""); cmd != nil {
+	if cmd := command.Run(ctx, direct, ""); cmd != nil {
 		t.Fatal("/rewind must not open while a direct command is running")
 	}
 	direct.endRewindExternalOperation()
 
 	background := NewChat(ctx)
 	background.agentPanels = map[string]*AgentPanel{"task-1": {TaskID: "task-1", Background: true, Status: "running"}}
-	if cmd := command.Run(ctx, &background, ""); cmd != nil {
+	if cmd := command.Run(ctx, background, ""); cmd != nil {
 		t.Fatal("/rewind must not open while a background agent is running")
 	}
 }
@@ -251,7 +251,7 @@ func TestRewindCodeRestoreCreatesReversibleSafetyPoint(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	screen := &RewindModel{ctx: ctx, chat: &model, selected: meta}
+	screen := &RewindModel{ctx: ctx, chat: model, selected: meta}
 	cmd := screen.startRestore(rewindCode)
 	if cmd == nil {
 		t.Fatal("rewind did not start")
@@ -299,7 +299,7 @@ func TestConversationOnlyRewindSkipsWorkspaceSafetyCapture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	screen := &RewindModel{ctx: ctx, chat: &model, selected: meta}
+	screen := &RewindModel{ctx: ctx, chat: model, selected: meta}
 	cmd := screen.startRestore(rewindConversation)
 	if cmd == nil {
 		t.Fatal("conversation-only rewind did not start")
@@ -341,7 +341,7 @@ func TestEscapeCancelsRewindAndIgnoresStaleResult(t *testing.T) {
 	_, cancel := context.WithCancel(context.Background())
 	screen := &RewindModel{
 		ctx:         ctx,
-		chat:        &model,
+		chat:        model,
 		stage:       rewindWorking,
 		selected:    rewind.Meta{ID: "point"},
 		operationID: 7,

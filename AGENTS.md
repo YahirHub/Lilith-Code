@@ -40,6 +40,7 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - `tview` controla el runtime físico; la UI visible se construye con los componentes internos de Lilith.
 - No bloquear el bucle de render con llamadas de red o procesos largos: usar `uikit.Cmd`.
 - El bucle de estado/streaming nunca debe esperar a `tview.QueueUpdateDraw`: el render físico corre en una cola latest-only independiente y limitada por frecuencia.
+- `ChatModel` contiene atomics y estado concurrente: debe construirse, almacenarse y pasarse siempre como `*ChatModel`. `NewChat` devuelve puntero; no reintroducir retornos, parámetros o asignaciones por valor que copien el modelo.
 - No concatenar ni dividir el transcript completo por cada delta. Mantener el historial estable en segmentos de líneas y reconstruir únicamente la cola mutable del turno.
 
 ### Inteligencia de código

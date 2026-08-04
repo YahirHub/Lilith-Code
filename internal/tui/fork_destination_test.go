@@ -28,8 +28,8 @@ func newForkDestinationTestModel(t *testing.T) (*ForkDestinationModel, *ChatMode
 	chat.sess = session.New(project)
 	chat.history = []openai.Message{{Role: "user", Content: "crea una alternativa"}}
 	chat.messages = []ChatMessage{{Kind: MsgUser, Content: "crea una alternativa"}}
-	selector := NewForkDestinationScreen(ctx, &chat, "Alternativa")
-	return selector, &chat, root
+	selector := NewForkDestinationScreen(ctx, chat, "Alternativa")
+	return selector, chat, root
 }
 
 func forkEntryIndex(entries []forkBrowserEntry, kind forkBrowserEntryKind, path string) int {
@@ -172,14 +172,14 @@ func TestForkDestinationStartsOutsideGitWorkspaceRootAndCapturesMouse(t *testing
 	ctx := &AppContext{ConfigDir: t.TempDir(), Styles: NewStyles(DefaultTheme()), Width: 80, Height: 24}
 	chat := NewChat(ctx)
 	chat.project = project
-	selector := NewForkDestinationScreen(ctx, &chat, "")
+	selector := NewForkDestinationScreen(ctx, chat, "")
 	if filepath.Clean(selector.sourceRoot) != filepath.Clean(repo) {
 		t.Fatalf("selector source root=%s, want Git root %s", selector.sourceRoot, repo)
 	}
 	if filepath.Clean(selector.currentDir) != filepath.Clean(filepath.Dir(repo)) {
 		t.Fatalf("selector started at %s, want outside repository %s", selector.currentDir, filepath.Dir(repo))
 	}
-	root := RootModel{ctx: ctx, chat: &chat, current: selector}
+	root := RootModel{ctx: ctx, chat: chat, current: selector}
 	if !root.wantsMouseCapture() {
 		t.Fatal("destination selector must enable mouse capture")
 	}

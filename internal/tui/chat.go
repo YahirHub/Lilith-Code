@@ -167,8 +167,9 @@ type ChatModel struct {
 
 	// /rewind stores a cheap conversation checkpoint at each user boundary and
 	// captures the workspace lazily before the first mutating tool. The mutable
-	// turn state is behind a pointer because ChatModel is intentionally copied by
-	// the framework-neutral model API; copying a sync.Mutex would be unsafe.
+	// turn state is behind a pointer because asynchronous tools and the persistent
+	// chat screen must share one mutable checkpoint state. ChatModel itself is
+	// always constructed and retained by pointer because it contains atomics.
 	rewindStore *rewind.Store
 	rewindTurn  *rewindTurnState
 
@@ -686,7 +687,7 @@ func isScrollKey(k string) bool {
 	return false
 }
 
-func NewChat(ctx *AppContext) ChatModel {
+func NewChat(ctx *AppContext) *ChatModel {
 	ta := textarea.New()
 	ta.Placeholder = "Escribe un mensaje…   ( / comandos · ! bash · Enter enviar/dirigir · Alt+Enter seguimiento · Shift+Enter salto · Esc abortar · Alt+↑ recuperar cola )"
 	ta.Prompt = "❯ "
@@ -709,7 +710,7 @@ func NewChat(ctx *AppContext) ChatModel {
 
 	project, _ := os.Getwd()
 	sessionCtx, sessionCancel := context.WithCancel(context.Background())
-	m := ChatModel{
+	m := &ChatModel{
 		ctx:                ctx,
 		viewport:           vp,
 		textarea:           ta,

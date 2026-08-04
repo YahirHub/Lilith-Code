@@ -141,14 +141,14 @@ func (m RootModel) mouseModeCmd() uikit.Cmd {
 // opens directly.
 func NewRootModel(ctx *AppContext) RootModel {
 	chat := NewChat(ctx)
-	m := RootModel{ctx: ctx, chat: &chat}
+	m := RootModel{ctx: ctx, chat: chat}
 	if ctx.Resume != nil {
 		chat.LoadSession(ctx.Resume)
 	}
 	if ctx.FirstRun {
 		m.current = NewOnboarding(ctx, true)
 	} else {
-		m.current = &chat
+		m.current = chat
 	}
 	return m
 }

@@ -122,6 +122,7 @@ Los estados se persisten en la sesión. Goal comparte las capacidades de impleme
 - TodoWrite, planes y goals se guardan en la sesión.
 - Skills y agentes pueden usar modelo heredado, explícito o lista de preferencias.
 - El orquestador ejecuta en paralelo los lotes puros de `Agent` preservando el orden protocolario de resultados. La cancelación se propaga a hijos anidados y `/clear`/cambio de sesión separan generaciones de eventos para impedir contaminación entre conversaciones.
+- La pantalla persistente de chat se conserva siempre como `*ChatModel`. El modelo contiene `atomic.Uint64` para aislar generaciones de agentes y nunca debe copiarse por valor; `NewChat` devuelve directamente el puntero usado por el router y las pantallas auxiliares.
 - Las tareas background siempre terminan con evento `completed`, `failed` o `canceled`; su panel se persiste y la notificación se entrega exactamente una vez antes del siguiente prompt actual. Desactivar background fuerza semántica foreground completa.
 - `task_id` reanuda con provider/modelo persistidos, rechaza reanudaciones concurrentes y falla de forma cerrada si el worktree aislado desapareció. Las sesiones hijas se publican mediante temporales únicos y reemplazo después de `Sync`.
 - El binario incluye `ponytail-development`, una metodología universal de desarrollo conservada como Agent Skill. `/config > Skills` mantiene un interruptor maestro y excepciones individuales persistidas en `disabledSkills`; una skill desactivada no aparece en activación automática, paleta, agentes ni invocación manual.
@@ -290,3 +291,5 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `109-estabilizar-prueba-cancelacion-anidada-windows.md`
 - `110-documentacion-visual-y-unificacion-historial.md`
 - `111-runner-linux-y-go-mod-tidy.md`
+- `112-termux-clonado-superficial-y-version-0-2-1.md`
+- `113-chatmodel-puntero-go-vet.md`

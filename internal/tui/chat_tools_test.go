@@ -56,10 +56,10 @@ func TestPartialToolCallShowsWorkingImmediately(t *testing.T) {
 	ctx := &AppContext{Styles: NewStyles(DefaultTheme())}
 	m := NewChat(ctx)
 	m.Resize(100, 30)
-	primeTestRequest(t, &m)
+	primeTestRequest(t, m)
 	m.thinking = true
 
-	_, _ = m.Update(activeStreamMsg(&m, chatStreamMsg{
+	_, _ = m.Update(activeStreamMsg(m, chatStreamMsg{
 		toolCalls: []openai.ToolCall{makeToolCall("create_file", `{"path":"demo.html","content":"<h1>hola</h1>"}`)},
 		partial:   true,
 	}))
@@ -89,10 +89,10 @@ func TestReasoningKeepsThinkingIndicatorActive(t *testing.T) {
 	ctx := &AppContext{Styles: NewStyles(DefaultTheme())}
 	m := NewChat(ctx)
 	m.Resize(100, 30)
-	primeTestRequest(t, &m)
+	primeTestRequest(t, m)
 	m.thinking = true
 
-	_, _ = m.Update(activeStreamMsg(&m, chatStreamMsg{thinking: "Analizando el cambio..."}))
+	_, _ = m.Update(activeStreamMsg(m, chatStreamMsg{thinking: "Analizando el cambio..."}))
 
 	if !m.thinking || m.working {
 		t.Fatalf("reasoning debe mantener Pensando activo: thinking=%v working=%v", m.thinking, m.working)
