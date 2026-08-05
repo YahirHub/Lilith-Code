@@ -209,3 +209,10 @@ En pruebas concurrentes, señalizar el estado observado de forma síncrona en la
 - `README.md` debe explicar qué puede hacer Lilith desde la perspectiva del usuario. Evitar allí detalles internos extensos de paquetes, locks, checksums, persistencia o implementación.
 - `install.md` concentra instalación, compilación, pruebas, releases y referencia técnica del runtime.
 - Las capturas públicas viven en `docs/images/` con nombres estables. Cuando se presenten varias pantallas, usar tablas HTML legibles con descripciones funcionales y texto alternativo; no enlazar imágenes desde rutas temporales externas.
+
+## 120 · Manifiestos Go y catálogo CommandCode
+
+- `go.sum` debe permanecer exactamente sincronizado con `go mod tidy` de Go 1.25.12; el workflow usa `go mod tidy -diff` y cualquier diferencia es un fallo real.
+- Todo modelo publicado por `/models` de CommandCode debe tener una entrada explícita en `internal/models/catalog.go`; no depender de `DefaultMaxContext` ni de coincidencias parciales para IDs conocidos.
+- Los prefijos de proveedor y sufijos de fecha/preview/free se normalizan, pero la clave normalizada de cada modelo soportado debe resolver de forma exacta.
+- La prueba `TestCommandCodeCatalogHasExplicitContextForPublishedModels` es la lista de regresión del catálogo recibido el 2026-08-05.

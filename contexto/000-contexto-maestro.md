@@ -354,3 +354,9 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - GitZip acepta una carpeta raíz exacta, selección con `include_paths` y omisiones con `exclude_paths`, tanto local como remotamente.
 - La paleta slash prioriza coincidencias exactas, `Tab` agrega un espacio final y las skills tienen tipo/color propio en la paleta y el editor.
 - Los `connection_id` son identificadores lógicos estables. `EOF`, ausencia de exit status, `broken pipe` y cierres de red disparan recuperación automática del transporte sin obligar al modelo a cerrar y volver a conectar. Las credenciales solicitadas se conservan sólo en memoria para esa conexión y no vuelven a pedirse al reparar. Un comando ya iniciado no se repite automáticamente si su resultado quedó incierto; los builds remotos no tienen timeout artificial cuando no se especifica uno.
+
+## 120 · Manifiestos Go y catálogo completo de CommandCode
+
+- `go.sum` quedó sincronizado con el resultado de `go mod tidy` de Go 1.25.12 para que la validación `go mod tidy -diff` del workflow sea reproducible.
+- El catálogo local cubre explícitamente los 50 IDs publicados por CommandCode el 2026-08-05, incluidos Claude 5/4.8/4.7/4.6, GPT-5.3 Codex, Qwen 3.8/3.7/3.6, Step 3.7/3.5, Gemini Flash/Lite, Fugu Ultra, Inkling y Muse Spark 1.1.
+- Los modelos conocidos nunca deben caer en `DefaultMaxContext`; la prueba exhaustiva exige coincidencia normalizada exacta y su ventana declarada.

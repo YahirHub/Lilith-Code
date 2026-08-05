@@ -55,3 +55,42 @@ func TestFetchModelsTreatsMissingEndpointAsUnsupportedCatalog(t *testing.T) {
 		t.Fatalf("error = %v, want unsupported catalog", err)
 	}
 }
+
+func TestFetchModelsEnrichesCurrentCommandCodeCatalog(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "list",
+			"data": []map[string]any{
+				{"id": "claude-fable-5", "object": "model"},
+				{"id": "Qwen/Qwen3.8-Max", "object": "model"},
+				{"id": "thinkingmachines/inkling-small", "object": "model"},
+				{"id": "meta/muse-spark-1.1", "object": "model"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	models, err := FetchModels(server.URL+"/v1", "")
+	if err != nil {
+		t.Fatalf("FetchModels() error = %v", err)
+	}
+
+	want := map[string]int{
+		"claude-fable-5":                 1_000_000,
+		"Qwen/Qwen3.8-Max":               1_000_000,
+		"thinkingmachines/inkling-small": 1_000_000,
+		"meta/muse-spark-1.1":            1_048_576,
+	}
+	if len(models) != len(want) {
+		t.Fatalf("models = %d, se esperaban %d", len(models), len(want))
+	}
+	for _, model := range models {
+		if model.MaxContextTokens != want[model.ID] {
+			t.Errorf("contexto de %q = %d, se esperaba %d", model.ID, model.MaxContextTokens, want[model.ID])
+		}
+		if model.Name == "" {
+			t.Errorf("%q no recibió nombre visible", model.ID)
+		}
+	}
+}
