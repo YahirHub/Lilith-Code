@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lilith/li/internal/tui/uikit"
 	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
@@ -24,6 +25,7 @@ import (
 	"github.com/lilith/li/internal/config"
 	ligoal "github.com/lilith/li/internal/goal"
 	"github.com/lilith/li/internal/hooks"
+	"github.com/lilith/li/internal/interaction"
 	"github.com/lilith/li/internal/mcp"
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/providers/openai"
@@ -203,6 +205,13 @@ type ChatModel struct {
 	// session never loses decisions.
 	planQuestion planQuestionDock
 
+	// permissionRequest is a local interaction dock rendered inside the chat.
+	// Confirmations and masked secrets never enter the transcript or model
+	// history and temporarily own the footer until the request is resolved.
+	permissionRequest  *interaction.Request
+	permissionSelected int
+	secretPrompt       *secretPromptState
+
 	// Paneles de archivo en vivo (creación/edición con diff plegable).
 	livePanels  map[int]*FilePanel
 	panelByCall map[string]*FilePanel
@@ -233,6 +242,11 @@ type ChatModel struct {
 	paletteOpen bool
 	paletteIdx  int
 	paletteRows []SlashCommand
+	// skillNameCache is refreshed while building the slash palette so rendering
+	// the input can color an exact skill token without rescanning SKILL.md files
+	// on every animation frame.
+	skillNameCache       map[string]struct{}
+	skillNameCacheLoaded bool
 
 	// userScrolled es true cuando el usuario desplazó el transcript hacia
 	// arriba manualmente. Mientras lo esté, el auto-scroll a fondo queda
@@ -715,6 +729,7 @@ func NewChat(ctx *AppContext) *ChatModel {
 		viewport:           vp,
 		textarea:           ta,
 		mode:               ModeDefault,
+		skillNameCache:     map[string]struct{}{},
 		store:              session.NewStore(ctx.ConfigDir),
 		rewindStore:        rewind.NewStore(ctx.ConfigDir),
 		rewindTurn:         &rewindTurnState{},
@@ -2226,6 +2241,7 @@ func (m *ChatModel) paletteView(w int) string {
 
 func (m *ChatModel) inputBoxView(w int) string {
 	s := m.ctx.Styles
+	m.updateInputPrefixHighlight()
 	contentWidth := chatBorderedContentWidth(w)
 	style := s.InputBoxFocused
 	switch m.selectedAgentMode() {
@@ -2239,6 +2255,49 @@ func (m *ChatModel) inputBoxView(w int) string {
 		box = s.Badge.Render(" BASH ") + "\n" + box
 	}
 	return box
+}
+
+func (m *ChatModel) updateInputPrefixHighlight() {
+	value := m.textarea.Value()
+	if !strings.HasPrefix(value, "/") {
+		m.textarea.ClearPrefixHighlight()
+		return
+	}
+	end := strings.IndexAny(value, " \t\r\n")
+	if end < 0 {
+		end = len(value)
+	}
+	token := strings.TrimPrefix(value[:end], "/")
+	if token == "" {
+		m.textarea.ClearPrefixHighlight()
+		return
+	}
+	length := utf8.RuneCountInString(value[:end])
+	if FindCommand(token) != nil {
+		m.textarea.SetPrefixHighlight(length, tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Primary).Bold(true))
+		return
+	}
+	if !m.skillNameCacheLoaded {
+		m.refreshSkillNameCache()
+	}
+	if _, ok := m.skillNameCache[strings.ToLower(token)]; ok {
+		m.textarea.SetPrefixHighlight(length, tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Secondary).Bold(true))
+		return
+	}
+	m.textarea.ClearPrefixHighlight()
+}
+
+func (m *ChatModel) refreshSkillNameCache() {
+	m.skillNameCache = map[string]struct{}{}
+	m.skillNameCacheLoaded = true
+	if !m.skillsEnabled() {
+		return
+	}
+	for _, skill := range m.loadSkills() {
+		if skill.UserInvocable {
+			m.skillNameCache[strings.ToLower(skill.Name)] = struct{}{}
+		}
+	}
 }
 
 // queuePanelView renderiza los mensajes pendientes dentro de la zona inferior
@@ -2338,6 +2397,13 @@ func (m *ChatModel) bottomChromeParts(w, usedTokens, maxTokens int) []string {
 	// instead of floating over it. Returning to the bottom restores them.
 	if m.userScrolled {
 		return nil
+	}
+
+	// Local permission requests stay in the conversation footer rather than
+	// replacing the entire application. They have priority over plan questions
+	// because the running tool is synchronously waiting for this decision.
+	if dock := m.permissionDockView(w); dock != "" {
+		return []string{dock, RenderStatusBar(m.ctx, string(m.mode), usedTokens, maxTokens)}
 	}
 
 	// OpenCode keeps questions in the footer instead of replacing the whole TUI.
@@ -2481,32 +2547,30 @@ func (m *ChatModel) updatePalette() {
 	}
 }
 
-// buildPalette mezcla los comandos slash con las skills (Claude Agent Skills)
-// disponibles. Las skills aparecen como entradas virtuales /skills:<nombre>
-// pero también se autocompletan por su nombre sin el prefijo, tal como pidió
-// el usuario. Filtramos por subsecuencia igual que en FilterCommands.
+// buildPalette mezcla comandos slash y skills invocables. Las skills conservan
+// un tipo visual propio, pero Tab completa la forma corta /<nombre> seguida por
+// un espacio. El ranking global prioriza coincidencias exactas y prefijos.
 func (m *ChatModel) buildPalette(query string) []SlashCommand {
 	rows := FilterCommands(query)
 	if !m.skillsEnabled() {
+		m.skillNameCache = map[string]struct{}{}
+		m.skillNameCacheLoaded = true
 		return rows
 	}
 	q := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(query, "/")))
 	q = strings.TrimPrefix(q, "skills:")
+	q = strings.TrimPrefix(q, "skill:")
 	seen := map[string]bool{}
 	for _, row := range rows {
 		seen[strings.ToLower(row.Name)] = true
 	}
+	m.skillNameCache = map[string]struct{}{}
+	m.skillNameCacheLoaded = true
 	for _, s := range m.loadSkills() {
 		if !s.UserInvocable || seen[strings.ToLower(s.Name)] {
 			continue
 		}
-		if q != "" {
-			if _, ok := subsequenceMatch(s.Name, q); !ok {
-				if _, ok2 := subsequenceMatch("skills:"+s.Name, q); !ok2 {
-					continue
-				}
-			}
-		}
+		m.skillNameCache[strings.ToLower(s.Name)] = struct{}{}
 		name := s.Name
 		kind := "skill"
 		if s.LegacyCommand {
@@ -2514,15 +2578,21 @@ func (m *ChatModel) buildPalette(query string) []SlashCommand {
 		}
 		desc := kind + " · " + s.Description
 		skillName := s.Name
-		rows = append(rows, SlashCommand{
+		row := SlashCommand{
 			Name:        name,
 			Usage:       s.ArgumentHint,
 			Description: desc,
+			Kind:        SlashItemSkill,
 			Run: func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd {
 				return chat.invokeSkill(skillName, args)
 			},
-		})
+		}
+		if _, ok := slashMatchScore(row, q); !ok {
+			continue
+		}
+		rows = append(rows, row)
 	}
+	sortSlashRows(rows, query)
 	return rows
 }
 
@@ -3079,6 +3149,9 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 		return m, nil
 
 	case uikit.MouseMsg:
+		if handled, cmd := m.handlePermissionMouse(v); handled {
+			return m, cmd
+		}
 		if handled, cmd := m.handlePlanQuestionMouse(v); handled {
 			return m, cmd
 		}
@@ -3091,6 +3164,9 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 		return m, uikit.Batch(cmd, m.chatMouseModeCmd())
 
 	case uikit.KeyMsg:
+		if handled, cmd := m.handlePermissionKey(v); handled {
+			return m, cmd
+		}
 		if handled, cmd := m.handlePlanQuestionKey(v); handled {
 			return m, cmd
 		}
@@ -3193,7 +3269,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			case "tab":
 				if len(m.paletteRows) > 0 {
 					c := m.paletteRows[m.paletteIdx]
-					m.textarea.SetValue("/" + c.Name)
+					m.textarea.SetValue("/" + c.Name + " ")
 					m.textarea.CursorEnd()
 					m.updatePalette()
 				}

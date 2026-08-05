@@ -5,6 +5,8 @@ import (
 
 	"github.com/lilith/li/internal/tui/uikit"
 
+	"github.com/lilith/li/internal/interaction"
+
 	"github.com/lilith/li/internal/providers"
 	"github.com/lilith/li/internal/providers/openai"
 	"github.com/lilith/li/internal/session"
@@ -21,6 +23,8 @@ type AppContext struct {
 	FirstRun  bool
 	// Resume es la conversación a reanudar al arrancar (`li --continue`).
 	Resume *session.Session
+	// Interactions carries local confirmations and masked secrets from tools to the TUI.
+	Interactions *interaction.Bridge
 }
 
 // ReloadProviders refreshes AppContext.Providers from disk + bundled catalog.
@@ -65,10 +69,11 @@ func showError(err error) uikit.Cmd { return func() uikit.Msg { return errMsg{er
 
 // RootModel wraps whichever screen is active.
 type RootModel struct {
-	ctx     *AppContext
-	current uikit.Model
-	chat    *ChatModel // persistent chat model
-	cancel  context.CancelFunc
+	ctx                 *AppContext
+	current             uikit.Model
+	chat                *ChatModel // persistent chat model
+	cancel              context.CancelFunc
+	interactionPrevious uikit.Model
 }
 
 // chatRuntimeMsg reports whether msg belongs to the persistent chat runtime
@@ -103,7 +108,7 @@ func (m RootModel) chatVisible() bool {
 }
 
 func (m *ChatModel) wantsMouseCapture() bool {
-	return m != nil && (m.hasPendingPlanQuestions() || m.todoExpandable())
+	return m != nil && (m.hasPendingPermission() || m.hasPendingPlanQuestions() || m.todoExpandable())
 }
 
 // chatMouseModeCmd enables mouse reporting only when chat currently exposes a
@@ -155,18 +160,47 @@ func NewRootModel(ctx *AppContext) RootModel {
 
 func (m RootModel) Init() uikit.Cmd {
 	if m.current == nil {
-		return nil
+		return waitInteractionCmd(m.ctx.Interactions)
 	}
+	var screenCmd uikit.Cmd
 	// Auxiliary screens start with logical mouse capture in both terminal backends.
 	// Only chat needs an Init-time override so native text selection stays active.
 	if m.chatVisible() {
-		return uikit.Batch(m.current.Init(), m.mouseModeCmd())
+		screenCmd = uikit.Batch(m.current.Init(), m.mouseModeCmd())
+	} else {
+		screenCmd = m.current.Init()
 	}
-	return m.current.Init()
+	return uikit.Batch(screenCmd, waitInteractionCmd(m.ctx.Interactions))
 }
 
 func (m RootModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 	switch v := msg.(type) {
+	case interactionRequestMsg:
+		if v.request == nil {
+			return m, waitInteractionCmd(m.ctx.Interactions)
+		}
+		if v.request.Canceled() {
+			v.request.Resolve(interaction.Result{Canceled: true})
+			return m, waitInteractionCmd(m.ctx.Interactions)
+		}
+		if m.current != m.chat {
+			m.interactionPrevious = m.current
+		} else {
+			m.interactionPrevious = nil
+		}
+		m.current = m.chat
+		return m, uikit.Batch(m.chat.openPermission(v.request), m.mouseModeCmd())
+	case interactionResolvedMsg:
+		if v.request != nil {
+			v.request.Resolve(v.result)
+		}
+		if m.interactionPrevious != nil {
+			m.current = m.interactionPrevious
+			m.interactionPrevious = nil
+		} else {
+			m.current = m.chat
+		}
+		return m, uikit.Batch(m.mouseModeCmd(), waitInteractionCmd(m.ctx.Interactions))
 	case uikit.WindowSizeMsg:
 		m.ctx.Width = v.Width
 		m.ctx.Height = v.Height

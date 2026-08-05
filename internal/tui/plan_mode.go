@@ -139,6 +139,11 @@ func (m *ChatModel) toolEnvWithAgentEvents(root string, mode planstate.Mode, eve
 		AgentMode: mode,
 		Agents:    agentCatalog,
 	}
+	if m.ctx.Interactions != nil {
+		env.RequestSecret = m.ctx.Interactions.RequestSecretKind
+		env.Confirm = m.ctx.Interactions.RequestConfirm
+		env.Approve = m.ctx.Interactions.RequestApproval
+	}
 	env.RunAgent = func(ctx context.Context, req tools.AgentRequest) (tools.AgentResult, error) {
 		cfg := subagents.Config{
 			Client: m.ctx.Client, Providers: m.ctx.Providers, ConfigDir: m.ctx.ConfigDir, Root: root, StoreProject: m.project,
@@ -146,6 +151,11 @@ func (m *ChatModel) toolEnvWithAgentEvents(root string, mode planstate.Mode, eve
 			ParentMessages: parentMessages, ParentToolNames: parentTools, Skills: skillCatalog,
 			Agents: agentCatalog, CodeIntel: codeIntel, Depth: 1, Events: events, BackgroundContext: m.sessionCtx, ParentMCP: m.mcpRuntime,
 			PluginHooks: m.loadClaudePluginHooks(),
+		}
+		if m.ctx.Interactions != nil {
+			cfg.RequestSecret = m.ctx.Interactions.RequestSecretKind
+			cfg.Confirm = m.ctx.Interactions.RequestConfirm
+			cfg.Approve = m.ctx.Interactions.RequestApproval
 		}
 		return subagents.Dispatch(ctx, cfg, req, backgroundTasksAllowed())
 	}

@@ -28,7 +28,7 @@ function Invoke-Go {
 }
 
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
-    throw "Go no está disponible en PATH. Instala Go 1.24 o posterior y abre una terminal nueva."
+    throw "Go no está disponible en PATH. Instala Go 1.25.12 o posterior y abre una terminal nueva."
 }
 
 $previousSumDB = $env:GOSUMDB

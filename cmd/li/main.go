@@ -10,11 +10,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lilith/li/internal/config"
+	"github.com/lilith/li/internal/interaction"
 	"github.com/lilith/li/internal/logx"
 	"github.com/lilith/li/internal/platformargs"
 	"github.com/lilith/li/internal/providers"
 	"github.com/lilith/li/internal/providers/openai"
 	"github.com/lilith/li/internal/session"
+	"github.com/lilith/li/internal/sshremote"
 	"github.com/lilith/li/internal/tui"
 	buildversion "github.com/lilith/li/internal/version"
 )
@@ -82,12 +84,20 @@ func runTUI(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
+	interactions := interaction.NewBridge()
+	defer sshremote.ShutdownAll()
+	// Close the interaction bridge before ShutdownAll runs (defer is LIFO). This
+	// releases any pending in-chat secret or permission widget before the SSH
+	// manager locks the vault and tears down its logical connections.
+	defer interactions.Close()
+
 	ctx := &tui.AppContext{
-		ConfigDir: dir,
-		Providers: provCfg,
-		Client:    openai.NewClient(dir),
-		Styles:    tui.NewStyles(tui.DefaultTheme()),
-		FirstRun:  firstRun,
+		ConfigDir:    dir,
+		Interactions: interactions,
+		Providers:    provCfg,
+		Client:       openai.NewClient(dir),
+		Styles:       tui.NewStyles(tui.DefaultTheme()),
+		FirstRun:     firstRun,
 	}
 	if continueLast {
 		cwd, err := os.Getwd()

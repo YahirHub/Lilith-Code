@@ -22,11 +22,11 @@ Versión concreta:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh -o install.sh
-sh install.sh 0.2.3
+sh install.sh 0.3.0
 rm install.sh
 ```
 
-También se puede usar `LI_VERSION=v0.2.3` o `LI_REPOSITORY` para un fork.
+También se puede usar `LI_VERSION=v0.3.0` o `LI_REPOSITORY` para un fork.
 
 ## Termux en Android
 
@@ -69,7 +69,7 @@ directorio al `PATH` persistente del usuario y también a la sesión actual.
 Versión concreta:
 
 ```powershell
-$env:LI_VERSION = '0.2.3'
+$env:LI_VERSION = '0.3.0'
 irm https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.ps1 | iex
 ```
 
@@ -85,7 +85,7 @@ install.cmd
 Versión concreta:
 
 ```cmd
-install.cmd 0.2.3
+install.cmd 0.3.0
 ```
 
 ## Primer arranque
@@ -110,7 +110,7 @@ li version
 
 ## Compilar manualmente
 
-Requiere Go 1.24 o superior:
+Requiere Go 1.25.12 o superior:
 
 ```bash
 git clone https://github.com/YahirHub/Lilith-Code.git lilith
@@ -164,6 +164,81 @@ La regresión de cancelación anidada puede repetirse de manera aislada:
 ```cmd
 go test -mod=readonly -tags=grammar_set_core -count=10 -run "^TestCancelParentTearsDownNestedAgentTree$" ./internal/subagents
 ```
+
+## SSH, perfiles y bóveda de credenciales
+
+La herramienta interna `ssh_remote` mantiene conexiones durante la ejecución de
+Lilith y expone acciones equivalentes a Codewolf para:
+
+- registrar, consultar, renombrar, actualizar y eliminar servidores;
+- conectar mediante contraseña, clave privada, `SSH_AUTH_SOCK` o variables de entorno;
+- fijar opcionalmente la huella SHA-256 de la clave del host;
+- ejecutar comandos, conservar el directorio remoto y abrir shells PTY persistentes;
+- listar, leer, escribir, subir, descargar, renombrar y eliminar mediante SFTP;
+- consultar, desbloquear, bloquear y cambiar la contraseña maestra de la bóveda.
+
+Los perfiles sin secretos se guardan en:
+
+```text
+~/.li/ssh-servers.json
+```
+
+Las contraseñas y passphrases que el usuario decide conservar se guardan en:
+
+```text
+~/.li/ssh-secrets.enc
+```
+
+La bóveda deriva una clave de 256 bits con scrypt (`N=32768`, `r=8`, `p=1`) y
+cifra el contenido mediante AES-256-GCM con salt e IV aleatorios. La contraseña
+maestra nunca se persiste. La clave derivada y el contenido descifrado sólo
+permanecen en memoria mientras el proceso está abierto; `li` cierra conexiones,
+shells, agentes SSH y bloquea la bóveda al terminar.
+
+Los prompts de contraseña se transportan por un puente local entre la herramienta
+y la TUI. El valor enmascarado no forma parte de los argumentos del tool call, del
+historial, de la sesión ni de los logs. `/config > Seguridad` permite controlar el
+modo seguro, que exige una confirmación local antes de operaciones SSH sensibles.
+
+`private_key_path` relativo se resuelve desde la raíz del proyecto. En Linux,
+macOS y Termux se admite el socket Unix de `SSH_AUTH_SOCK`. En Windows se admiten
+rutas AF_UNIX expuestas por `SSH_AUTH_SOCK` y named pipes; cuando no existe una
+variable configurada, Lilith intenta de forma segura el agente OpenSSH integrado
+en `\\.\pipe\openssh-ssh-agent` sin convertir su ausencia en un error de conexión.
+
+## GitZip local y remoto
+
+La herramienta interna `gitzip` admite `create`, `upload`, `remote_create` y
+`remote_extract`, con formatos `zip`, `tar` y `tar.gz`.
+
+Para crear el manifiesto recorre reglas anidadas de:
+
+```text
+.gitignore
+.lilithignore
+.codewolfignore
+.codebuffignore
+.manicodeignore
+```
+
+Siempre excluye cualquier directorio `.git`, el archivo de salida y los
+manifiestos temporales. También excluye `.env`, `.env.local` y variantes reales;
+`.env.example`, `.env.sample`, `.env.template`, `.env.dist` y `.env.defaults` sí
+pueden incluirse. Cuando `include_protected_env=true`, Lilith pide una segunda
+confirmación local si la protección está activa.
+
+Las operaciones remotas reutilizan un `connection_id` abierto por `ssh_remote`.
+La creación TAR remota usa un manifiesto NUL y `tar --no-recursion --null -T`; los
+argumentos adicionales se limitan a una allowlist conservadora. ZIP usa una lista
+explícita de archivos. Ninguna operación remota abre una segunda conexión
+implícita ni almacena credenciales dentro del archivo.
+
+Dependencias nuevas del runtime:
+
+- `golang.org/x/crypto` para SSH, agentes y scrypt;
+- `github.com/pkg/sftp` para transferencias y operaciones de archivos remotos.
+
+Estas versiones requieren Go 1.25.12, que pasa a ser la versión mínima del proyecto.
 
 ## Skills y carga de instrucciones
 

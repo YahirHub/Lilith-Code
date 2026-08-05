@@ -8,8 +8,8 @@ import (
 
 // SuggestionMenu renders the "/" command palette above the input bar.
 // Layout mimics the pi.dev / Claude Code palette: a bullet indicator, the
-// command/skill name in the primary color, and a right-hand description
-// column that stays aligned across rows.
+// command name in the primary color, skill name in the secondary color, and a
+// right-hand description column that stays aligned across rows.
 type SuggestionMenu struct {
 	Items    []SlashCommand
 	Selected int
@@ -110,7 +110,7 @@ func descriptionFor(c SlashCommand) string {
 }
 
 func isSkillItem(c SlashCommand) bool {
-	return strings.HasPrefix(c.Name, "skills:") || strings.HasPrefix(c.Name, "skill:")
+	return c.Kind == SlashItemSkill || strings.HasPrefix(c.Name, "skills:") || strings.HasPrefix(c.Name, "skill:")
 }
 
 func clipMenu(s string, max int) string {

@@ -19,6 +19,7 @@ import (
 	"github.com/lilith/li/internal/config"
 	"github.com/lilith/li/internal/hooks"
 	"github.com/lilith/li/internal/instructions"
+	"github.com/lilith/li/internal/interaction"
 	"github.com/lilith/li/internal/mcp"
 	limemory "github.com/lilith/li/internal/memory"
 	planstate "github.com/lilith/li/internal/plan"
@@ -80,7 +81,10 @@ type Config struct {
 	// PluginHooks carries active plugin-owned lifecycle hooks. Standard
 	// user/project hooks are loaded directly in the child so their cwd follows
 	// worktree isolation without duplicating entries from the parent.
-	PluginHooks *hooks.Runner
+	PluginHooks   *hooks.Runner
+	RequestSecret func(ctx context.Context, secretKind interaction.SecretKind, title, message string, confirm bool, minLength int) (string, error)
+	Confirm       func(ctx context.Context, title, message string) (bool, error)
+	Approve       func(ctx context.Context, title, message, approvalKey string) (interaction.ApprovalDecision, error)
 }
 
 func StartBackground(cfg Config, req tools.AgentRequest) (tools.AgentResult, error) {
@@ -419,7 +423,7 @@ func run(ctx context.Context, cfg Config, req tools.AgentRequest, taskLeaseHeld 
 	}
 
 	var active []string
-	env := tools.Env{Root: cfg.Root, CodeIntel: codeIntel, ConfigDir: cfg.ConfigDir, Skills: cfg.Skills, Todos: localTodos, AgentMode: mode, MemoryDir: memoryDir}
+	env := tools.Env{Root: cfg.Root, CodeIntel: codeIntel, ConfigDir: cfg.ConfigDir, Skills: cfg.Skills, Todos: localTodos, AgentMode: mode, MemoryDir: memoryDir, RequestSecret: cfg.RequestSecret, Confirm: cfg.Confirm, Approve: cfg.Approve}
 	env.DynamicTool = func(toolCtx context.Context, name string, args map[string]any) (string, error) {
 		if cfg.ParentMCP != nil && cfg.ParentMCP.Has(name) {
 			if !policy.allowsDynamic(name, cfg.ParentMCP.IsReadOnly(name)) {

@@ -47,6 +47,17 @@ type Settings struct {
 	// TrustedProjects authoriza settings/hooks ejecutables del proyecto. Los
 	// hooks globales del usuario no requieren esta aprobación explícita.
 	TrustedProjects []string `json:"trustedProjects,omitempty"`
+	// SSHRemote controla qué categorías de acciones SSH requieren una aprobación
+	// humana local. La política predeterminada protege cambios críticos sin
+	// interrumpir cada comando remoto.
+	SSHRemote SSHRemoteSecurity `json:"sshRemote"`
+	// SSHProjectApprovals remembers narrowly-scoped SSH approvals selected from
+	// the chat widget. Each rule is tied to one project and one action/server
+	// identity; it does not globally disable the SSH security policy.
+	SSHProjectApprovals []SSHProjectApproval `json:"sshProjectApprovals,omitempty"`
+	// ProtectEnvFiles exige una segunda autorización antes de empaquetar archivos
+	// .env reales con GitZip. Las plantillas .env.example/sample siguen permitidas.
+	ProtectEnvFiles bool `json:"protectEnvFiles"`
 }
 
 // IsSkillEnabled reports whether an individual skill is allowed by settings.
@@ -96,12 +107,194 @@ func SetSkillEnabled(s *Settings, name string, enabled bool) {
 	sort.Strings(s.DisabledSkills)
 }
 
+type SSHApprovalMode string
+
+type SSHPermissionCategory string
+
+const (
+	SSHApprovalEveryAction  SSHApprovalMode = "every_action"
+	SSHApprovalCommandsOnly SSHApprovalMode = "commands_only"
+	SSHApprovalCriticalOnly SSHApprovalMode = "critical_only"
+	SSHApprovalTrustModel   SSHApprovalMode = "trust_model"
+	SSHApprovalCustom       SSHApprovalMode = "custom"
+
+	SSHPermissionConnect     SSHPermissionCategory = "connect"
+	SSHPermissionRead        SSHPermissionCategory = "read"
+	SSHPermissionCommands    SSHPermissionCategory = "commands"
+	SSHPermissionFileChanges SSHPermissionCategory = "file_changes"
+	SSHPermissionDelete      SSHPermissionCategory = "delete"
+	SSHPermissionCredentials SSHPermissionCategory = "credentials"
+	SSHPermissionVault       SSHPermissionCategory = "vault"
+)
+
+// SSHRemoteSecurity persists both convenient presets and a custom category
+// matrix. Custom values are retained while another preset is active so the
+// user can switch away and return without rebuilding the policy.
+type SSHRemoteSecurity struct {
+	Mode               SSHApprovalMode `json:"mode"`
+	ConfirmConnect     bool            `json:"confirmConnect"`
+	ConfirmRead        bool            `json:"confirmRead"`
+	ConfirmCommands    bool            `json:"confirmCommands"`
+	ConfirmFileChanges bool            `json:"confirmFileChanges"`
+	ConfirmDelete      bool            `json:"confirmDelete"`
+	ConfirmCredentials bool            `json:"confirmCredentials"`
+	ConfirmVault       bool            `json:"confirmVault"`
+}
+
+type SSHProjectApproval struct {
+	Project string `json:"project"`
+	Rule    string `json:"rule"`
+}
+
+func DefaultSSHRemoteSecurity() SSHRemoteSecurity {
+	return SSHRemoteSecurity{
+		Mode:               SSHApprovalCriticalOnly,
+		ConfirmConnect:     false,
+		ConfirmRead:        false,
+		ConfirmCommands:    false,
+		ConfirmFileChanges: true,
+		ConfirmDelete:      true,
+		ConfirmCredentials: true,
+		ConfirmVault:       false,
+	}
+}
+
+func NormalizeSSHRemoteSecurity(value SSHRemoteSecurity) SSHRemoteSecurity {
+	switch value.Mode {
+	case SSHApprovalEveryAction, SSHApprovalCommandsOnly, SSHApprovalCriticalOnly, SSHApprovalTrustModel, SSHApprovalCustom:
+	default:
+		value.Mode = SSHApprovalCriticalOnly
+	}
+	return value
+}
+
+func SSHApprovalRequired(s Settings, category SSHPermissionCategory) bool {
+	security := NormalizeSSHRemoteSecurity(s.SSHRemote)
+	switch security.Mode {
+	case SSHApprovalEveryAction:
+		return category != ""
+	case SSHApprovalCommandsOnly:
+		return category == SSHPermissionCommands
+	case SSHApprovalCriticalOnly:
+		return category == SSHPermissionFileChanges || category == SSHPermissionDelete || category == SSHPermissionCredentials
+	case SSHApprovalTrustModel:
+		return false
+	case SSHApprovalCustom:
+		switch category {
+		case SSHPermissionConnect:
+			return security.ConfirmConnect
+		case SSHPermissionRead:
+			return security.ConfirmRead
+		case SSHPermissionCommands:
+			return security.ConfirmCommands
+		case SSHPermissionFileChanges:
+			return security.ConfirmFileChanges
+		case SSHPermissionDelete:
+			return security.ConfirmDelete
+		case SSHPermissionCredentials:
+			return security.ConfirmCredentials
+		case SSHPermissionVault:
+			return security.ConfirmVault
+		}
+	}
+	return false
+}
+
+func SetSSHCustomPermission(security *SSHRemoteSecurity, category SSHPermissionCategory, enabled bool) {
+	if security == nil {
+		return
+	}
+	security.Mode = SSHApprovalCustom
+	switch category {
+	case SSHPermissionConnect:
+		security.ConfirmConnect = enabled
+	case SSHPermissionRead:
+		security.ConfirmRead = enabled
+	case SSHPermissionCommands:
+		security.ConfirmCommands = enabled
+	case SSHPermissionFileChanges:
+		security.ConfirmFileChanges = enabled
+	case SSHPermissionDelete:
+		security.ConfirmDelete = enabled
+	case SSHPermissionCredentials:
+		security.ConfirmCredentials = enabled
+	case SSHPermissionVault:
+		security.ConfirmVault = enabled
+	}
+}
+
+func HasSSHProjectApproval(s Settings, project, rule string) bool {
+	project = filepath.Clean(strings.TrimSpace(project))
+	rule = strings.ToLower(strings.TrimSpace(rule))
+	if project == "." || project == "" || rule == "" {
+		return false
+	}
+	for _, approval := range s.SSHProjectApprovals {
+		if strings.EqualFold(filepath.Clean(strings.TrimSpace(approval.Project)), project) &&
+			strings.EqualFold(strings.TrimSpace(approval.Rule), rule) {
+			return true
+		}
+	}
+	return false
+}
+
+func AddSSHProjectApproval(s *Settings, project, rule string) {
+	if s == nil {
+		return
+	}
+	project = filepath.Clean(strings.TrimSpace(project))
+	rule = strings.ToLower(strings.TrimSpace(rule))
+	if project == "." || project == "" || rule == "" || HasSSHProjectApproval(*s, project, rule) {
+		return
+	}
+	s.SSHProjectApprovals = append(s.SSHProjectApprovals, SSHProjectApproval{Project: project, Rule: rule})
+	sort.Slice(s.SSHProjectApprovals, func(i, j int) bool {
+		left := strings.ToLower(s.SSHProjectApprovals[i].Project + "\x00" + s.SSHProjectApprovals[i].Rule)
+		right := strings.ToLower(s.SSHProjectApprovals[j].Project + "\x00" + s.SSHProjectApprovals[j].Rule)
+		return left < right
+	})
+}
+
+func ClearSSHProjectApprovals(s *Settings, project string) int {
+	if s == nil {
+		return 0
+	}
+	project = filepath.Clean(strings.TrimSpace(project))
+	kept := s.SSHProjectApprovals[:0]
+	removed := 0
+	for _, approval := range s.SSHProjectApprovals {
+		if strings.EqualFold(filepath.Clean(strings.TrimSpace(approval.Project)), project) {
+			removed++
+			continue
+		}
+		kept = append(kept, approval)
+	}
+	s.SSHProjectApprovals = kept
+	return removed
+}
+
+func CountSSHProjectApprovals(s Settings, project string) int {
+	project = filepath.Clean(strings.TrimSpace(project))
+	if project == "." || project == "" {
+		return 0
+	}
+	count := 0
+	for _, approval := range s.SSHProjectApprovals {
+		if strings.EqualFold(filepath.Clean(strings.TrimSpace(approval.Project)), project) {
+			count++
+		}
+	}
+	return count
+}
+
 func Defaults() Settings {
 	return Settings{
 		ProjectInstructionsEnabled: true,
 		ClaudeCompatibilityEnabled: true,
 		AutoMemoryEnabled:          true,
 		HooksEnabled:               true,
+		SSHRemote:                  DefaultSSHRemoteSecurity(),
+		ProtectEnvFiles:            true,
 	}
 }
 
@@ -139,6 +332,21 @@ func Load(dir string) (Settings, error) {
 		// Corrupted file: return defaults so onboarding can rewrite it.
 		return Defaults(), nil
 	}
+	// Migrate the original all-or-nothing sshSafeMode switch. Its enabled state
+	// becomes the less intrusive critical-only preset, which preserves local
+	// protection without asking before every remote command.
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) == nil {
+		if _, hasNew := raw["sshRemote"]; !hasNew {
+			if legacyRaw, ok := raw["sshSafeMode"]; ok {
+				var legacy bool
+				if json.Unmarshal(legacyRaw, &legacy) == nil && !legacy {
+					s.SSHRemote.Mode = SSHApprovalTrustModel
+				}
+			}
+		}
+	}
+	s.SSHRemote = NormalizeSSHRemoteSecurity(s.SSHRemote)
 	return s, nil
 }
 

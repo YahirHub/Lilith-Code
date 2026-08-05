@@ -6,6 +6,7 @@ import (
 
 	"github.com/lilith/li/internal/tui/uikit"
 	termansi "github.com/lilith/li/internal/tui/uikit/ansi"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 )
 
 func TestCursorRendersAtLogicalPosition(t *testing.T) {
@@ -20,6 +21,24 @@ func TestCursorRendersAtLogicalPosition(t *testing.T) {
 	plain := termansi.Strip(model.View())
 	if !strings.Contains(plain, "ab▌cd") {
 		t.Fatalf("cursor fuera de posición: %q", plain)
+	}
+}
+
+func TestPrefixHighlightKeepsTextAndCursorIntact(t *testing.T) {
+	model := New()
+	model.SetWidth(40)
+	model.SetHeight(1)
+	model.FocusedStyle.Text = tuistyle.NewStyle().Foreground("#ffffff")
+	model.SetValue("/web-design crea una web")
+	model.SetPrefixHighlight(len([]rune("/web-design")), tuistyle.NewStyle().Foreground("#ff00ff").Bold(true))
+	model.Focus()
+	view := model.View()
+	if !strings.Contains(view, "\x1b[") {
+		t.Fatalf("no se generó estilo ANSI: %q", view)
+	}
+	plain := termansi.Strip(view)
+	if !strings.Contains(plain, "/web-design crea una web▌") {
+		t.Fatalf("el resaltado alteró el texto o cursor: %q", plain)
 	}
 }
 

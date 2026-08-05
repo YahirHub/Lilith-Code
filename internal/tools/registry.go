@@ -14,6 +14,7 @@ import (
 	"github.com/lilith/li/internal/agents"
 	"github.com/lilith/li/internal/codeintel"
 	ligoal "github.com/lilith/li/internal/goal"
+	"github.com/lilith/li/internal/interaction"
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/skills"
 	litodo "github.com/lilith/li/internal/todo"
@@ -63,6 +64,14 @@ type Env struct {
 	// ValidateTool performs argument-aware runtime policy checks immediately
 	// before execution (for example the Plan-mode shell allowlist).
 	ValidateTool func(name string, def Definition, args map[string]any) error
+	// RequestSecret asks the local TUI for a masked value. The value bypasses the
+	// model, tool arguments, transcript and session persistence.
+	RequestSecret func(ctx context.Context, secretKind interaction.SecretKind, title, message string, confirm bool, minLength int) (string, error)
+	// Confirm asks the local user before a sensitive action.
+	Confirm func(ctx context.Context, title, message string) (bool, error)
+	// Approve exposes scoped decisions for SSH: once, this process session, or
+	// always for the current project. Other confirmation flows keep using Confirm.
+	Approve func(ctx context.Context, title, message, approvalKey string) (interaction.ApprovalDecision, error)
 	// DynamicTool executes schemas supplied outside the static registry (MCP).
 	// It is consulted only for unknown names, keeping built-in policy explicit.
 	DynamicTool func(ctx context.Context, name string, args map[string]any) (string, error)
@@ -274,6 +283,8 @@ var (
 	shellPattern         = regexp.MustCompile(`(?i)\b(ejecuta|execute|run|comando|command|terminal|bash|shell|compila|compile|build|test|prueba|git|npm|go run|instala|install)\b`)
 	urlPattern           = regexp.MustCompile(`(?i)(https?://|\b(url|web|p(a|á)gina|docs? online|documentaci(o|ó)n online)\b)`)
 	webSearchPattern     = regexp.MustCompile(`(?i)\b(internet|web|online|actualizado|actualizada|reciente|latest|current|news|noticias|hoy|today)\b|última\s+versión|ultima\s+version|latest\s+version`)
+	sshPattern           = regexp.MustCompile(`(?i)\b(ssh|sftp|servidor remoto|servidores remotos|remote server|remote host|b[oó]veda|vault|contrase[nñ]a ssh|clave privada|private key|deploy remoto|despliegue remoto)\b`)
+	archivePattern       = regexp.MustCompile(`(?i)\b(gitzip|zip|tar(?:\.gz)?|archivo comprimido|comprimir|empaquetar|archive|package|subir proyecto|upload project)\b`)
 )
 
 var promptHints = []struct {
@@ -294,6 +305,8 @@ var promptHints = []struct {
 	{shellPattern, []string{"run_terminal_command"}},
 	{urlPattern, []string{"read_url"}},
 	{webSearchPattern, []string{"web_search"}},
+	{sshPattern, []string{"ssh_remote"}},
+	{archivePattern, []string{"gitzip"}},
 }
 
 // IsDirectChat reports a pure greeting/acknowledgement: no schemas at all.

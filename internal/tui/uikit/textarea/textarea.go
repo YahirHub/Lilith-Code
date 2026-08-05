@@ -21,10 +21,13 @@ type Model struct {
 	MaxHeight                  int
 	FocusedStyle, BlurredStyle Style
 
-	width, height int
-	value         []rune
-	cursor        int
-	focused       bool
+	width, height     int
+	value             []rune
+	cursor            int
+	focused           bool
+	prefixLength      int
+	prefixStyle       tuistyle.Style
+	prefixHighlighted bool
 }
 
 func New() Model { return Model{Prompt: "> ", width: 80, height: 1} }
@@ -46,6 +49,20 @@ func (m *Model) SetValue(v string) {
 func (m *Model) Reset()                { m.value = nil; m.cursor = 0 }
 func (m *Model) CursorEnd()            { m.cursor = len(m.value) }
 func (m *Model) InsertString(v string) { m.insert([]rune(normalize(v))) }
+func (m *Model) SetPrefixHighlight(length int, style tuistyle.Style) {
+	if length <= 0 {
+		m.ClearPrefixHighlight()
+		return
+	}
+	m.prefixLength = length
+	m.prefixStyle = style
+	m.prefixHighlighted = true
+}
+func (m *Model) ClearPrefixHighlight() {
+	m.prefixLength = 0
+	m.prefixStyle = tuistyle.Style{}
+	m.prefixHighlighted = false
+}
 func (m *Model) SetWidth(v int) {
 	if v < 1 {
 		v = 1
@@ -130,6 +147,22 @@ func (m Model) View() string {
 
 	continuationPrompt := strings.Repeat(" ", max(1, tuistyle.Width(m.Prompt)))
 	out := make([]string, len(lines))
+	remainingPrefix := m.prefixLength
+	if placeholder || !m.prefixHighlighted {
+		remainingPrefix = 0
+	}
+	// Account for wrapped rows above the visible window so highlighting never
+	// jumps to later text when the editor scrolls vertically.
+	if start > 0 && remainingPrefix > 0 {
+		allLines := wrap(display, contentWidth)
+		for _, line := range allLines[:min(start, len(allLines))] {
+			remainingPrefix -= logicalRuneCount(line)
+			if remainingPrefix <= 0 {
+				remainingPrefix = 0
+				break
+			}
+		}
+	}
 	for index, line := range lines {
 		prefix := continuationPrompt
 		if start+index == 0 {
@@ -138,10 +171,43 @@ func (m Model) View() string {
 		if placeholder {
 			out[index] = promptStyle.Render(prefix) + m.BlurredStyle.Text.Render(line)
 		} else {
-			out[index] = promptStyle.Render(prefix) + textStyle.Render(line)
+			styled, consumed := renderPrefixHighlight(line, remainingPrefix, m.prefixStyle, textStyle)
+			remainingPrefix -= consumed
+			if remainingPrefix < 0 {
+				remainingPrefix = 0
+			}
+			out[index] = promptStyle.Render(prefix) + styled
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+func renderPrefixHighlight(line string, remaining int, prefixStyle, textStyle tuistyle.Style) (string, int) {
+	if remaining <= 0 || line == "" {
+		return textStyle.Render(line), 0
+	}
+	runes := []rune(line)
+	split := 0
+	consumed := 0
+	for split < len(runes) && consumed < remaining {
+		// The cursor glyph is injected by View and is not part of the underlying
+		// input, so it must not consume a highlighted source rune.
+		if runes[split] != '▌' {
+			consumed++
+		}
+		split++
+	}
+	return prefixStyle.Render(string(runes[:split])) + textStyle.Render(string(runes[split:])), consumed
+}
+
+func logicalRuneCount(line string) int {
+	count := 0
+	for _, r := range line {
+		if r != '▌' {
+			count++
+		}
+	}
+	return count
 }
 
 func wrap(s string, width int) []string {

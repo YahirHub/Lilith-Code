@@ -34,15 +34,16 @@ var configSections = []configSection{
 // owns focus. Once focus moves into a section, the section can use left/right
 // for its own controls without accidentally switching pages.
 type ConfigScreen struct {
-	ctx            *AppContext
-	settings       config.Settings
-	section        configSection
-	focus          string
-	message        string
-	danger         string
-	loaded         []skills.Skill
-	search         *searchConfigState
-	viewportOffset int
+	ctx             *AppContext
+	settings        config.Settings
+	section         configSection
+	focus           string
+	message         string
+	danger          string
+	loaded          []skills.Skill
+	search          *searchConfigState
+	sshSecurityOpen bool
+	viewportOffset  int
 }
 
 func NewConfigScreen(ctx *AppContext) *ConfigScreen {
@@ -78,6 +79,10 @@ func (c *ConfigScreen) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 		if !ok {
 			return c, nil
 		}
+		if c.sshSecurityOpen {
+			c.focus = hit.id
+			return c.handleSSHSecurityAction(hit.id)
+		}
 		if strings.HasPrefix(hit.id, "section:") {
 			c.setSection(configSection(strings.TrimPrefix(hit.id, "section:")))
 			c.focus = configSectionNavFocus
@@ -106,11 +111,18 @@ func (c *ConfigScreen) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			return c.toggleSetting("hooks")
 		case "trusted-project":
 			return c.toggleSetting("trusted-project")
+		case "ssh-remote":
+			return c.openSSHSecurity()
+		case "protect-env":
+			return c.toggleSetting("protect-env")
 		case "back":
 			return c, switchToChat()
 		}
 
 	case uikit.KeyMsg:
+		if c.sshSecurityOpen {
+			return c.updateSSHSecurityKey(v)
+		}
 		// Nested search screens (provider detail, API key and fallback order)
 		// own their keyboard completely until they return to the provider list.
 		if c.section == configSectionSearch && c.search.inNestedView() {
@@ -175,9 +187,13 @@ func (c *ConfigScreen) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 				if c.section == configSectionGeneral {
 					return c.toggleSetting(c.focus)
 				}
-			case "trusted-project":
+			case "trusted-project", "protect-env":
 				if c.section == configSectionSecurity {
 					return c.toggleSetting(c.focus)
+				}
+			case "ssh-remote":
+				if c.section == configSectionSecurity {
+					return c.openSSHSecurity()
 				}
 			case "back":
 				return c, switchToChat()
@@ -194,6 +210,7 @@ func (c *ConfigScreen) setSection(section configSection) {
 		}
 		c.section = section
 		c.focus = configSectionNavFocus
+		c.sshSecurityOpen = false
 		if section == configSectionSearch && c.search != nil {
 			c.search.resetToList()
 			c.search.reload()
@@ -227,7 +244,7 @@ func (c *ConfigScreen) focusFirstContent() {
 		c.focus = "search-content"
 		c.search.ensureSelectedProvider()
 	case configSectionSecurity:
-		c.focus = "trusted-project"
+		c.focus = "ssh-remote"
 	}
 }
 
@@ -238,7 +255,7 @@ func (c *ConfigScreen) moveFocus(delta int) {
 	} else if c.section == configSectionSkills {
 		order = c.skillFocusOrder()
 	} else if c.section == configSectionSecurity {
-		order = []string{"trusted-project", "back"}
+		order = []string{"ssh-remote", "protect-env", "trusted-project", "back"}
 	}
 	idx := 0
 	for i, id := range order {
@@ -332,11 +349,11 @@ func (c *ConfigScreen) fullLayout() (string, []settingsHit) {
 	s := c.ctx.Styles
 	w := settingsContentWidth(c.ctx.Width)
 	canvas := newSettingsCanvas(w)
-	canvas.block(settingsHeader(s, "Configuración", c.sectionSubtitle()))
+	canvas.block(settingsHeader(s, c.screenTitle(), c.sectionSubtitle()))
 	canvas.blank()
 
 	searchNested := c.section == configSectionSearch && c.search != nil && c.search.inNestedView()
-	if !searchNested {
+	if !searchNested && !c.sshSecurityOpen {
 		canvas.block(c.sectionPicker(w))
 		canvas.blank()
 	}
@@ -370,7 +387,15 @@ func (c *ConfigScreen) fullLayout() (string, []settingsHit) {
 	case configSectionSearch:
 		c.search.appendLayout(canvas, w, c.focus == "search-content")
 	case configSectionSecurity:
+		if c.sshSecurityOpen {
+			c.appendSSHSecurityLayout(canvas, w)
+			break
+		}
 		trusted := config.IsProjectTrusted(c.settings, currentProject())
+		canvas.block(c.navigationFocusCard(w, "ssh-remote", "SSH Remoto", "Configura cuándo Lilith debe pedir aprobación para conexiones, lecturas, comandos, cambios, eliminaciones y credenciales.", sshApprovalModeLabel(c.settings.SSHRemote.Mode)))
+		canvas.blank()
+		canvas.block(c.toggleFocusCard(w, "protect-env", "Proteger archivos .env", "GitZip no pide confirmación para usarse; sólo solicita una aprobación independiente si se intenta incluir un .env real.", c.settings.ProtectEnvFiles))
+		canvas.blank()
 		canvas.block(c.toggleFocusCard(w, "trusted-project", "Proyecto confiable", "Autoriza hooks y configuración ejecutable de .claude para este proyecto. Desactívalo si no confías en el repositorio.", trusted))
 		canvas.blank()
 		canvas.block(settingsCard(s, settingsCardSpec{
@@ -492,7 +517,17 @@ func (c *ConfigScreen) sectionPicker(width int) settingsBlock {
 	)
 }
 
+func (c *ConfigScreen) screenTitle() string {
+	if c.sshSecurityOpen {
+		return "Seguridad > SSH Remoto"
+	}
+	return "Configuración"
+}
+
 func (c *ConfigScreen) sectionSubtitle() string {
+	if c.sshSecurityOpen {
+		return "Define cuándo una acción requiere aprobación local dentro del chat."
+	}
 	if c.section == configSectionSearch && c.search != nil && c.search.inNestedView() {
 		return c.search.nestedSubtitle()
 	}
@@ -509,6 +544,9 @@ func (c *ConfigScreen) sectionSubtitle() string {
 }
 
 func (c *ConfigScreen) footerText() string {
+	if c.sshSecurityOpen {
+		return "↑↓ mover · Enter seleccionar/cambiar · Esc volver a Seguridad"
+	}
 	if c.focus == configSectionNavFocus {
 		return "←→ cambiar sección · ↓ entrar · clic · Esc volver"
 	}
@@ -527,6 +565,8 @@ func (c *ConfigScreen) toggleSetting(id string) (uikit.Model, uikit.Cmd) {
 		c.settings.HooksEnabled = !c.settings.HooksEnabled
 	case "trusted-project":
 		config.SetProjectTrusted(&c.settings, currentProject(), !config.IsProjectTrusted(c.settings, currentProject()))
+	case "protect-env":
+		c.settings.ProtectEnvFiles = !c.settings.ProtectEnvFiles
 	default:
 		return c, nil
 	}

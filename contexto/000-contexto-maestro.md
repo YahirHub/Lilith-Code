@@ -10,7 +10,7 @@ El proyecto conserva un diseño inspirado en agentes de terminal modernos, pero 
 
 ## 2. Stack vigente
 
-- Go 1.24+.
+- Go 1.25.12+.
 - `tview v0.42.0` como runtime interactivo.
 - Tcell como backend de pantalla, teclado, ratón y pegado.
 - Widgets y ciclo lógico propios en `internal/tui/uikit`.
@@ -35,6 +35,9 @@ internal/tui/                 chat y pantallas interactivas
 internal/tui/uikit/           componentes TUI propios
 internal/version/             versión SemVer única para binarios y releases
 internal/tools/               herramientas del agente
+internal/sshremote/           perfiles, bóveda, conexiones SSH, shells y SFTP
+internal/gitzip/              manifiestos ignore y archivos ZIP/TAR/TAR.GZ
+internal/interaction/         prompts locales de secretos y confirmaciones
 internal/skills/              runtime y recursos de Agent Skills
 assets/skills/                skills genéricas embebidas en el binario
 internal/codeintel/           índice sintáctico, LSP, SCIP y validación por lenguaje
@@ -256,7 +259,7 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags=grammar_set_core ./cmd/li
 GOOS=android GOARCH=arm64 CGO_ENABLED=0 go test -tags=grammar_set_core ./cmd/li
 ```
 
-El entorno de entrega puede usar stubs locales sólo para comprobar la arquitectura cuando no tenga acceso a módulos o Go 1.24; nunca presentar esa comprobación como sustituto de una prueba final con las dependencias oficiales en Windows/Linux/Android. La compatibilidad interactiva de Termux requiere además una prueba en dispositivo ARM64 real.
+El entorno de entrega puede usar stubs locales sólo para comprobar la arquitectura cuando no tenga acceso a módulos o Go 1.25.12; nunca presentar esa comprobación como sustituto de una prueba final con las dependencias oficiales en Windows/Linux/Android. La compatibilidad interactiva de Termux requiere además una prueba en dispositivo ARM64 real.
 
 ## 14. Documentos recientes clave
 
@@ -295,6 +298,9 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `113-chatmodel-puntero-go-vet.md`
 - `114-busquedas-terminal-acotadas.md`
 - `115-compatibilidad-argumentos-str-replace.md`
+- `116-ssh-gitzip-boveda-segura.md`
+- `117-corregir-colision-helpers-ssh-gitzip.md`
+- `118-sesion-boveda-politicas-ssh-widget-permisos.md`
 
 ## 114 · Búsquedas de terminal acotadas y versión 0.2.2
 
@@ -312,3 +318,39 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - La TUI usa los mismos alias para mostrar el diff real en lugar de un panel `+0`, y la compactación histórica reconoce esos campos para no reenviar cuerpos grandes.
 - Omitir el campo de reemplazo se rechaza sin modificar el archivo; una eliminación requiere una cadena vacía explícita.
 - La versión central quedó en `0.2.3` para publicar la corrección.
+
+
+## 116 · SSH persistente, bóveda segura y GitZip; versión 0.3.0
+
+- `ssh_remote` incorpora el registro global de servidores, conexiones persistentes, comandos, directorio remoto, shells PTY y operaciones SFTP compatibles con el flujo de Codewolf.
+- Las credenciales guardadas se cifran con scrypt y AES-256-GCM en `~/.li/ssh-secrets.enc`; sólo la bóveda cifrada persiste. El material descifrado permanece en memoria y se elimina junto con todas las conexiones al cerrar Lilith.
+- `interaction.Bridge` permite pedir contraseñas o autorizaciones dentro de la TUI sin incluir los valores en el modelo, herramientas, historial o sesiones. Los subagentes reutilizan el mismo canal local.
+- `gitzip` crea ZIP/TAR/TAR.GZ locales o remotos, respeta archivos ignore anidados y protege `.git` y `.env`. Las operaciones remotas reutilizan una conexión SSH existente y emplean manifiestos explícitos.
+- `/config > Seguridad` controla confirmaciones SSH y protección de archivos `.env`.
+- Se añadieron `golang.org/x/crypto v0.54.0` y `github.com/pkg/sftp v1.13.11`; el mínimo pasa a Go 1.25.12 y la versión de Lilith a `0.3.0`.
+
+
+## 117 · Compilación de SSH y GitZip
+
+- Las nuevas herramientas no redeclaran los helpers históricos `boolArg` e `intArg` del paquete `internal/tools`.
+- `boolArgOr` e `intArgOr` viven en `internal/tools/args_optional.go` y conservan defaults, `false`, cero y valores negativos explícitos.
+- SSH y GitZip comparten esos helpers sin acoplarse entre sí ni cambiar la semántica de herramientas existentes.
+- La versión permanece en `0.3.0` porque esta corrección pertenece al bloque SSH/GitZip aún no publicado.
+
+
+## 118 · Sesión de bóveda, políticas SSH y permisos dentro del chat
+
+- La bóveda SSH no se desbloquea durante el arranque. Se abre de forma perezosa cuando una conexión necesita una credencial cifrada y permanece abierta únicamente en memoria hasta cerrar Lilith o ejecutar `lock_vault`; las tareas posteriores reutilizan esa sesión.
+- `Settings.SSHRemote` reemplaza `SSHSafeMode` con políticas para cambios críticos, cada acción, sólo comandos, confianza total o categorías personalizadas. La migración conserva la intención de configuraciones antiguas sin seguir interrumpiendo cada comando.
+- `/config > Seguridad > SSH Remoto` ofrece controles específicos para conexiones, lecturas, comandos, cambios de archivos, eliminaciones, perfiles/credenciales y bloqueo manual de la bóveda.
+- Aprobaciones y secretos se muestran como widgets locales en el pie del chat. Los secretos usan entrada enmascarada, textos explícitos según contraseña maestra/servidor/passphrase y nunca entran al historial.
+- GitZip deja de solicitar confirmaciones genéricas. Sólo la inclusión explícita de archivos `.env` conserva su autorización separada.
+
+## 119 · Tipos de secreto, permisos con alcance, GitZip selectivo y paleta slash
+
+- Los prompts sensibles usan un `SecretKind` explícito. La contraseña remota ya no puede aparecer rotulada como contraseña maestra sólo porque la explicación mencione la bóveda.
+- `EnsureWritable` abre/crea la bóveda antes de solicitar una credencial para guardar; una vez abierta, todas las lecturas y escrituras de esa ejecución reutilizan la misma clave en memoria.
+- El widget SSH permite una vez, durante la sesión, siempre para esa acción/destino en el proyecto o denegar. Los permisos permanentes se administran y eliminan desde `/config > Seguridad > SSH Remoto`.
+- GitZip acepta una carpeta raíz exacta, selección con `include_paths` y omisiones con `exclude_paths`, tanto local como remotamente.
+- La paleta slash prioriza coincidencias exactas, `Tab` agrega un espacio final y las skills tienen tipo/color propio en la paleta y el editor.
+- Los `connection_id` son identificadores lógicos estables. `EOF`, ausencia de exit status, `broken pipe` y cierres de red disparan recuperación automática del transporte sin obligar al modelo a cerrar y volver a conectar. Las credenciales solicitadas se conservan sólo en memoria para esa conexión y no vuelven a pedirse al reparar. Un comando ya iniciado no se repite automáticamente si su resultado quedó incierto; los builds remotos no tienen timeout artificial cuando no se especifica uno.

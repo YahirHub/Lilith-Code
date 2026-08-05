@@ -306,7 +306,47 @@ func TestConfigSecurityDownFocusesFirstControl(t *testing.T) {
 
 	next, _ := m.Update(uikit.KeyMsg{Type: uikit.KeyDown})
 	m = next.(*ConfigScreen)
-	if m.focus != "trusted-project" {
-		t.Fatalf("security first focus = %q, want trusted-project", m.focus)
+	if m.focus != "ssh-remote" {
+		t.Fatalf("security first focus = %q, want ssh-remote", m.focus)
+	}
+}
+
+func TestSecurityOpensDedicatedSSHRemoteScreenAndPersistsPreset(t *testing.T) {
+	ctx := testConfigContext(t)
+	m := NewConfigScreen(ctx)
+	m.setSection(configSectionSecurity)
+
+	next, _ := m.Update(uikit.KeyMsg{Type: uikit.KeyDown})
+	m = next.(*ConfigScreen)
+	if m.focus != "ssh-remote" {
+		t.Fatalf("security first focus=%q", m.focus)
+	}
+	next, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyEnter})
+	m = next.(*ConfigScreen)
+	if !m.sshSecurityOpen {
+		t.Fatal("SSH Remote dedicated screen did not open")
+	}
+	view := stripANSI(m.View())
+	for _, want := range []string{"Seguridad > SSH Remoto", "Cambios críticos", "Cada acción", "Sólo comandos", "Confiar en el modelo", "Personalizado", "Permisos personalizados"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("SSH security screen missing %q:\n%s", want, view)
+		}
+	}
+
+	m.focus = "ssh-mode:" + string(config.SSHApprovalTrustModel)
+	next, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyEnter})
+	m = next.(*ConfigScreen)
+	persisted, err := config.Load(ctx.ConfigDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.SSHRemote.Mode != config.SSHApprovalTrustModel {
+		t.Fatalf("persisted SSH mode=%q", persisted.SSHRemote.Mode)
+	}
+
+	next, _ = m.Update(uikit.KeyMsg{Type: uikit.KeyEsc})
+	m = next.(*ConfigScreen)
+	if m.sshSecurityOpen || m.focus != "ssh-remote" {
+		t.Fatalf("Esc did not return to Security: open=%v focus=%q", m.sshSecurityOpen, m.focus)
 	}
 }

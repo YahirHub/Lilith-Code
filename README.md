@@ -20,6 +20,8 @@ en Linux, macOS, servidores por SSH y Termux.
 - Modos Build, Plan y Goal para implementar, planificar o mantener un objetivo.
 - Lectura, edición y validación de proyectos en distintos lenguajes.
 - Recuperación de sesiones y continuidad al trabajar en VPS o conexiones inestables.
+- Conexiones SSH persistentes con servidores reutilizables y credenciales protegidas por una bóveda local.
+- GitZip para empaquetar y desplegar proyectos respetando los archivos ignore del repositorio.
 
 ## Recorrido visual
 
@@ -171,6 +173,73 @@ También puedes invocar una directamente:
 ```text
 /skill:ponytail-development revisar este proyecto
 ```
+
+Al escribir `/`, los comandos y skills se ordenan por coincidencia real: una
+coincidencia exacta como `/login` aparece antes que resultados difusos. `Tab`
+completa el nombre y agrega automáticamente un espacio para continuar escribiendo.
+Los comandos y las skills usan colores distintos tanto en la paleta como en el
+token inicial del editor.
+
+## SSH y bóveda segura
+
+Lilith puede guardar perfiles de servidores, abrir conexiones SSH persistentes y
+reutilizarlas para ejecutar comandos, navegar directorios, transferir archivos o
+trabajar con una shell remota. Las contraseñas y passphrases se solicitan mediante
+un popup enmascarado dentro del mismo chat: no se agregan a la conversación, no se
+guardan en el historial y no se envían al modelo.
+
+Cuando eliges conservar una credencial, Lilith la guarda cifrada en su bóveda
+SSH. La bóveda no se abre al iniciar el CLI: su contraseña maestra se solicita
+solamente cuando una conexión necesita por primera vez una credencial guardada.
+Después permanece desbloqueada únicamente en memoria durante esa ejecución, por
+lo que las tareas SSH posteriores no vuelven a pedirla. Las contraseñas de servidor
+o passphrases solicitadas para una conexión directa también se retienen sólo en
+memoria mientras esa conexión lógica exista, permitiendo reparar el transporte sin
+mostrar el popup otra vez. Los textos distinguen explícitamente la contraseña
+maestra de la bóveda, la contraseña de la cuenta del servidor remoto y la
+passphrase de una clave privada. Guardar otra credencial reutiliza la bóveda ya
+abierta: sólo aparece el campo correspondiente al servidor o a la clave privada.
+
+Cada `connection_id` representa una conexión lógica estable. Si el servidor, la
+red o un proxy cierran el transporte y producen `EOF`, Lilith abre un transporte
+nuevo automáticamente sin cambiar el identificador. Los comandos que ya pudieron
+haberse ejecutado no se repiten a ciegas: el resultado indica cuando el código de
+salida quedó sin confirmar y permite verificar el estado usando el mismo
+`connection_id`, sin cerrar ni reconectar manualmente. Un monitor detecta cierres
+del transporte y el siguiente uso lo repara; `pwd`, `cd` y las operaciones SFTP
+seguras se reintentan automáticamente. Los comandos SSH no tienen un límite
+artificial predeterminado, para no cortar compilaciones o despliegues largos. Al
+cerrar Lilith se cierran las conexiones y la bóveda vuelve a quedar bloqueada.
+
+Las aprobaciones de acciones SSH aparecen como un widget dentro del mismo chat,
+sin sustituir toda la interfaz. Puedes elegir la política desde:
+
+```text
+/config > Seguridad > SSH Remoto
+```
+
+Hay presets para proteger sólo cambios críticos, pedir permiso en cada acción,
+pedirlo únicamente al ejecutar comandos o confiar en el modelo. También puedes
+activar permisos específicos para conexiones, lecturas, comandos, cambios de
+archivos, eliminaciones, perfiles/credenciales y bloqueo manual de la bóveda. En
+cada solicitud puedes **permitir una vez**, **permitir durante la sesión**,
+**permitir siempre esa acción para ese destino dentro del proyecto** o denegarla.
+Los permisos permanentes del proyecto se pueden borrar desde la misma pantalla.
+
+## GitZip
+
+GitZip crea archivos listos para compartir o desplegar sin incluir el historial
+`.git` ni los elementos descartados por `.gitignore`. También reconoce reglas de
+`.lilithignore`, `.codewolfignore`, `.codebuffignore` y `.manicodeignore`, incluso
+cuando aparecen dentro de subdirectorios.
+
+Puede crear ZIP, TAR o TAR.GZ en el equipo, subirlos mediante una conexión SSH,
+construirlos directamente en el servidor y extraerlos de forma remota. Los
+archivos `.env` reales quedan fuera por defecto y requieren una autorización
+local independiente para incluirlos. El uso normal de GitZip no solicita una
+confirmación genérica adicional. `source_path` permite empaquetar una carpeta
+concreta; `include_paths` selecciona únicamente rutas o patrones determinados y
+`exclude_paths` omite carpetas, archivos o globs adicionales.
 
 ## Comandos útiles
 
