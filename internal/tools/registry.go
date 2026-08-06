@@ -275,12 +275,12 @@ var (
 	fullFileWritePattern = regexp.MustCompile(`(?i)\b(reporte|report|documento|document|markdown|readme|archivo completo|full file|reescribe|rewrite|regenera|regenerate|sobrescribe|overwrite)\b`)
 	appendFilePattern    = regexp.MustCompile(`(?i)\b(append|anexa|anexar|concatena|concatenar|por secciones|section by section|reporte|report)\b`)
 	createSearchPattern  = regexp.MustCompile(`(?i)\b(create|new|crear|nuevo|nueva|generar|genera|add new|agrega nuevo|añade nuevo)\b`)
-	searchPattern        = regexp.MustCompile(`(?i)\b(busca|search|encuentra|find|grep|d(o|ó)nde|where|localiza|usages|referencias)\b`)
+	searchPattern        = regexp.MustCompile(`(?i)\b(busca|search|encuentra|find|grep|ripgrep|rg|d(o|ó)nde|where|localiza|usages|referencias)\b`)
 	symbolPattern        = regexp.MustCompile(`(?i)\b(s(i|í)mbolo|symbol|funci(o|ó)n|function|m(e|é)todo|method|clase|class|struct|interface|definition|definici(o|ó)n|callers?|llamadas?)\b`)
 	semanticPattern      = regexp.MustCompile(`(?i)\b(lsp|language server|semantic|sem(a|á)ntic|tipos?|types?|diagn(o|ó)stic|hover|go to definition|referencias exactas)\b`)
 	validationPattern    = regexp.MustCompile(`(?i)\b(valida|validate|lint|formatter|format|typecheck|compila|compile|build|tests?|pruebas?|go vet|cargo check)\b`)
 	scipPattern          = regexp.MustCompile(`(?i)\b(scip|semantic index|indice sem(a|á)ntico|índice sem(a|á)ntico)\b`)
-	shellPattern         = regexp.MustCompile(`(?i)\b(ejecuta|execute|run|comando|command|terminal|bash|shell|compila|compile|build|test|prueba|git|npm|go run|instala|install)\b`)
+	shellPattern         = regexp.MustCompile(`(?i)\b(ejecuta|execute|run|comando|command|terminal|bash|shell|portable|embebid[ao]|posix|sin bash|without bash|compila|compile|build|test|prueba|git|npm|go run|instala|install)\b`)
 	urlPattern           = regexp.MustCompile(`(?i)(https?://|\b(url|web|p(a|á)gina|docs? online|documentaci(o|ó)n online)\b)`)
 	webSearchPattern     = regexp.MustCompile(`(?i)\b(internet|web|online|actualizado|actualizada|reciente|latest|current|news|noticias|hoy|today)\b|última\s+versión|ultima\s+version|latest\s+version`)
 	sshPattern           = regexp.MustCompile(`(?i)\b(ssh|sftp|servidor remoto|servidores remotos|remote server|remote host|b[oó]veda|vault|contrase[nñ]a ssh|clave privada|private key|deploy remoto|despliegue remoto)\b`)
@@ -417,7 +417,7 @@ func init() {
 	register(Definition{
 		Name: "tool_search",
 		Description: "Search available tools by keyword and enable them for the next calls. " +
-			"Use this when you need to read, write, append or search project files, inspect/search skills, run commands, control a browser, or fetch a URL " +
+			"Use this when you need to read, write, append or search project files (including search without ripgrep), inspect/search skills, run native or portable-shell commands, control a browser, or fetch a URL " +
 			"and that tool is not loaded yet.",
 		PromptSnippet: "Discover and enable additional tools on demand",
 		Parameters: map[string]any{
@@ -425,7 +425,7 @@ func init() {
 			"properties": map[string]any{
 				"query": map[string]any{
 					"type":        "string",
-					"description": "Keywords, e.g. \"write file\", \"append report\", \"search skill\" or \"run command\".",
+					"description": "Keywords, e.g. \"write file\", \"append report\", \"search code\", \"portable shell\" or \"run command\".",
 				},
 			},
 			"required": []string{"query"},

@@ -310,3 +310,27 @@ func TestMemoryWriteRejectsPlaceholderPath(t *testing.T) {
 		t.Fatalf("memory placeholder created files: %v", entries)
 	}
 }
+
+func TestSelectPortableShellAndRipgrepQueries(t *testing.T) {
+	for _, query := range []string{"usa shell portable sin bash", "busca con ripgrep en el repositorio"} {
+		got := strings.Join(Select(query), ",")
+		if strings.Contains(query, "shell") && !strings.Contains(got, "run_terminal_command") {
+			t.Fatalf("portable shell query did not expose terminal tool: %q", got)
+		}
+		if strings.Contains(query, "ripgrep") && !strings.Contains(got, "code_search") {
+			t.Fatalf("ripgrep query did not expose code_search: %q", got)
+		}
+	}
+}
+
+func TestToolSearchMaterializesPortableShell(t *testing.T) {
+	var added []string
+	env := Env{Root: t.TempDir(), Materialize: func(n []string) { added = append(added, n...) }}
+	out, err := Execute(context.Background(), "tool_search", map[string]any{"query": "portable shell"}, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "run_terminal_command") || !strings.Contains(strings.Join(added, ","), "run_terminal_command") {
+		t.Fatalf("portable shell was not materialized: out=%q added=%v", out, added)
+	}
+}

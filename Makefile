@@ -6,15 +6,17 @@ COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 GO_TAGS := grammar_set_core
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 
-# Toolchain empaquetada junto al binario. En runtime, si el usuario prefiere
-# el directorio personal (~/.li/tools/bin), basta con no definir LI_TOOLS_DIR.
+# Toolchain opcional empaquetada junto al binario para acelerar búsquedas y
+# conservar compatibilidad. El binario funciona sin ella; para usar el directorio
+# personal (~/.li/tools/bin), basta con no definir LI_TOOLS_DIR.
 DIST_TOOLS := dist/tools/bin
 
 .PHONY: build build-tools build-cross test run install clean fmt vet tools tools-check
 
 # `make build` compila el binario para el sistema actual dentro de dist/
-# y descarga (si faltan) los binarios externos (ripgrep, busybox.exe, …)
-# junto al ejecutable, en dist/tools/bin.
+# y conserva el bundle opcional de compatibilidad (ripgrep, busybox.exe, …)
+# junto al ejecutable, en dist/tools/bin. `go run ./cmd/build build` genera sólo
+# los binarios Go estáticos usados por los releases.
 build:
 	@mkdir -p dist
 	CGO_ENABLED=0 go build -tags="$(GO_TAGS)" -ldflags="$(LDFLAGS)" -o $(BIN) $(PKG)

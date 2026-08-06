@@ -39,7 +39,7 @@ curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.s
 
 En Termux no se descarga un binario Android del release. El instalador:
 
-1. instala o actualiza `git`, `golang` y `ripgrep` mediante `pkg`;
+1. instala o actualiza `git` y `golang` mediante `pkg`; `ripgrep` ya no es obligatorio porque `code_search` tiene respaldo nativo en Go;
 2. clona únicamente el último commit de la rama predeterminada del repositorio;
 3. no descarga tags ni el historial completo;
 4. compila `./cmd/li` nativamente con Go de Termux;
@@ -312,11 +312,21 @@ Límites actuales:
 
 ## Ejecución de comandos y shells
 
-`run_terminal_command` acepta `shell=auto|powershell|cmd|bash|sh`.
+`run_terminal_command` acepta `shell=auto|powershell|cmd|bash|sh|portable`.
 
 En Windows, el modo automático usa PowerShell para comandos neutrales, CMD para
 sintaxis CMD y Bash/sh para sintaxis POSIX cuando está disponible. En Linux,
-macOS y Termux se prefiere Bash y se usa `sh` como respaldo.
+macOS y Termux se prefiere Bash y se usa `sh` como respaldo. Cuando no existe
+una shell POSIX compatible, Lilith usa como último recurso `portable`, un
+intérprete Bash/POSIX embebido y escrito en Go. También puede elegirse de forma
+explícita con `shell=portable`.
+
+La shell portátil conserva variables, pipes, redirecciones, sustituciones,
+condicionales y bucles, y aporta fallbacks Go para `rg`, `grep`, `find`, `ls`,
+`cat`, `head`, `tail`, `wc`, `mkdir`, `touch`, `cp`, `mv`, `rm`, `chmod` y
+`sha256sum`. No es una distribución Linux: Git, Go, npm, Docker, Make y otros
+programas siguen necesitando su ejecutable en `PATH`. Si existe un comando
+nativo con el mismo nombre, la shell portátil lo prioriza sobre el fallback.
 
 PowerShell se configura como UTF-8 sin BOM antes de ejecutar el comando para
 conservar acentos y emojis. La sentencia solicitada permanece al final para no
@@ -325,8 +335,11 @@ alterar el código de salida.
 La herramienta rechaza heredocs incompletos y escrituras inline demasiado
 largas antes de iniciar el proceso.
 
-Para búsquedas dentro del repositorio debe preferirse `code_search`. Cuando el
-agente usa un `grep -r` o `grep -R` simple sin una ruta explícita, Lilith lo
+Para búsquedas dentro del repositorio debe preferirse `code_search`. La
+herramienta usa `rg` cuando ya está instalado o disponible en el toolchain y,
+si falta, cambia automáticamente a un motor acotado escrito en Go. No hace
+falta instalar `ripgrep` para usarla. Cuando el agente usa un `grep -r` o
+`grep -R` simple sin una ruta explícita, Lilith lo
 rechaza antes de crear el proceso y le indica que use `code_search` o una ruta
 concreta. Las búsquedas mediante `grep` recursivo, `rg`, `find` y `git grep`
 reciben un límite seguro de 30 segundos si no se indicó `timeout_seconds`;

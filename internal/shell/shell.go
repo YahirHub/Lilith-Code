@@ -1,6 +1,7 @@
 // Package shell runs commands with the host-appropriate interpreter. Windows
 // prefers PowerShell for neutral commands, keeps CMD available, and selects
-// Bash only for POSIX syntax; Linux, macOS and Termux prefer Bash/sh.
+// Bash only for POSIX syntax; Linux, macOS and Termux prefer Bash/sh. A pure-Go
+// interpreter remains available as the last POSIX-compatible fallback.
 package shell
 
 import (
@@ -29,7 +30,7 @@ type Request struct {
 	// Timeout applies only when positive. Zero or a negative value means no
 	// deadline; the command still stops when the parent context is canceled.
 	Timeout time.Duration
-	// Shell selects auto, bash, sh, powershell or cmd. Empty means auto.
+	// Shell selects auto, bash, sh, powershell, cmd or portable. Empty means auto.
 	Shell string
 }
 
@@ -104,6 +105,39 @@ func Run(ctx context.Context, req Request) (Result, error) {
 
 	runCtx, cancel := withOptionalTimeout(ctx, req.Timeout)
 	defer cancel()
+
+	if spec.Kind == ShellPortable {
+		start := time.Now()
+		stdout, stderr, exitCode, runErr := runPortable(runCtx, command, dir)
+		elapsed := time.Since(start)
+		res := Result{
+			Command:    command,
+			Shell:      spec.Path,
+			ShellKind:  spec.Kind,
+			Dir:        dir,
+			ExitCode:   exitCode,
+			Duration:   elapsed,
+			DurationMs: elapsed.Milliseconds(),
+		}
+		res.Stdout, res.Truncated = clip(stdout)
+		var truncErr bool
+		res.Stderr, truncErr = clip(stderr)
+		res.Truncated = res.Truncated || truncErr
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+			res.TimedOut = true
+			res.ExitCode = -1
+			return res, nil
+		}
+		if errors.Is(runCtx.Err(), context.Canceled) {
+			res.Canceled = true
+			res.ExitCode = -1
+			return res, nil
+		}
+		if runErr != nil {
+			return res, runErr
+		}
+		return res, nil
+	}
 
 	executionCommand := commandForShell(command, spec.Kind)
 	args := append(append([]string{}, spec.Prefix...), executionCommand)

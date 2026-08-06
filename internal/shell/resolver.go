@@ -15,6 +15,7 @@ const (
 	ShellSh         = "sh"
 	ShellPowerShell = "powershell"
 	ShellCmd        = "cmd"
+	ShellPortable   = "portable"
 )
 
 type shellAvailability struct {
@@ -22,6 +23,7 @@ type shellAvailability struct {
 	sh         bool
 	powershell bool
 	cmd        bool
+	portable   bool
 }
 
 type resolvedShell struct {
@@ -49,8 +51,10 @@ func normalizeRequestedShell(value string) (string, error) {
 		return ShellPowerShell, nil
 	case ShellCmd, "cmd.exe":
 		return ShellCmd, nil
+	case ShellPortable, "embedded", "gosh":
+		return ShellPortable, nil
 	default:
-		return "", fmt.Errorf("unsupported shell %q (use auto, bash, sh, powershell or cmd)", value)
+		return "", fmt.Errorf("unsupported shell %q (use auto, bash, sh, powershell, cmd or portable)", value)
 	}
 }
 
@@ -82,6 +86,8 @@ func chooseShellKind(goos, requested, command string, available shellAvailabilit
 			return available.powershell
 		case ShellCmd:
 			return available.cmd
+		case ShellPortable:
+			return available.portable
 		default:
 			return false
 		}
@@ -95,8 +101,16 @@ func chooseShellKind(goos, requested, command string, available shellAvailabilit
 
 	detected := detectCommandShell(command)
 	if detected != "" {
-		if detected == ShellBash && !available.bash && available.sh {
-			return ShellSh, nil
+		if detected == ShellBash {
+			if available.bash {
+				return ShellBash, nil
+			}
+			if available.sh {
+				return ShellSh, nil
+			}
+			if available.portable {
+				return ShellPortable, nil
+			}
 		}
 		if isAvailable(detected) {
 			return detected, nil
@@ -117,6 +131,9 @@ func chooseShellKind(goos, requested, command string, available shellAvailabilit
 		if available.sh {
 			return ShellSh, nil
 		}
+		if available.portable {
+			return ShellPortable, nil
+		}
 		return "", ErrNoShell
 	}
 	if available.bash {
@@ -124,6 +141,9 @@ func chooseShellKind(goos, requested, command string, available shellAvailabilit
 	}
 	if available.sh {
 		return ShellSh, nil
+	}
+	if available.portable {
+		return ShellPortable, nil
 	}
 	if available.powershell {
 		return ShellPowerShell, nil
@@ -136,7 +156,7 @@ func currentShellAvailability() shellAvailability {
 	_, sh := toolchain.ResolveShell("sh")
 	_, powershell := toolchain.ResolveShell("powershell")
 	_, cmd := toolchain.ResolveShell("cmd")
-	return shellAvailability{bash: bash, sh: sh, powershell: powershell, cmd: cmd}
+	return shellAvailability{bash: bash, sh: sh, powershell: powershell, cmd: cmd, portable: true}
 }
 
 func resolveExecutionShell(requested, command string) (resolvedShell, error) {
@@ -144,6 +164,9 @@ func resolveExecutionShell(requested, command string) (resolvedShell, error) {
 	kind, err := chooseShellKind(runtime.GOOS, requested, command, available)
 	if err != nil {
 		return resolvedShell{}, err
+	}
+	if kind == ShellPortable {
+		return resolvedShell{Kind: ShellPortable, Path: portableShellPath}, nil
 	}
 	spec, ok := toolchain.ResolveShell(kind)
 	if !ok {
@@ -174,6 +197,7 @@ func AvailableKinds() []string {
 		{ShellCmd, available.cmd},
 		{ShellBash, available.bash},
 		{ShellSh, available.sh},
+		{ShellPortable, available.portable},
 	} {
 		if item.ok {
 			out = append(out, item.kind)

@@ -61,6 +61,26 @@ func TestChooseShellKindRejectsUnavailableDetectedSyntax(t *testing.T) {
 	}
 }
 
+func TestChooseShellKindFallsBackToPortableForPOSIXSyntax(t *testing.T) {
+	got, err := chooseShellKind("windows", "auto", `mkdir -p dist`, shellAvailability{powershell: true, cmd: true, portable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != ShellPortable {
+		t.Fatalf("fallback shell=%q; want portable", got)
+	}
+}
+
+func TestChooseShellKindFallsBackToPortableOnMinimalUnix(t *testing.T) {
+	got, err := chooseShellKind("linux", "auto", "printf ok", shellAvailability{portable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != ShellPortable {
+		t.Fatalf("minimal unix shell=%q; want portable", got)
+	}
+}
+
 func TestChooseShellKindUsesBashOnUnix(t *testing.T) {
 	got, err := chooseShellKind("linux", "auto", "go test ./...", shellAvailability{bash: true, sh: true})
 	if err != nil {
@@ -72,7 +92,7 @@ func TestChooseShellKindUsesBashOnUnix(t *testing.T) {
 }
 
 func TestNormalizeRequestedShellAliases(t *testing.T) {
-	for input, want := range map[string]string{"": ShellAuto, "pwsh": ShellPowerShell, "cmd.exe": ShellCmd, "posix": ShellSh} {
+	for input, want := range map[string]string{"": ShellAuto, "pwsh": ShellPowerShell, "cmd.exe": ShellCmd, "posix": ShellSh, "embedded": ShellPortable, "gosh": ShellPortable} {
 		got, err := normalizeRequestedShell(input)
 		if err != nil {
 			t.Fatalf("%q: %v", input, err)
@@ -138,4 +158,24 @@ func TestRunWindowsPOSIXSyntaxUsesBash(t *testing.T) {
 	if result.ShellKind != ShellBash || strings.TrimSpace(result.Stdout) != "native-bash-ok" {
 		t.Fatalf("result=%+v", result)
 	}
+}
+
+func TestChooseShellHonorsExplicitPortable(t *testing.T) {
+	got, err := chooseShellKind("linux", ShellPortable, "git status", shellAvailability{portable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != ShellPortable {
+		t.Fatalf("got %q; want portable", got)
+	}
+}
+
+func TestAvailableKindsAlwaysIncludesPortable(t *testing.T) {
+	got := AvailableKinds()
+	for _, kind := range got {
+		if kind == ShellPortable {
+			return
+		}
+	}
+	t.Fatalf("portable shell missing from %v", got)
 }

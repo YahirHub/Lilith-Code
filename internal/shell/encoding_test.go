@@ -24,7 +24,7 @@ func TestCommandForShellForcesPowerShellUTF8(t *testing.T) {
 
 func TestCommandForShellLeavesOtherInterpretersUnchanged(t *testing.T) {
 	command := `printf 'línea 🚀'`
-	for _, kind := range []string{ShellBash, ShellSh, ShellCmd} {
+	for _, kind := range []string{ShellBash, ShellSh, ShellCmd, ShellPortable} {
 		if got := commandForShell(command, kind); got != command {
 			t.Errorf("shell %s command=%q; want unchanged %q", kind, got, command)
 		}

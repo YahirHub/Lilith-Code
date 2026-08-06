@@ -4712,6 +4712,7 @@ func systemPrompt(activeTools []string, skillsBlock, agentsBlock, todoBlock, mod
 		"create_file is creation-only. The ambiguous legacy tool name `write` is unsupported.",
 		"Treat FILE_EXISTS, OVERWRITE_REQUIRED, USE_CREATE_FILE and WRITE_BLOCKED as policy redirects and follow the result instead of repeating a rejected payload unchanged.",
 		"When todo_write is available, use it for work with three or more meaningful implementation steps and keep its snapshot synchronized with actual progress.",
+		"Use code_search for repository text search; it has a bounded pure-Go fallback, so do not install ripgrep solely to inspect source. run_terminal_command prefers the host shell and can fall back to shell=portable for Bash-compatible syntax, but the portable shell is not a full Linux userland and does not replace external git, go, npm, docker or make executables.",
 		"Before finishing code changes, run relevant build/tests when a safe terminal tool is available; never run destructive commands unless the user explicitly requested that destructive action.",
 		"Preserve project conventions and unrelated content. Make the smallest safe change that satisfies the request.",
 		"Do not stop with `do you want me to continue?` when you can keep working; ask only when genuinely blocked by missing information, credentials, or a destructive ambiguity.",

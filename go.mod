@@ -15,6 +15,7 @@ require (
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.56.0
 	golang.org/x/text v0.40.0
+	mvdan.cc/sh/v3 v3.13.1
 )
 
 require (

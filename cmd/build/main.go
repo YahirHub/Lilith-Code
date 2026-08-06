@@ -6,9 +6,9 @@
 //	go run ./cmd/build             build all li binaries
 //	go run ./cmd/build build       build all li binaries
 //	go run ./cmd/build version     print the release version
-//	go run ./cmd/build check       show external toolchain status
-//	go run ./cmd/build install     install missing external tools
-//	go run ./cmd/build install -f  reinstall external tools
+//	go run ./cmd/build check       show optional external tool status
+//	go run ./cmd/build install     install optional external tools
+//	go run ./cmd/build install -f  reinstall optional external tools
 package main
 
 import (

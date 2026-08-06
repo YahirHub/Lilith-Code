@@ -1,5 +1,6 @@
-// Package toolchain resolves and installs the external binaries Lilith needs
-// (a POSIX shell and ripgrep), so Windows works without Git Bash or WSL.
+// Package toolchain resolves and installs optional external accelerators and
+// compatibility helpers. Core search and POSIX-compatible command execution
+// remain available inside the static Go binary when these tools are absent.
 package toolchain
 
 import (
@@ -43,7 +44,7 @@ type Tool struct {
 
 const rgBase = "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-"
 
-// Ripgrep is used for fast code search from tools and from the agent.
+// Ripgrep is an optional accelerator for code search; Lilith has a Go fallback.
 var Ripgrep = Tool{
 	Name:          "rg",
 	Why:           "búsqueda de código rápida (ripgrep)",
@@ -83,8 +84,8 @@ var Ripgrep = Tool{
 	},
 }
 
-// Busybox provides a POSIX shell (busybox sh) plus core utilities on Windows,
-// where /bin/sh does not exist. It is a single self-contained executable.
+// Busybox remains an optional compatibility helper for legacy workflows and
+// hooks on Windows. Agent terminal commands can use the embedded Go shell.
 var Busybox = Tool{
 	Name: "busybox",
 	Why:  "shell POSIX y utilidades básicas en Windows",

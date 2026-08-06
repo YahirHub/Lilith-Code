@@ -41,7 +41,7 @@ if [ "$is_termux" -eq 1 ]; then
   need pkg
 
   say "Preparando compilación nativa para Termux ARM64..."
-  pkg install -y git golang ripgrep
+  pkg install -y git golang
   need git
   need go
 

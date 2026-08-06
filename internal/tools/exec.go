@@ -4,15 +4,16 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
 	"github.com/lilith/li/internal/shell"
+	"github.com/lilith/li/internal/textsearch"
 	"github.com/lilith/li/internal/toolchain"
 )
 
@@ -31,16 +32,16 @@ func init() {
 		Name: "run_terminal_command",
 		Description: fmt.Sprintf(
 			"Run a command in the project directory with automatic shell selection and return stdout, "+
-				"stderr and the exit code. On Windows, neutral commands prefer PowerShell, CMD syntax uses cmd.exe, and POSIX syntax uses Bash when available; Linux/macOS/Termux prefer Bash/sh. Incomplete heredocs and oversized inline file-writing commands are rejected before execution; use write_file/append_file for generated content. `timeout_seconds` is optional: when omitted, builds/tests/installations run until completion or cancellation, while repository searches (recursive grep, rg, find and git grep) receive a 30-second safety deadline. Recursive grep without an explicit target is rejected before execution so the model can use code_search or provide a concrete path. Output is tail-truncated to the last %d lines / %dKB per "+
-				"stream; when truncated the full stream is saved to a temp file whose path is reported so you can inspect "+
-				"it with read_files.",
+				"stderr and the exit code. Native host shells keep priority: Windows uses PowerShell/CMD or an installed POSIX shell, while Linux/macOS/Termux prefer Bash/sh. When a POSIX shell is unavailable, Lilith can use an embedded pure-Go Bash-compatible interpreter (`shell=portable`) with a curated Go toolbox (`rg`, `grep`, `find`, `ls`, `cat`, `head`, `tail`, `wc`, `mkdir`, `touch`, `cp`, `mv`, `rm`, `chmod`, `sha256sum`). It does not emulate a full Linux userland: commands such as git, go, npm, docker or make still require their executable in PATH. Incomplete heredocs and oversized inline file-writing commands are rejected before execution; use write_file/append_file for generated content. `timeout_seconds` is optional: when omitted, builds/tests/installations run until completion or cancellation, while repository searches receive a 30-second safety deadline. Recursive grep without an explicit target is rejected before execution so the model can use code_search or provide a concrete path. Output is tail-truncated to the last %d lines / %dKB per "+
+				"stream; when truncated the full stream is saved to a temp file whose path is reported so you can inspect it with read_files.",
 			bashOutputMaxLines, bashOutputMaxBytes/1024,
 		),
 		PromptSnippet: "Execute shell commands in the project directory",
 		PromptGuidelines: []string{
-			"Use code_search for repository text/source lookups. Use run_terminal_command for builds, tests, git and shell inspection; avoid recursive grep when code_search or rg with an explicit path/glob is sufficient.",
+			"Use code_search for repository text/source lookups; it has a pure-Go fallback and does not require ripgrep. Use run_terminal_command for builds, tests, git and shell inspection.",
 			"Omit timeout_seconds for long builds, installs and test suites unless a hard deadline is explicitly needed. Repository search commands receive a 30-second safety deadline when omitted.",
-			"Keep commands native to the detected host. shell=auto chooses PowerShell for neutral Windows commands, cmd for clear CMD syntax, Bash for clear POSIX syntax, and Bash/sh on Linux, macOS and Termux. Set shell explicitly only when the command intentionally requires one syntax.",
+			"Keep commands native to the detected host. shell=auto keeps PowerShell/CMD/Bash/sh ahead of the embedded portable interpreter. Use shell=portable only for Bash-compatible syntax when no POSIX shell exists or when a deterministic pure-Go shell is intentional.",
+			"The portable shell implements shell syntax and a curated file/search toolbox, not Git or a full Linux environment. Never assume git, go, npm, docker, make or another external executable exists; inspect availability or use a dedicated Lilith tool.",
 			"Do not generate long files with heredocs, printf, PowerShell here-strings or base64 in the terminal. Use write_file for complete content or append_file for bounded sections; unsafe inline writes are blocked before execution.",
 			"When discarding output, use the selected shell's null device (/dev/null for Bash/sh, $null for PowerShell, NUL for CMD). Lilith normalizes common cross-shell mistakes defensively.",
 		},
@@ -49,7 +50,7 @@ func init() {
 			"type": "object",
 			"properties": map[string]any{
 				"command":         map[string]any{"type": "string", "description": "Full command line to run using the selected shell syntax."},
-				"shell":           map[string]any{"type": "string", "enum": []string{"auto", "bash", "sh", "powershell", "cmd"}, "description": "Interpreter to use. Defaults to auto, which selects syntax-aware host-native execution."},
+				"shell":           map[string]any{"type": "string", "enum": []string{"auto", "bash", "sh", "powershell", "cmd", "portable"}, "description": "Interpreter to use. auto prefers a compatible native shell and falls back to Lilith's embedded pure-Go interpreter for POSIX/Bash-compatible syntax. portable selects that interpreter explicitly."},
 				"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "description": "Optional hard deadline in seconds. When omitted, long-running builds/tests/installations are unlimited, while repository search commands use a 30-second safety deadline."},
 			},
 			"required": []string{"command"},
@@ -97,22 +98,26 @@ func init() {
 
 	register(Definition{
 		Name: "code_search",
-		Description: "Search file contents for a pattern (uses ripgrep). Returns matches as `path:line:text`. " +
+		Description: "Search file contents for a pattern. Lilith uses native ripgrep when available and transparently falls back to a bounded pure-Go search engine when it is absent. Returns matches as `path:line:text`. " +
 			"Options: `glob` filters files (e.g. `*.go`), `path` scopes the search directory (default: project root), " +
 			"`literal` treats `pattern` as a fixed string instead of a regex, `ignore_case` enables case-insensitive matching, " +
 			"`context` shows N lines before/after each match, and `limit` caps total matches (default 100). " +
-			"Long output is truncated; long lines are individually truncated to 500 chars.",
-		PromptSnippet: "Search file contents with ripgrep",
+			"The Go fallback respects repository ignore files, skips hidden/VCS/dependency/build paths plus binary and oversized files by default, and still searches an explicitly requested ignored file. Long output is truncated; long lines are individually truncated to 500 chars.",
+		PromptSnippet: "Search repository contents with ripgrep or Lilith's native Go fallback",
+		PromptGuidelines: []string{
+			"Prefer code_search over terminal grep/rg for repository content. It works even when ripgrep is not installed.",
+			"Scope broad searches with path or glob and raise limit only when the additional matches are necessary.",
+		},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"pattern":     map[string]any{"type": "string", "description": "Regex (default) or literal string when `literal` is true."},
+				"pattern":     map[string]any{"type": "string", "description": "RE2-compatible regex (default) or literal string when `literal` is true."},
 				"glob":        map[string]any{"type": "string", "description": "Optional file filter, e.g. `*.go` or `**/*_test.go`."},
 				"path":        map[string]any{"type": "string", "description": "Directory or file to search (default: project root)."},
 				"literal":     map[string]any{"type": "boolean", "description": "Treat `pattern` as a fixed string instead of a regex (default false)."},
 				"ignore_case": map[string]any{"type": "boolean", "description": "Case-insensitive match (default false)."},
-				"context":     map[string]any{"type": "integer", "description": "Lines of context to show before/after each match (default 0)."},
-				"limit":       map[string]any{"type": "integer", "description": "Maximum matches (default 100)."},
+				"context":     map[string]any{"type": "integer", "minimum": 0, "description": "Lines of context to show before/after each match (default 0)."},
+				"limit":       map[string]any{"type": "integer", "minimum": 1, "description": "Maximum matches (default 100)."},
 			},
 			"required": []string{"pattern"},
 		},
@@ -121,54 +126,92 @@ func init() {
 			if strings.TrimSpace(pattern) == "" {
 				return "", fmt.Errorf("empty pattern")
 			}
-			rg := toolchain.Lookup("rg")
-			if rg == "" {
-				if runtime.GOOS == "android" {
-					return "", fmt.Errorf("ripgrep no está instalado: ejecuta `pkg install ripgrep` en Termux")
-				}
-				return "", fmt.Errorf("ripgrep not installed: run `go run ./cmd/build install`")
-			}
-			limit := intArg(args, "limit", 100)
-			cmdArgs := []string{"--line-number", "--no-heading", "--color", "never", "--max-count", "50", "--max-columns", "500"}
-			if boolArg(args, "literal") {
-				cmdArgs = append(cmdArgs, "--fixed-strings")
-			}
-			if boolArg(args, "ignore_case") {
-				cmdArgs = append(cmdArgs, "--ignore-case")
-			}
-			if c := intArg(args, "context", 0); c > 0 {
-				cmdArgs = append(cmdArgs, fmt.Sprintf("--context=%d", c))
-			}
-			if g := str(args, "glob"); g != "" {
-				cmdArgs = append(cmdArgs, "--glob", g)
-			}
-			target := str(args, "path")
-			if target == "" {
-				target = "."
-			}
-			cmdArgs = append(cmdArgs, pattern, target)
-			runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			runCtx, cancel := context.WithTimeout(ctx, repositorySearchTimeout)
 			defer cancel()
-			cmd := exec.CommandContext(runCtx, rg, cmdArgs...)
-			cmd.Dir = env.Root
-			out, err := cmd.CombinedOutput()
-			text := string(out)
-			// Cap total matches (by line) to `limit`.
-			if limit > 0 {
-				if lines := strings.Split(text, "\n"); len(lines) > limit {
-					text = strings.Join(lines[:limit], "\n") + fmt.Sprintf("\n[truncated at %d matches — raise `limit` to see more]", limit)
-				}
+			if rg := toolchain.Lookup("rg"); rg != "" {
+				return runRipgrepSearch(runCtx, rg, args, env)
 			}
-			if len(text) > MaxFileBytes {
-				text = text[:MaxFileBytes] + "\n… results truncated …"
-			}
-			if strings.TrimSpace(text) == "" {
-				_ = err
-				return "no matches.", nil
-			}
-			return text, nil
+			return runNativeCodeSearch(runCtx, args, env)
 		},
 	})
+}
+
+func runRipgrepSearch(ctx context.Context, rg string, args map[string]any, env Env) (string, error) {
+	limit := intArg(args, "limit", 100)
+	cmdArgs := []string{"--line-number", "--no-heading", "--color", "never", "--max-count", "50", "--max-columns", "500"}
+	if boolArg(args, "literal") {
+		cmdArgs = append(cmdArgs, "--fixed-strings")
+	}
+	if boolArg(args, "ignore_case") {
+		cmdArgs = append(cmdArgs, "--ignore-case")
+	}
+	if c := intArg(args, "context", 0); c > 0 {
+		cmdArgs = append(cmdArgs, fmt.Sprintf("--context=%d", c))
+	}
+	if g := str(args, "glob"); g != "" {
+		cmdArgs = append(cmdArgs, "--glob", g)
+	}
+	target := str(args, "path")
+	if target == "" {
+		target = "."
+	}
+	cmdArgs = append(cmdArgs, str(args, "pattern"), target)
+	cmd := exec.CommandContext(ctx, rg, cmdArgs...)
+	cmd.Dir = env.Root
+	out, err := cmd.CombinedOutput()
+	text := string(out)
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			if message := strings.TrimSpace(text); message != "" {
+				return "", fmt.Errorf("ripgrep: %s", message)
+			}
+			return "", err
+		}
+	}
+	if limit > 0 {
+		if lines := strings.Split(text, "\n"); len(lines) > limit {
+			text = strings.Join(lines[:limit], "\n") + fmt.Sprintf("\n[truncated at %d matches — raise `limit` to see more]", limit)
+		}
+	}
+	if len(text) > MaxFileBytes {
+		text = text[:MaxFileBytes] + "\n… results truncated …"
+	}
+	if strings.TrimSpace(text) == "" {
+		return "no matches.", nil
+	}
+	return text, nil
+}
+
+func runNativeCodeSearch(ctx context.Context, args map[string]any, env Env) (string, error) {
+	res, err := textsearch.Search(ctx, textsearch.Options{
+		Root:       env.Root,
+		Path:       str(args, "path"),
+		Pattern:    str(args, "pattern"),
+		Glob:       str(args, "glob"),
+		Literal:    boolArg(args, "literal"),
+		IgnoreCase: boolArg(args, "ignore_case"),
+		Context:    intArg(args, "context", 0),
+		Limit:      intArg(args, "limit", 100),
+		MaxLine:    500,
+	})
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(res.Text) == "" {
+		return "no matches.", nil
+	}
+	text := res.Text
+	if res.Truncated {
+		text += fmt.Sprintf("\n[truncated at %d matches — raise `limit` to see more]", intArg(args, "limit", 100))
+	}
+	if len(text) > MaxFileBytes {
+		text = text[:MaxFileBytes] + "\n… results truncated …"
+	}
+	return text, nil
 }
 
 func terminalCommandTimeout(args map[string]any) time.Duration {

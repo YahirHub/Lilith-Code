@@ -176,8 +176,10 @@ def simulate_termux(installer: Path, repo: Path, root: Path) -> None:
     ).strip()
     if version != f"Lilith {CURRENT_VERSION}":
         raise AssertionError(f"Termux installer did not rebuild li: {version!r}")
-    if "install -y git golang ripgrep" not in pkg_log.read_text(encoding="utf-8"):
-        raise AssertionError("Termux installer did not request git/golang/ripgrep")
+    if "install -y git golang" not in pkg_log.read_text(encoding="utf-8"):
+        raise AssertionError("Termux installer did not request git/golang")
+    if "ripgrep" in pkg_log.read_text(encoding="utf-8"):
+        raise AssertionError("Termux installer must not require ripgrep")
     if not (source_store / "go.mod").exists():
         raise AssertionError("Termux installer did not preserve the cloned source")
     if (home / ".bashrc").exists():

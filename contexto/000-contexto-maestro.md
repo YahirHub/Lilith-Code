@@ -214,7 +214,7 @@ se compacta el cuerpo rechazado y se devuelve `OVERWRITE_REQUIRED` sin tocar dis
 
 - Windows usa PowerShell para comandos neutrales, CMD para sintaxis CMD y Bash/sh únicamente para sintaxis POSIX cuando está disponible; reconoce asignaciones `VAR=value` seguidas por comando, `;`, salto de línea o fin de entrada;
 - Linux, macOS y Termux usan Bash con fallback a `sh`;
-- el parámetro `shell=auto|powershell|cmd|bash|sh` permite selección explícita;
+- el parámetro `shell=auto|powershell|cmd|bash|sh|portable` permite selección explícita;
 - una sintaxis que requiere una shell ausente se rechaza en vez de ejecutarse con otra incompatible;
 - la salida y el panel TUI muestran la shell realmente usada, y las redirecciones nulas se adaptan a `$null`, `NUL` o `/dev/null`.
 - antes de un comando PowerShell se fuerza UTF-8 sin BOM en `[Console]::OutputEncoding` y `$OutputEncoding`; el comando solicitado queda al final para conservar stdout/stderr Unicode y su exit code.
@@ -301,9 +301,21 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `116-ssh-gitzip-boveda-segura.md`
 - `117-corregir-colision-helpers-ssh-gitzip.md`
 - `118-sesion-boveda-politicas-ssh-widget-permisos.md`
+- `119-boveda-permisos-gitzip-autocompletado.md`
+- `120-go-sum-y-catalogo-commandcode.md`
+- `121-elevacion-segura-ssh-gitzip.md`
+- `122-navegador-chromedp-experimental.md`
+- `123-corregir-debugger-enable-chromedp.md`
+- `124-corregir-arranque-execallocator-chromedp.md`
+- `125-corregir-ciclo-vida-contextos-chromedp.md`
+- `126-corregir-search-source-ids-caducados.md`
+- `127-corregir-compilacion-search-source.md`
+- `128-verificar-mapeo-scripts-por-contenido.md`
+- `129-shell-portatil-go-y-busqueda-nativa.md`
 
 ## 114 · Búsquedas de terminal acotadas y versión 0.2.2
 
+- `code_search` usa ripgrep cuando ya está disponible y cae a un motor Go acotado cuando falta; ripgrep deja de ser una dependencia obligatoria.
 - `run_terminal_command` prioriza `code_search` para búsquedas de código y aplica un timeout seguro de 30 segundos a `grep` recursivo, `rg`, `find` y `git grep` cuando no se indicó uno explícito.
 - Un `grep -r/-R` simple sin ruta se rechaza antes de crear el proceso y orienta a `code_search` o a una ruta concreta.
 - Los comandos complejos con pipes, redirecciones, conectores o saltos de línea no se reescriben.
@@ -368,3 +380,12 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - Lectura, descarga, listado, stat, escritura, subida, mkdir, renombrado y borrado comparten la capa privilegiada; se preservan propietario/modo al reemplazar y se rechaza eliminar `/`.
 - GitZip preflighta lectura y escritura antes de crear o extraer remotamente para elevar el comando completo desde el inicio y evitar efectos parciales.
 - Los comandos `exec` arbitrarios sólo se elevan con `privilege_mode=required`; no se reintentan automáticamente después de un error de permisos.
+
+
+## 129 · Shell portátil Go y búsqueda nativa
+
+- `run_terminal_command` conserva shells nativas como primera opción y usa `portable`, basado en `mvdan.cc/sh/v3`, cuando falta una shell POSIX o cuando se solicita expresamente.
+- La shell embebida aporta sintaxis Bash/POSIX y un toolbox Go acotado, pero no reemplaza Git, Go, npm, Docker, Make ni otros ejecutables externos.
+- `code_search` usa ripgrep como acelerador opcional y cambia automáticamente a `internal/textsearch` cuando no está disponible.
+- Prompts, schemas, selección perezosa y `tool_search` explican capacidades y límites para impedir supuestos falsos del agente.
+- Termux deja de instalar ripgrep obligatoriamente; la compilación sigue usando `CGO_ENABLED=0`.

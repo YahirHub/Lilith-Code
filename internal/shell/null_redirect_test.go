@@ -51,6 +51,7 @@ func TestNormalizeNullRedirectsUsesSelectedShellDevice(t *testing.T) {
 		want string
 	}{
 		{ShellBash, "command > /dev/null"},
+		{ShellPortable, "command > /dev/null"},
 		{ShellPowerShell, "command > $null"},
 		{ShellCmd, "command > NUL"},
 	}
