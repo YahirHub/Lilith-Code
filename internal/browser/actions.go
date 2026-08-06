@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/debugger"
 	"github.com/chromedp/cdproto/network"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
@@ -430,46 +431,69 @@ func (s *Session) Scripts(limit int) ([]ScriptInfo, error) {
 }
 
 func (s *Session) SearchSource(ctx context.Context, scriptID, query string, caseSensitive bool, maxMatches int) ([]map[string]any, bool, error) {
-	if strings.TrimSpace(scriptID) == "" || query == "" {
+	scriptID = strings.TrimSpace(scriptID)
+	if scriptID == "" || query == "" {
 		return nil, false, errors.New("script_id y query son obligatorios")
 	}
 	tab, err := s.CurrentTab()
 	if err != nil {
 		return nil, false, err
 	}
-	var source string
+	tab.mu.RLock()
+	_, known := tab.scripts[scriptID]
+	tab.mu.RUnlock()
+	if !known {
+		return nil, false, fmt.Errorf("script_id %q no pertenece al documento actual; ejecuta scripts nuevamente y usa uno de los ids devueltos", scriptID)
+	}
+
+	var rawMatches []*debugger.SearchMatch
 	if err := runTargetCommand(ctx, tab.ctx, 15*time.Second, func(targetCtx context.Context) error {
-		var sourceErr error
-		source, _, sourceErr = debugger.GetScriptSource(cdpruntime.ScriptID(scriptID)).Do(targetCtx)
-		return sourceErr
+		var searchErr error
+		rawMatches, searchErr = debugger.SearchInContent(cdp.ScriptID(scriptID), query).
+			WithCaseSensitive(caseSensitive).
+			Do(targetCtx)
+		return searchErr
 	}); err != nil {
+		if isInvalidScriptIDError(err) {
+			tab.mu.Lock()
+			delete(tab.scripts, scriptID)
+			tab.mu.Unlock()
+			return nil, false, fmt.Errorf("script_id %q caducó durante una navegación; ejecuta scripts nuevamente y usa un id del documento actual", scriptID)
+		}
 		return nil, false, err
 	}
+	return formatSearchMatches(rawMatches, maxMatches)
+}
+
+func formatSearchMatches(raw []*debugger.SearchMatch, maxMatches int) ([]map[string]any, bool) {
 	if maxMatches <= 0 {
 		maxMatches = 30
 	}
-	needle := query
-	if !caseSensitive {
-		needle = strings.ToLower(needle)
+	truncatedResult := len(raw) > maxMatches
+	if truncatedResult {
+		raw = raw[:maxMatches]
 	}
-	lines := strings.Split(source, "\n")
-	matches := make([]map[string]any, 0, maxMatches)
-	truncatedResult := false
-	for index, line := range lines {
-		haystack := line
-		if !caseSensitive {
-			haystack = strings.ToLower(haystack)
-		}
-		if !strings.Contains(haystack, needle) {
+	matches := make([]map[string]any, 0, len(raw))
+	for _, match := range raw {
+		if match == nil {
 			continue
 		}
-		if len(matches) >= maxMatches {
-			truncatedResult = true
-			break
-		}
-		matches = append(matches, map[string]any{"line": index + 1, "text": truncate(line, 500)})
+		matches = append(matches, map[string]any{
+			"line": int(match.LineNumber) + 1,
+			"text": truncate(match.LineContent, 500),
+		})
 	}
-	return matches, truncatedResult, nil
+	return matches, truncatedResult
+}
+
+func isInvalidScriptIDError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no script for id") ||
+		strings.Contains(message, "cannot find script") ||
+		strings.Contains(message, "script with given id")
 }
 
 func (s *Session) Performance(ctx context.Context) (map[string]any, error) {

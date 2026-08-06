@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/debugger"
+	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
 
@@ -67,6 +70,70 @@ func TestEnableDebuggerImplementsAction(t *testing.T) {
 	var action chromedp.Action = enableDebugger()
 	if action == nil {
 		t.Fatal("enableDebugger devolvió una acción nula")
+	}
+}
+
+func TestExecutionContextsClearedDropsDocumentBoundState(t *testing.T) {
+	tab := &Tab{
+		scripts:      map[string]ScriptInfo{"90": {ID: "90", URL: "old.js"}},
+		refs:         map[string]string{"e1": "#old"},
+		selectorRefs: map[string]string{"#old": "e1"},
+		nextRef:      8,
+		lastElements: map[string]Element{"#old": {Ref: "e1"}},
+		lastSnapshot: &Snapshot{Title: "Old"},
+		lastTitle:    "Old",
+		lastURL:      "https://example.test/old",
+	}
+
+	tab.recordEvent(&cdpruntime.EventExecutionContextsCleared{})
+
+	if len(tab.scripts) != 0 || len(tab.refs) != 0 || len(tab.selectorRefs) != 0 || len(tab.lastElements) != 0 {
+		t.Fatalf("el estado ligado al documento no fue limpiado: scripts=%v refs=%v selectors=%v elements=%v", tab.scripts, tab.refs, tab.selectorRefs, tab.lastElements)
+	}
+	if tab.nextRef != 1 || tab.lastSnapshot != nil || tab.lastTitle != "" || tab.lastURL != "" {
+		t.Fatalf("el estado derivado del documento quedó activo: nextRef=%d snapshot=%v title=%q url=%q", tab.nextRef, tab.lastSnapshot, tab.lastTitle, tab.lastURL)
+	}
+
+	tab.recordEvent(&debugger.EventScriptParsed{ScriptID: cdp.ScriptID("91"), URL: "new.js"})
+	if len(tab.scripts) != 1 || tab.scripts["91"].URL != "new.js" {
+		t.Fatalf("el inventario nuevo no fue reconstruido después de navegar: %#v", tab.scripts)
+	}
+	if _, stale := tab.scripts["90"]; stale {
+		t.Fatal("el script del documento anterior reapareció en el inventario")
+	}
+}
+
+func TestSearchSourceRejectsScriptOutsideCurrentDocument(t *testing.T) {
+	tab := &Tab{ctx: context.Background(), scripts: map[string]ScriptInfo{}}
+	session := &Session{tabs: map[string]*Tab{"tab": tab}, currentTab: "tab"}
+
+	_, _, err := session.SearchSource(context.Background(), "90", "geocode", false, 30)
+	if err == nil || !strings.Contains(err.Error(), "documento actual") {
+		t.Fatalf("se esperaba un error de script caducado y accionable, se obtuvo %v", err)
+	}
+}
+
+func TestFormatSearchMatchesUsesOneBasedLinesAndLimit(t *testing.T) {
+	matches, truncated := formatSearchMatches([]*debugger.SearchMatch{
+		{LineNumber: 0, LineContent: "const marker = true;"},
+		{LineNumber: 4, LineContent: "marker();"},
+	}, 1)
+	if !truncated {
+		t.Fatal("el resultado debía indicar truncamiento")
+	}
+	if len(matches) != 1 || matches[0]["line"] != 1 || matches[0]["text"] != "const marker = true;" {
+		t.Fatalf("resultado de búsqueda inesperado: %#v", matches)
+	}
+}
+
+func TestInvalidScriptIDErrorDetection(t *testing.T) {
+	for _, message := range []string{"No script for id: 90 (-32000)", "Cannot find script 90", "Script with given id was not found"} {
+		if !isInvalidScriptIDError(errors.New(message)) {
+			t.Fatalf("no se detectó el error de script inválido: %q", message)
+		}
+	}
+	if isInvalidScriptIDError(errors.New("context canceled")) {
+		t.Fatal("un error ajeno fue clasificado como script inválido")
 	}
 }
 
@@ -150,7 +217,7 @@ func TestBrowserIntegrationStartAndSnapshot(t *testing.T) {
 	if !session.Info().Attached {
 		t.Fatal("la sesión CDP figura desconectada inmediatamente después de start")
 	}
-	if err := session.Navigate(context.Background(), "data:text/html,<title>Lilith Persistent CDP</title><main><button id='ready'>Listo</button></main>"); err != nil {
+	if err := session.Navigate(context.Background(), "data:text/html,<title>Lilith Persistent CDP</title><script>window.lilithSearchMarker='search-source-ok'</script><main><button id='ready'>Listo</button></main>"); err != nil {
 		t.Fatalf("navigate posterior a start falló: %v", err)
 	}
 	snapshot, err := session.Snapshot(context.Background(), false, 2000, 20)
@@ -162,6 +229,21 @@ func TestBrowserIntegrationStartAndSnapshot(t *testing.T) {
 	}
 	if len(snapshot.Elements) == 0 || snapshot.Elements[0].Text != "Listo" {
 		t.Fatalf("snapshot no contiene el botón esperado: %#v", snapshot.Elements)
+	}
+	scripts, err := session.Scripts(0)
+	if err != nil {
+		t.Fatalf("scripts posterior a navigate falló: %v", err)
+	}
+	foundSource := false
+	for _, script := range scripts {
+		matches, _, searchErr := session.SearchSource(context.Background(), script.ID, "search-source-ok", true, 10)
+		if searchErr == nil && len(matches) > 0 {
+			foundSource = true
+			break
+		}
+	}
+	if !foundSource {
+		t.Fatalf("search_source no encontró el marcador del documento actual; scripts=%#v", scripts)
 	}
 	tabs, err := session.Tabs(context.Background())
 	if err != nil {

@@ -565,6 +565,12 @@ func (t *Tab) recordEvent(event any) {
 		record.ErrorText = e.ErrorText
 		t.requests[id] = record
 		t.network = appendCapped(t.network, record, maxNetworkEvents)
+	case *cdpruntime.EventExecutionContextsCleared:
+		// Script IDs, DOM refs and snapshots are bound to the document that
+		// produced them. CDP invalidates those IDs when all execution contexts
+		// are cleared during a navigation or reload, so keeping them would make
+		// scripts/search_source expose stale identifiers.
+		t.resetDocumentStateLocked()
 	case *debugger.EventScriptParsed:
 		id := string(e.ScriptID)
 		t.scripts[id] = ScriptInfo{ID: id, URL: e.URL, Hash: e.Hash, Length: e.Length}
@@ -575,6 +581,17 @@ func (t *Tab) recordEvent(event any) {
 			}
 		}
 	}
+}
+
+func (t *Tab) resetDocumentStateLocked() {
+	t.scripts = map[string]ScriptInfo{}
+	t.refs = map[string]string{}
+	t.selectorRefs = map[string]string{}
+	t.nextRef = 1
+	t.lastElements = map[string]Element{}
+	t.lastSnapshot = nil
+	t.lastTitle = ""
+	t.lastURL = ""
 }
 
 func (s *Session) Info() SessionInfo {
