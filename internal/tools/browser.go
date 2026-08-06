@@ -25,6 +25,7 @@ func init() {
 			"Use fill_secret for passwords, tokens and other sensitive form values; never place secrets in type/fill arguments.",
 			"Inspect console and network errors before changing frontend code, and verify the result with a fresh delta snapshot.",
 			"After navigation or reload, call scripts again before search_source because CDP script IDs belong to the current document.",
+			"scripts verifies script_id-to-URL mappings by source hash by default; use verify=false only when a faster unverified inventory is explicitly preferable.",
 		},
 		Parameters: browserParameters(),
 		Mutating:   true,
@@ -74,6 +75,7 @@ func browserParameters() map[string]any {
 		"script_id":      map[string]any{"type": "string", "description": "Ephemeral CDP script ID returned by scripts for the active tab and current document. Refresh scripts after navigation or reload."},
 		"query":          map[string]any{"type": "string"},
 		"case_sensitive": map[string]any{"type": "boolean"},
+		"verify":         map[string]any{"type": "boolean", "description": "For scripts, verify script_id-to-URL mappings against the SHA-256 hash of the current source. Defaults to true."},
 		"timeout_ms":     map[string]any{"type": "integer", "minimum": 0, "maximum": 120000},
 		"secret_label":   map[string]any{"type": "string", "description": "Human-readable account/site label shown only in the local secret prompt."},
 	}
@@ -378,11 +380,17 @@ func runBrowser(ctx context.Context, args map[string]any, env Env) (string, erro
 		}
 		return jsonOutput(map[string]any{"ok": true, "action": action})
 	case "scripts":
-		values, err := session.Scripts(intArgOr(args, "limit", 200))
+		values, err := session.Scripts(ctx, intArgOr(args, "limit", 200), boolArgOr(args, "verify", true))
 		if err != nil {
 			return "", err
 		}
-		return jsonOutput(map[string]any{"action": action, "scripts": values, "count": len(values)})
+		verified := 0
+		for _, value := range values {
+			if value.MappingVerified {
+				verified++
+			}
+		}
+		return jsonOutput(map[string]any{"action": action, "scripts": values, "count": len(values), "verified_count": verified})
 	case "search_source":
 		values, truncated, err := session.SearchSource(ctx, str(args, "script_id"), str(args, "query"), boolArgOr(args, "case_sensitive", false), intArgOr(args, "limit", 30))
 		if err != nil {

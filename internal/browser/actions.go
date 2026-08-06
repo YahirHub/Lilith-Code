@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -411,22 +412,177 @@ func (s *Session) ResponseBody(ctx context.Context, requestID string, maxBytes i
 	return truncate(text, maxBytes), truncated, nil
 }
 
-func (s *Session) Scripts(limit int) ([]ScriptInfo, error) {
+func (s *Session) Scripts(ctx context.Context, limit int, verify bool) ([]ScriptInfo, error) {
 	tab, err := s.CurrentTab()
 	if err != nil {
 		return nil, err
 	}
 	tab.mu.RLock()
-	out := make([]ScriptInfo, 0, len(tab.scripts))
+	generation := tab.documentGeneration
+	all := make([]ScriptInfo, 0, len(tab.scripts))
 	for _, script := range tab.scripts {
-		out = append(out, script)
+		all = append(all, script)
 	}
 	tab.mu.RUnlock()
-	sort.Slice(out, func(i, j int) bool { return out[i].URL < out[j].URL })
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
+
+	sortScripts(all)
+	listed := all
+	if limit > 0 && len(listed) > limit {
+		listed = append([]ScriptInfo(nil), listed[:limit]...)
+	} else {
+		listed = append([]ScriptInfo(nil), listed...)
 	}
-	return out, nil
+	if !verify || len(listed) == 0 {
+		return listed, nil
+	}
+
+	actualHashes, verificationErrors, staleIDs, err := loadScriptSourceHashes(ctx, tab, listed)
+	if err != nil {
+		return nil, err
+	}
+	listed = reconcileScriptMetadata(listed, all, actualHashes, verificationErrors)
+	sortScripts(listed)
+
+	tab.mu.Lock()
+	if tab.documentGeneration != generation {
+		tab.mu.Unlock()
+		return nil, errors.New("el documento cambió mientras se verificaban los scripts; ejecuta scripts nuevamente")
+	}
+	for _, staleID := range staleIDs {
+		delete(tab.scripts, staleID)
+	}
+	for _, script := range listed {
+		if _, exists := tab.scripts[script.ID]; exists {
+			tab.scripts[script.ID] = script
+		}
+	}
+	tab.mu.Unlock()
+	return listed, nil
+}
+
+func loadScriptSourceHashes(ctx context.Context, tab *Tab, scripts []ScriptInfo) (map[string]string, map[string]string, []string, error) {
+	hashes := make(map[string]string, len(scripts))
+	verificationErrors := make(map[string]string)
+	staleIDs := make([]string, 0)
+	timeout := 15*time.Second + time.Duration(len(scripts))*time.Second
+	if timeout > 120*time.Second {
+		timeout = 120 * time.Second
+	}
+	err := runTargetCommand(ctx, tab.ctx, timeout, func(targetCtx context.Context) error {
+		for _, script := range scripts {
+			source, bytecode, sourceErr := debugger.GetScriptSource(cdpruntime.ScriptID(script.ID)).Do(targetCtx)
+			if sourceErr != nil {
+				if targetCtx.Err() != nil {
+					return targetCtx.Err()
+				}
+				if isInvalidScriptIDError(sourceErr) {
+					staleIDs = append(staleIDs, script.ID)
+					continue
+				}
+				verificationErrors[script.ID] = sourceErr.Error()
+				continue
+			}
+			hashes[script.ID] = scriptContentHash(source, bytecode)
+		}
+		return nil
+	})
+	return hashes, verificationErrors, staleIDs, err
+}
+
+func scriptContentHash(source string, bytecode []byte) string {
+	data := []byte(source)
+	if len(data) == 0 && len(bytecode) > 0 {
+		data = bytecode
+	}
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func reconcileScriptMetadata(listed, all []ScriptInfo, actualHashes, verificationErrors map[string]string) []ScriptInfo {
+	metadataByHash := make(map[string][]ScriptInfo)
+	for _, script := range all {
+		hash := strings.ToLower(strings.TrimSpace(script.Hash))
+		if hash == "" {
+			continue
+		}
+		metadataByHash[hash] = append(metadataByHash[hash], script)
+	}
+
+	out := make([]ScriptInfo, 0, len(listed))
+	for _, script := range listed {
+		if message := verificationErrors[script.ID]; message != "" {
+			script.VerificationError = message
+			script.MappingVerified = false
+			script.MappingSource = "debugger_event_unverified"
+			out = append(out, script)
+			continue
+		}
+		actualHash, verified := actualHashes[script.ID]
+		if !verified {
+			continue
+		}
+		actualHash = strings.ToLower(strings.TrimSpace(actualHash))
+		reportedHash := strings.ToLower(strings.TrimSpace(script.Hash))
+		if reportedHash == actualHash {
+			script.Hash = actualHash
+			script.MappingVerified = true
+			script.MappingSource = "content_hash"
+			script.VerificationError = ""
+			out = append(out, script)
+			continue
+		}
+
+		candidates := uniqueScriptMetadata(metadataByHash[actualHash])
+		script.Hash = actualHash
+		script.ReportedURL = script.URL
+		script.VerificationError = ""
+		if len(candidates) == 1 {
+			candidate := candidates[0]
+			script.URL = candidate.URL
+			script.SourceMapURL = candidate.SourceMapURL
+			script.HasSourceURL = candidate.HasSourceURL
+			script.IsModule = candidate.IsModule
+			script.MappingVerified = true
+			script.MappingSource = "content_hash_reconciled"
+		} else {
+			// The real source no longer matches the metadata stored for this ID and
+			// there is no unique metadata record that can identify its URL. Keep the
+			// raw value as reported_url, but do not expose it as the authoritative URL.
+			script.URL = ""
+			script.MappingVerified = false
+			script.MappingSource = "content_hash_unresolved"
+		}
+		out = append(out, script)
+	}
+	return out
+}
+
+func uniqueScriptMetadata(values []ScriptInfo) []ScriptInfo {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]ScriptInfo, 0, len(values))
+	for _, value := range values {
+		key := strings.Join([]string{
+			value.URL,
+			value.SourceMapURL,
+			fmt.Sprintf("%t", value.HasSourceURL),
+			fmt.Sprintf("%t", value.IsModule),
+		}, "\x00")
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func sortScripts(values []ScriptInfo) {
+	sort.Slice(values, func(i, j int) bool {
+		if values[i].URL != values[j].URL {
+			return values[i].URL < values[j].URL
+		}
+		return values[i].ID < values[j].ID
+	})
 }
 
 func (s *Session) SearchSource(ctx context.Context, scriptID, query string, caseSensitive bool, maxMatches int) ([]map[string]any, bool, error) {

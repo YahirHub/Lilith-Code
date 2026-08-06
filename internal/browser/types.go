@@ -93,10 +93,22 @@ type NetworkEvent struct {
 }
 
 type ScriptInfo struct {
-	ID     string `json:"script_id"`
-	URL    string `json:"url,omitempty"`
-	Hash   string `json:"hash,omitempty"`
-	Length int64  `json:"length,omitempty"`
+	ID                 string `json:"script_id"`
+	URL                string `json:"url,omitempty"`
+	ReportedURL        string `json:"reported_url,omitempty"`
+	Hash               string `json:"hash,omitempty"`
+	Length             int64  `json:"length,omitempty"`
+	DocumentGeneration uint64 `json:"document_generation"`
+	ExecutionContextID int64  `json:"execution_context_id,omitempty"`
+	ContextType        string `json:"context_type,omitempty"`
+	FrameID            string `json:"frame_id,omitempty"`
+	DefaultContext     bool   `json:"default_context,omitempty"`
+	SourceMapURL       string `json:"source_map_url,omitempty"`
+	HasSourceURL       bool   `json:"has_source_url,omitempty"`
+	IsModule           bool   `json:"is_module,omitempty"`
+	MappingVerified    bool   `json:"mapping_verified"`
+	MappingSource      string `json:"mapping_source,omitempty"`
+	VerificationError  string `json:"verification_error,omitempty"`
 }
 
 type Element struct {

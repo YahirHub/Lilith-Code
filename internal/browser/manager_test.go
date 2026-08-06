@@ -92,13 +92,93 @@ func TestExecutionContextsClearedDropsDocumentBoundState(t *testing.T) {
 	if tab.nextRef != 1 || tab.lastSnapshot != nil || tab.lastTitle != "" || tab.lastURL != "" {
 		t.Fatalf("el estado derivado del documento quedó activo: nextRef=%d snapshot=%v title=%q url=%q", tab.nextRef, tab.lastSnapshot, tab.lastTitle, tab.lastURL)
 	}
+	if tab.documentGeneration != 1 {
+		t.Fatalf("la generación del documento no avanzó: %d", tab.documentGeneration)
+	}
 
 	tab.recordEvent(&debugger.EventScriptParsed{ScriptID: cdpruntime.ScriptID("91"), URL: "new.js"})
-	if len(tab.scripts) != 1 || tab.scripts["91"].URL != "new.js" {
+	if len(tab.scripts) != 1 || tab.scripts["91"].URL != "new.js" || tab.scripts["91"].DocumentGeneration != 1 {
 		t.Fatalf("el inventario nuevo no fue reconstruido después de navegar: %#v", tab.scripts)
 	}
 	if _, stale := tab.scripts["90"]; stale {
 		t.Fatal("el script del documento anterior reapareció en el inventario")
+	}
+}
+
+func TestParseScriptContextAuxData(t *testing.T) {
+	contextType, frameID, defaultContext := parseScriptContextAuxData([]byte(`{"isDefault":true,"type":"default","frameId":"FRAME-1"}`))
+	if contextType != "default" || frameID != "FRAME-1" || !defaultContext {
+		t.Fatalf("metadatos de contexto inesperados: type=%q frame=%q default=%v", contextType, frameID, defaultContext)
+	}
+}
+
+func TestScriptContentHashMatchesV8SHA256(t *testing.T) {
+	const want = "b3de078634b27f3dfa5a14464e9bd81fa877768ca37bd8ad986d0c465798abf1"
+	if got := scriptContentHash("function foo13(){}", nil); got != want {
+		t.Fatalf("hash SHA-256 incompatible con V8: got=%q want=%q", got, want)
+	}
+}
+
+func TestReconcileScriptMetadataKeepsMatchingURL(t *testing.T) {
+	source := "window.appShellReady = true;"
+	hash := scriptContentHash(source, nil)
+	reported := ScriptInfo{ID: "7", URL: "https://example.test/app-shell.js", Hash: hash, MappingSource: "debugger_event"}
+
+	got := reconcileScriptMetadata([]ScriptInfo{reported}, []ScriptInfo{reported}, map[string]string{"7": hash}, nil)
+	if len(got) != 1 {
+		t.Fatalf("resultado inesperado: %#v", got)
+	}
+	if got[0].URL != reported.URL || got[0].ReportedURL != "" || !got[0].MappingVerified {
+		t.Fatalf("el mapeo válido fue alterado: %#v", got[0])
+	}
+	if got[0].MappingSource != "content_hash" {
+		t.Fatalf("origen de mapeo inesperado: %#v", got[0])
+	}
+}
+
+func TestReconcileScriptMetadataByContentHash(t *testing.T) {
+	themeSource := "const themeMedia = window.matchMedia?.('(prefers-color-scheme: dark)');"
+	appSource := "window.appShellReady = true;"
+	themeHash := scriptContentHash(themeSource, nil)
+	appHash := scriptContentHash(appSource, nil)
+
+	all := []ScriptInfo{
+		{ID: "6", URL: "https://example.test/theme-init.js", Hash: themeHash, MappingSource: "debugger_event"},
+		{ID: "7", URL: "https://example.test/app-shell.js", Hash: appHash, MappingSource: "debugger_event"},
+	}
+	actual := map[string]string{
+		"6": appHash,
+		"7": themeHash,
+	}
+
+	got := reconcileScriptMetadata(all, all, actual, nil)
+	byID := make(map[string]ScriptInfo, len(got))
+	for _, script := range got {
+		byID[script.ID] = script
+	}
+	if byID["6"].URL != "https://example.test/app-shell.js" || byID["6"].ReportedURL != "https://example.test/theme-init.js" {
+		t.Fatalf("el id 6 no fue reconciliado: %#v", byID["6"])
+	}
+	if byID["7"].URL != "https://example.test/theme-init.js" || byID["7"].ReportedURL != "https://example.test/app-shell.js" {
+		t.Fatalf("el id 7 no fue reconciliado: %#v", byID["7"])
+	}
+	if !byID["6"].MappingVerified || !byID["7"].MappingVerified {
+		t.Fatalf("los mapeos reconciliados deben quedar verificados: %#v", byID)
+	}
+}
+
+func TestReconcileScriptMetadataHidesUnresolvedURL(t *testing.T) {
+	reported := ScriptInfo{ID: "7", URL: "https://example.test/app-shell.js", Hash: scriptContentHash("old", nil)}
+	actualHash := scriptContentHash("new source without metadata", nil)
+	got := reconcileScriptMetadata([]ScriptInfo{reported}, []ScriptInfo{reported}, map[string]string{"7": actualHash}, nil)
+	if len(got) != 1 {
+		t.Fatalf("resultado inesperado: %#v", got)
+	}
+	if got[0].URL != "" || got[0].ReportedURL != reported.URL || got[0].MappingVerified {
+		t.Fatalf("se expuso una URL no verificable: %#v", got[0])
+	}
+	if got[0].MappingSource != "content_hash_unresolved" {
+		t.Fatalf("origen de mapeo inesperado: %#v", got[0])
 	}
 }
 
@@ -229,7 +309,7 @@ func TestBrowserIntegrationStartAndSnapshot(t *testing.T) {
 	if len(snapshot.Elements) == 0 || snapshot.Elements[0].Text != "Listo" {
 		t.Fatalf("snapshot no contiene el botón esperado: %#v", snapshot.Elements)
 	}
-	scripts, err := session.Scripts(0)
+	scripts, err := session.Scripts(context.Background(), 0, true)
 	if err != nil {
 		t.Fatalf("scripts posterior a navigate falló: %v", err)
 	}

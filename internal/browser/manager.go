@@ -54,19 +54,20 @@ type Tab struct {
 	cancel context.CancelFunc
 	id     string
 
-	mu           sync.RWMutex
-	console      []ConsoleEvent
-	network      []NetworkEvent
-	requests     map[string]NetworkEvent
-	scripts      map[string]ScriptInfo
-	refs         map[string]string
-	selectorRefs map[string]string
-	nextRef      int
-	lastElements map[string]Element
-	lastSnapshot *Snapshot
-	lastTitle    string
-	lastURL      string
-	lastActivity time.Time
+	mu                 sync.RWMutex
+	console            []ConsoleEvent
+	network            []NetworkEvent
+	requests           map[string]NetworkEvent
+	scripts            map[string]ScriptInfo
+	refs               map[string]string
+	selectorRefs       map[string]string
+	nextRef            int
+	lastElements       map[string]Element
+	lastSnapshot       *Snapshot
+	lastTitle          string
+	lastURL            string
+	documentGeneration uint64
+	lastActivity       time.Time
 }
 
 var (
@@ -573,7 +574,22 @@ func (t *Tab) recordEvent(event any) {
 		t.resetDocumentStateLocked()
 	case *debugger.EventScriptParsed:
 		id := string(e.ScriptID)
-		t.scripts[id] = ScriptInfo{ID: id, URL: e.URL, Hash: e.Hash, Length: e.Length}
+		contextType, frameID, defaultContext := parseScriptContextAuxData([]byte(e.ExecutionContextAuxData))
+		t.scripts[id] = ScriptInfo{
+			ID:                 id,
+			URL:                e.URL,
+			Hash:               strings.ToLower(strings.TrimSpace(e.Hash)),
+			Length:             e.Length,
+			DocumentGeneration: t.documentGeneration,
+			ExecutionContextID: int64(e.ExecutionContextID),
+			ContextType:        contextType,
+			FrameID:            frameID,
+			DefaultContext:     defaultContext,
+			SourceMapURL:       e.SourceMapURL,
+			HasSourceURL:       e.HasSourceURL,
+			IsModule:           e.IsModule,
+			MappingSource:      "debugger_event",
+		}
 		if len(t.scripts) > maxScripts {
 			for key := range t.scripts {
 				delete(t.scripts, key)
@@ -583,7 +599,23 @@ func (t *Tab) recordEvent(event any) {
 	}
 }
 
+func parseScriptContextAuxData(raw []byte) (contextType, frameID string, defaultContext bool) {
+	if len(raw) == 0 {
+		return "", "", false
+	}
+	var aux struct {
+		IsDefault bool   `json:"isDefault"`
+		Type      string `json:"type"`
+		FrameID   string `json:"frameId"`
+	}
+	if err := json.Unmarshal(raw, &aux); err != nil {
+		return "", "", false
+	}
+	return strings.TrimSpace(aux.Type), strings.TrimSpace(aux.FrameID), aux.IsDefault
+}
+
 func (t *Tab) resetDocumentStateLocked() {
+	t.documentGeneration++
 	t.scripts = map[string]ScriptInfo{}
 	t.refs = map[string]string{}
 	t.selectorRefs = map[string]string{}
