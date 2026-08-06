@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/debugger"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
@@ -94,7 +93,7 @@ func TestExecutionContextsClearedDropsDocumentBoundState(t *testing.T) {
 		t.Fatalf("el estado derivado del documento quedó activo: nextRef=%d snapshot=%v title=%q url=%q", tab.nextRef, tab.lastSnapshot, tab.lastTitle, tab.lastURL)
 	}
 
-	tab.recordEvent(&debugger.EventScriptParsed{ScriptID: cdp.ScriptID("91"), URL: "new.js"})
+	tab.recordEvent(&debugger.EventScriptParsed{ScriptID: cdpruntime.ScriptID("91"), URL: "new.js"})
 	if len(tab.scripts) != 1 || tab.scripts["91"].URL != "new.js" {
 		t.Fatalf("el inventario nuevo no fue reconstruido después de navegar: %#v", tab.scripts)
 	}

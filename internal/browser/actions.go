@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/debugger"
 	"github.com/chromedp/cdproto/network"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
@@ -449,7 +448,7 @@ func (s *Session) SearchSource(ctx context.Context, scriptID, query string, case
 	var rawMatches []*debugger.SearchMatch
 	if err := runTargetCommand(ctx, tab.ctx, 15*time.Second, func(targetCtx context.Context) error {
 		var searchErr error
-		rawMatches, searchErr = debugger.SearchInContent(cdp.ScriptID(scriptID), query).
+		rawMatches, searchErr = debugger.SearchInContent(cdpruntime.ScriptID(scriptID), query).
 			WithCaseSensitive(caseSensitive).
 			Do(targetCtx)
 		return searchErr
@@ -462,7 +461,8 @@ func (s *Session) SearchSource(ctx context.Context, scriptID, query string, case
 		}
 		return nil, false, err
 	}
-	return formatSearchMatches(rawMatches, maxMatches)
+	matches, truncated := formatSearchMatches(rawMatches, maxMatches)
+	return matches, truncated, nil
 }
 
 func formatSearchMatches(raw []*debugger.SearchMatch, maxMatches int) ([]map[string]any, bool) {
