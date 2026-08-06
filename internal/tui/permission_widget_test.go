@@ -220,3 +220,14 @@ func TestScopedSSHPermissionRendersAllDecisions(t *testing.T) {
 		}
 	}
 }
+
+func TestSudoSecretUsesExplicitRemoteLabel(t *testing.T) {
+	req := &interaction.Request{
+		SecretKind: interaction.SecretSudoPassword,
+		Title:      "Contraseña maestra de la bóveda SSH",
+		Message:    "Este texto menciona la bóveda, pero la solicitud pertenece a sudo.",
+	}
+	if got := secretInputLabel(req, false); got != "Contraseña sudo del servidor remoto" {
+		t.Fatalf("etiqueta sudo=%q", got)
+	}
+}

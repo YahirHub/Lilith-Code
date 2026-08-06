@@ -99,6 +99,8 @@ func secretInputLabel(req *interaction.Request, confirming bool) string {
 		label = "Contraseña maestra de la bóveda SSH"
 	case interaction.SecretRemotePassword:
 		label = "Contraseña del servidor remoto"
+	case interaction.SecretSudoPassword:
+		label = "Contraseña sudo del servidor remoto"
 	case interaction.SecretKeyPassphrase:
 		label = "Passphrase de la clave privada SSH"
 	default:

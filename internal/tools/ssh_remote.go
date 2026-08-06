@@ -29,6 +29,8 @@ func init() {
 			"Prefer prompt_password/prompt_passphrase or environment/key references. Never ask the user to paste a password into chat.",
 			"Use one persistent connection_id for related remote operations and close it when it is no longer needed.",
 			"Omit timeout_seconds for long remote builds, deployments and installations; SSH exec has no artificial deadline unless one is explicitly requested.",
+			"Remote file actions use privilege_mode=auto by default: they try SFTP first and safely fall back to root, sudo or passwordless doas for protected paths. Use privilege_mode=never to forbid elevation or required when elevation is known to be necessary.",
+			"For an arbitrary exec command, elevation is never retried automatically after a permission error because the command may already have partial effects. Set privilege_mode=required explicitly when the complete command must run through sudo/root/doas.",
 			"A connection_id is a stable logical connection. If its transport drops, call the next action with the same ID; Lilith reconnects automatically. Never close and reconnect merely because an exec result reports transport_recovered or an unknown exit status.",
 			"Respect the user's SSH approval policy; do not request a second conversational confirmation before calling this tool.",
 			"Never read or return protected .env files unless the user explicitly authorizes that specific operation.",
@@ -41,7 +43,7 @@ func init() {
 
 func sshRemoteSchema() map[string]any {
 	properties := map[string]any{
-		"action": map[string]any{"type": "string", "enum": sshActions}, "connection_id": map[string]any{"type": "string", "minLength": 1}, "server_id": map[string]any{"type": "string", "minLength": 1}, "shell_id": map[string]any{"type": "string", "minLength": 1}, "name": map[string]any{"type": "string"}, "label": map[string]any{"type": "string"}, "new_name": map[string]any{"type": "string"}, "clear_name": map[string]any{"type": "boolean"}, "clear_authentication": map[string]any{"type": "boolean"}, "close_connections": map[string]any{"type": "boolean"}, "prompt_password": map[string]any{"type": "boolean"}, "prompt_passphrase": map[string]any{"type": "boolean"}, "save_server": map[string]any{"type": "boolean"}, "host": map[string]any{"type": "string"}, "port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535}, "username": map[string]any{"type": "string"}, "password": map[string]any{"type": "string", "description": "Ephemeral only. Prefer prompt_password; never persist this field."}, "password_env": map[string]any{"type": "string"}, "private_key_path": map[string]any{"type": "string"}, "private_key": map[string]any{"type": "string", "description": "Ephemeral key contents; never persisted."}, "passphrase": map[string]any{"type": "string"}, "passphrase_env": map[string]any{"type": "string"}, "agent": map[string]any{"type": "string"}, "agent_env": map[string]any{"type": "string"}, "host_fingerprint_sha256": map[string]any{"type": "string"}, "ready_timeout_ms": map[string]any{"type": "integer", "minimum": 1000, "maximum": 120000}, "keepalive_interval_ms": map[string]any{"type": "integer", "minimum": 1000, "maximum": 120000}, "path": map[string]any{"type": "string"}, "destination_path": map[string]any{"type": "string"}, "local_path": map[string]any{"type": "string"}, "remote_path": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}, "encoding": map[string]any{"type": "string", "enum": []string{"utf8", "base64"}}, "command": map[string]any{"type": "string", "minLength": 1}, "timeout_seconds": map[string]any{"type": "number", "minimum": -1, "maximum": 86400, "description": "Optional hard deadline. Omit it or use -1 for long builds/deployments without an artificial timeout."}, "pty": map[string]any{"type": "boolean"}, "cols": map[string]any{"type": "integer", "minimum": 20, "maximum": 500}, "rows": map[string]any{"type": "integer", "minimum": 5, "maximum": 200}, "wait_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 30000}, "max_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 10485760}, "recursive": map[string]any{"type": "boolean"}, "overwrite": map[string]any{"type": "boolean"}, "reason": map[string]any{"type": "string"},
+		"action": map[string]any{"type": "string", "enum": sshActions}, "connection_id": map[string]any{"type": "string", "minLength": 1}, "server_id": map[string]any{"type": "string", "minLength": 1}, "shell_id": map[string]any{"type": "string", "minLength": 1}, "name": map[string]any{"type": "string"}, "label": map[string]any{"type": "string"}, "new_name": map[string]any{"type": "string"}, "clear_name": map[string]any{"type": "boolean"}, "clear_authentication": map[string]any{"type": "boolean"}, "close_connections": map[string]any{"type": "boolean"}, "prompt_password": map[string]any{"type": "boolean"}, "prompt_passphrase": map[string]any{"type": "boolean"}, "save_server": map[string]any{"type": "boolean"}, "host": map[string]any{"type": "string"}, "port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535}, "username": map[string]any{"type": "string"}, "password": map[string]any{"type": "string", "description": "Ephemeral only. Prefer prompt_password; never persist this field."}, "password_env": map[string]any{"type": "string"}, "private_key_path": map[string]any{"type": "string"}, "private_key": map[string]any{"type": "string", "description": "Ephemeral key contents; never persisted."}, "passphrase": map[string]any{"type": "string"}, "passphrase_env": map[string]any{"type": "string"}, "agent": map[string]any{"type": "string"}, "agent_env": map[string]any{"type": "string"}, "host_fingerprint_sha256": map[string]any{"type": "string"}, "ready_timeout_ms": map[string]any{"type": "integer", "minimum": 1000, "maximum": 120000}, "keepalive_interval_ms": map[string]any{"type": "integer", "minimum": 1000, "maximum": 120000}, "path": map[string]any{"type": "string"}, "destination_path": map[string]any{"type": "string"}, "local_path": map[string]any{"type": "string"}, "remote_path": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}, "encoding": map[string]any{"type": "string", "enum": []string{"utf8", "base64"}}, "command": map[string]any{"type": "string", "minLength": 1}, "timeout_seconds": map[string]any{"type": "number", "minimum": -1, "maximum": 86400, "description": "Optional hard deadline. Omit it or use -1 for long builds/deployments without an artificial timeout."}, "pty": map[string]any{"type": "boolean"}, "cols": map[string]any{"type": "integer", "minimum": 20, "maximum": 500}, "rows": map[string]any{"type": "integer", "minimum": 5, "maximum": 200}, "wait_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 30000}, "max_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 10485760}, "recursive": map[string]any{"type": "boolean"}, "overwrite": map[string]any{"type": "boolean"}, "privilege_mode": map[string]any{"type": "string", "enum": []string{"auto", "never", "required"}, "description": "Privilege policy. File operations: auto tries normal SFTP first and safely falls back to root/sudo/doas. exec: required elevates the complete command; auto never retries an arbitrary command after it started. never forbids elevation."}, "reason": map[string]any{"type": "string"},
 	}
 	serverActions := []string{"connect_server", "get_server", "update_server", "rename_server", "delete_server", "set_server_password", "clear_server_password", "set_server_passphrase", "clear_server_passphrase"}
 	connectionActions := []string{"status", "pwd", "cd", "list", "stat", "read_file", "exec", "shell_open", "shell_write", "shell_read", "upload", "download", "write_file", "mkdir", "rename", "delete", "close"}
@@ -284,6 +286,10 @@ func runSSHRemote(ctx context.Context, args map[string]any, env Env) (string, er
 	if err != nil {
 		return "", err
 	}
+	privilegeMode, err := sshremote.ParsePrivilegeMode(str(args, "privilege_mode"))
+	if err != nil {
+		return "", err
+	}
 	unlock := conn.LockOperation()
 	defer unlock()
 	switch action {
@@ -308,17 +314,21 @@ func runSSHRemote(ctx context.Context, args map[string]any, env Env) (string, er
 		return jsonOutput(map[string]any{"action": "cd", "connection_id": conn.ID, "cwd": cwd, "path": cwd})
 	case "list":
 		requested := defaultString(str(args, "path"), ".")
-		items, err := conn.List(requested)
+		items, privilege, err := conn.ListWithPrivilege(ctx, requested, privilegeMode)
 		if err != nil {
 			return "", err
 		}
-		return jsonOutput(map[string]any{"action": "list", "connection_id": conn.ID, "path": conn.Resolve(requested), "entries": items, "count": len(items)})
+		out := map[string]any{"action": "list", "connection_id": conn.ID, "path": conn.Resolve(requested), "entries": items, "count": len(items)}
+		addSSHPrivilegeResult(out, privilege)
+		return jsonOutput(out)
 	case "stat":
-		info, err := conn.Stat(requiredArg(args, "path"))
+		info, privilege, err := conn.StatWithPrivilege(ctx, requiredArg(args, "path"), privilegeMode)
 		if err != nil {
 			return "", err
 		}
-		return jsonOutput(map[string]any{"action": "stat", "connection_id": conn.ID, "name": info.Name, "path": info.Path, "size": info.Size, "mode": info.Mode, "modified_at": info.ModifiedAt, "type": info.Type})
+		out := map[string]any{"action": "stat", "connection_id": conn.ID, "name": info.Name, "path": info.Path, "size": info.Size, "mode": info.Mode, "modified_at": info.ModifiedAt, "type": info.Type}
+		addSSHPrivilegeResult(out, privilege)
+		return jsonOutput(out)
 	case "read_file":
 		requested := requiredArg(args, "path")
 		if settings.ProtectEnvFiles && isProtectedEnv(requested) {
@@ -328,14 +338,25 @@ func runSSHRemote(ctx context.Context, args map[string]any, env Env) (string, er
 		}
 		encoding := defaultString(str(args, "encoding"), "utf8")
 		maxBytes := intArgOr(args, "max_bytes", 200000)
-		content, size, truncated, err := conn.ReadFile(requested, encoding, maxBytes)
+		content, size, truncated, privilege, err := conn.ReadFileWithPrivilege(ctx, requested, encoding, maxBytes, privilegeMode)
 		if err != nil {
 			return "", err
 		}
-		return jsonOutput(map[string]any{"action": "read_file", "connection_id": conn.ID, "path": conn.Resolve(requested), "size": size, "truncated": truncated, "encoding": encoding, "content": content})
+		out := map[string]any{"action": "read_file", "connection_id": conn.ID, "path": conn.Resolve(requested), "size": size, "truncated": truncated, "encoding": encoding, "content": content}
+		addSSHPrivilegeResult(out, privilege)
+		return jsonOutput(out)
 	case "exec":
 		command := requiredArg(args, "command")
-		result, err := conn.Exec(ctx, command, secondsArg(args, "timeout_seconds", -1), boolArgOr(args, "pty", false), intArgOr(args, "cols", 120), intArgOr(args, "rows", 30))
+		var result sshremote.ExecResult
+		var privilege sshremote.PrivilegeInfo
+		if privilegeMode == sshremote.PrivilegeRequired {
+			result, privilege, err = conn.ExecWithPrivilege(ctx, command, secondsArg(args, "timeout_seconds", -1), boolArgOr(args, "pty", false), intArgOr(args, "cols", 120), intArgOr(args, "rows", 30), privilegeMode)
+		} else {
+			// An arbitrary command is not safe to repeat after a permission error:
+			// it may already have produced partial side effects. Elevation therefore
+			// requires an explicit privilege_mode=required before execution.
+			result, err = conn.Exec(ctx, command, secondsArg(args, "timeout_seconds", -1), boolArgOr(args, "pty", false), intArgOr(args, "cols", 120), intArgOr(args, "rows", 30))
+		}
 		stdout, stdoutCut := trimSSHOutput(result.Stdout, intArgOr(args, "max_bytes", 200000))
 		stderr, stderrCut := trimSSHOutput(result.Stderr, intArgOr(args, "max_bytes", 200000))
 		out := map[string]any{
@@ -348,28 +369,38 @@ func runSSHRemote(ctx context.Context, args map[string]any, env Env) (string, er
 			"transport_recovered": result.TransportRecovered, "reconnect_count": result.ReconnectCount,
 			"connection_generation": result.ConnectionGeneration,
 		}
+		addSSHPrivilegeResult(out, privilege)
 		if result.TransportNotice != "" {
 			out["transport_notice"] = result.TransportNotice
 			out["message"] = "La conexión lógica sigue disponible con el mismo connection_id. No cierres ni reconectes manualmente; verifica sólo el estado del comando porque el servidor no confirmó su código de salida."
+		}
+		if privilegeMode == sshremote.PrivilegeAuto && sshremote.IsPermissionDenied(errors.New(result.Stderr+"\n"+result.Stdout)) {
+			out["privilege_hint"] = "El comando terminó con acceso denegado. Si todo el comando debe ejecutarse elevado, reintenta explícitamente con privilege_mode=required; Lilith no repite automáticamente comandos arbitrarios que pudieron tener efectos parciales."
 		}
 		text, _ := jsonOutput(out)
 		return text, err
 	case "upload":
 		localPath := resolveTransferPath(requiredArg(args, "local_path"), env.Root)
 		remotePath := conn.Resolve(requiredArg(args, "remote_path"))
-		if err := conn.Upload(localPath, remotePath, boolArgOr(args, "overwrite", false)); err != nil {
+		privilege, err := conn.UploadWithPrivilege(ctx, localPath, remotePath, boolArgOr(args, "overwrite", false), privilegeMode)
+		if err != nil {
 			return "", err
 		}
 		info, _ := os.Stat(localPath)
-		return jsonOutput(map[string]any{"ok": true, "action": "upload", "uploaded": true, "connection_id": conn.ID, "local_path": localPath, "remote_path": remotePath, "bytes": fileSize(info)})
+		out := map[string]any{"ok": true, "action": "upload", "uploaded": true, "connection_id": conn.ID, "local_path": localPath, "remote_path": remotePath, "bytes": fileSize(info)}
+		addSSHPrivilegeResult(out, privilege)
+		return jsonOutput(out)
 	case "download":
 		remotePath := conn.Resolve(requiredArg(args, "remote_path"))
 		localPath := resolveTransferPath(requiredArg(args, "local_path"), env.Root)
-		if err := conn.Download(remotePath, localPath, boolArgOr(args, "overwrite", false)); err != nil {
+		privilege, err := conn.DownloadWithPrivilege(ctx, remotePath, localPath, boolArgOr(args, "overwrite", false), privilegeMode)
+		if err != nil {
 			return "", err
 		}
 		info, _ := os.Stat(localPath)
-		return jsonOutput(map[string]any{"ok": true, "action": "download", "downloaded": true, "connection_id": conn.ID, "remote_path": remotePath, "local_path": localPath, "bytes": fileSize(info)})
+		out := map[string]any{"ok": true, "action": "download", "downloaded": true, "connection_id": conn.ID, "remote_path": remotePath, "local_path": localPath, "bytes": fileSize(info)}
+		addSSHPrivilegeResult(out, privilege)
+		return jsonOutput(out)
 	case "write_file":
 		requested := requiredArg(args, "path")
 		if isProtectedEnv(requested) && settings.ProtectEnvFiles {
@@ -382,34 +413,46 @@ func runSSHRemote(ctx context.Context, args map[string]any, env Env) (string, er
 		}
 		encoding := defaultString(str(args, "encoding"), "utf8")
 		content := str(args, "content")
-		if err := conn.WriteFile(requested, content, encoding, boolArgOr(args, "overwrite", false)); err != nil {
+		privilege, err := conn.WriteFileWithPrivilege(ctx, requested, content, encoding, boolArgOr(args, "overwrite", false), privilegeMode)
+		if err != nil {
 			return "", err
 		}
 		bytesWritten, err := encodedLength(content, encoding)
 		if err != nil {
 			return "", err
 		}
-		return jsonOutput(map[string]any{"ok": true, "action": "write_file", "written": true, "connection_id": conn.ID, "path": conn.Resolve(requested), "bytes": bytesWritten})
+		out := map[string]any{"ok": true, "action": "write_file", "written": true, "connection_id": conn.ID, "path": conn.Resolve(requested), "bytes": bytesWritten}
+		addSSHPrivilegeResult(out, privilege)
+		return jsonOutput(out)
 	case "mkdir":
 		requested := requiredArg(args, "path")
-		if err := conn.Mkdir(requested, boolArgOr(args, "recursive", false)); err != nil {
+		privilege, err := conn.MkdirWithPrivilege(ctx, requested, boolArgOr(args, "recursive", false), privilegeMode)
+		if err != nil {
 			return "", err
 		}
-		return jsonOutput(map[string]any{"ok": true, "action": "mkdir", "created": true, "connection_id": conn.ID, "path": conn.Resolve(requested)})
+		out := map[string]any{"ok": true, "action": "mkdir", "created": true, "connection_id": conn.ID, "path": conn.Resolve(requested)}
+		addSSHPrivilegeResult(out, privilege)
+		return jsonOutput(out)
 	case "rename":
 		source := requiredArg(args, "path")
 		destination := requiredArg(args, "destination_path")
-		if err := conn.Rename(source, destination, boolArgOr(args, "overwrite", false)); err != nil {
+		privilege, err := conn.RenameWithPrivilege(ctx, source, destination, boolArgOr(args, "overwrite", false), privilegeMode)
+		if err != nil {
 			return "", err
 		}
-		return jsonOutput(map[string]any{"ok": true, "action": "rename", "renamed": true, "connection_id": conn.ID, "path": conn.Resolve(source), "destination_path": conn.Resolve(destination), "from": conn.Resolve(source), "to": conn.Resolve(destination)})
+		out := map[string]any{"ok": true, "action": "rename", "renamed": true, "connection_id": conn.ID, "path": conn.Resolve(source), "destination_path": conn.Resolve(destination), "from": conn.Resolve(source), "to": conn.Resolve(destination)}
+		addSSHPrivilegeResult(out, privilege)
+		return jsonOutput(out)
 	case "delete":
 		requested := requiredArg(args, "path")
 		recursive := boolArgOr(args, "recursive", false)
-		if err := conn.Delete(requested, recursive); err != nil {
+		privilege, err := conn.DeleteWithPrivilege(ctx, requested, recursive, privilegeMode)
+		if err != nil {
 			return "", err
 		}
-		return jsonOutput(map[string]any{"ok": true, "action": "delete", "deleted": true, "connection_id": conn.ID, "path": conn.Resolve(requested), "recursive": recursive})
+		out := map[string]any{"ok": true, "action": "delete", "deleted": true, "connection_id": conn.ID, "path": conn.Resolve(requested), "recursive": recursive}
+		addSSHPrivilegeResult(out, privilege)
+		return jsonOutput(out)
 	case "shell_open":
 		if existing, shellErr := resolveShell(conn, str(args, "shell_id")); shellErr == nil && existing.IsOpen() {
 			if err := waitSSH(ctx, intArgOr(args, "wait_ms", 350)); err != nil {
@@ -961,6 +1004,15 @@ func connectionStatus(c *sshremote.Connection) map[string]any {
 	}
 	return out
 }
+
+func addSSHPrivilegeResult(out map[string]any, privilege sshremote.PrivilegeInfo) {
+	if out == nil || privilege.Method == "" {
+		return
+	}
+	out["elevated"] = privilege.Elevated
+	out["privilege_method"] = privilege.Method
+}
+
 func resolveShell(c *sshremote.Connection, ref string) (*sshremote.RemoteShell, error) {
 	return c.GetShell(ref)
 }

@@ -226,6 +226,8 @@ cada solicitud puedes **permitir una vez**, **permitir durante la sesión**,
 **permitir siempre esa acción para ese destino dentro del proyecto** o denegarla.
 Los permisos permanentes del proyecto se pueden borrar desde la misma pantalla.
 
+Las transferencias y operaciones de archivos no asumen que la sesión SSH pertenezca a `root`. Lilith intenta SFTP normalmente y, si una ruta como `/opt`, `/var/www` o `/etc` rechaza el acceso, sube primero a una ubicación temporal y publica el archivo mediante UID 0, `sudo` o `doas` sin contraseña. Si `sudo` necesita contraseña, aparece un popup local específico y el secreto se entrega por stdin; nunca se incorpora al comando ni al historial. La credencial se reutiliza sólo en memoria mientras la conexión lógica siga abierta. `privilege_mode=never` permite prohibir la elevación y `required` solicitarla desde el inicio. En comandos `exec` generales la elevación debe pedirse explícitamente con `required`, para evitar repetir automáticamente un comando que ya pudo aplicar cambios parciales.
+
 ## GitZip
 
 GitZip crea archivos listos para compartir o desplegar sin incluir el historial
@@ -239,7 +241,7 @@ archivos `.env` reales quedan fuera por defecto y requieren una autorización
 local independiente para incluirlos. El uso normal de GitZip no solicita una
 confirmación genérica adicional. `source_path` permite empaquetar una carpeta
 concreta; `include_paths` selecciona únicamente rutas o patrones determinados y
-`exclude_paths` omite carpetas, archivos o globs adicionales.
+`exclude_paths` omite carpetas, archivos o globs adicionales. En operaciones remotas, GitZip comprueba antes si puede leer el origen y escribir en el destino; cuando son rutas protegidas ejecuta la creación, subida o extracción mediante el mismo mecanismo seguro de elevación, sin exigir que el usuario SSH sea `root`.
 
 ## Comandos útiles
 

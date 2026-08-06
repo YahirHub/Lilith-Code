@@ -360,3 +360,11 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `go.sum` quedó sincronizado con el resultado de `go mod tidy` de Go 1.25.12 para que la validación `go mod tidy -diff` del workflow sea reproducible.
 - El catálogo local cubre explícitamente los 50 IDs publicados por CommandCode el 2026-08-05, incluidos Claude 5/4.8/4.7/4.6, GPT-5.3 Codex, Qwen 3.8/3.7/3.6, Step 3.7/3.5, Gemini Flash/Lite, Fugu Ultra, Inkling y Muse Spark 1.1.
 - Los modelos conocidos nunca deben caer en `DefaultMaxContext`; la prueba exhaustiva exige coincidencia normalizada exacta y su ventana declarada.
+
+## 121 · Elevación segura para rutas SSH y GitZip remoto
+
+- Las operaciones remotas de archivo usan `privilege_mode=auto`: prueban SFTP con la cuenta SSH y, ante acceso denegado, preparan el contenido en una ruta temporal y lo publican mediante UID 0, `sudo` o `doas -n`.
+- La contraseña sudo tiene tipo de secreto propio, se solicita en un popup local y sólo se entrega por stdin; permanece en memoria durante la conexión lógica y nunca entra en comandos, logs, historial o respuestas.
+- Lectura, descarga, listado, stat, escritura, subida, mkdir, renombrado y borrado comparten la capa privilegiada; se preservan propietario/modo al reemplazar y se rechaza eliminar `/`.
+- GitZip preflighta lectura y escritura antes de crear o extraer remotamente para elevar el comando completo desde el inicio y evitar efectos parciales.
+- Los comandos `exec` arbitrarios sólo se elevan con `privilege_mode=required`; no se reintentan automáticamente después de un error de permisos.

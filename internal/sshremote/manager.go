@@ -38,6 +38,7 @@ type Connection struct {
 	mu               sync.Mutex
 	opMu             sync.Mutex
 	reconnectMu      sync.Mutex
+	privilegeMu      sync.Mutex
 	manager          *Manager
 	connectOptions   ConnectOptions
 	ID               string
@@ -61,6 +62,7 @@ type Connection struct {
 	shells           map[string]*RemoteShell
 	currentShell     string
 	closed           bool
+	privilege        privilegeState
 }
 
 type RemoteShell struct {
@@ -910,6 +912,10 @@ func (c *Connection) close() {
 	c.connectOptions.Passphrase = ""
 	c.connectOptions.PrivateKey = ""
 	c.mu.Unlock()
+	c.privilegeMu.Lock()
+	c.privilege.Password = ""
+	c.privilege = privilegeState{}
+	c.privilegeMu.Unlock()
 	for _, s := range shells {
 		s.Close()
 	}
@@ -1014,6 +1020,13 @@ func (c *Connection) prepareExecSession(ctx context.Context, pty bool, cols, row
 }
 
 func (c *Connection) Exec(ctx context.Context, command string, timeout time.Duration, pty bool, cols, rows int) (ExecResult, error) {
+	return c.execWithInput(ctx, command, "", timeout, pty, cols, rows)
+}
+
+// execWithInput is reserved for internal flows that must feed a secret through
+// stdin (for example sudo -S). The input is never copied into command strings,
+// tool output, logs or the persisted session.
+func (c *Connection) execWithInput(ctx context.Context, command, input string, timeout time.Duration, pty bool, cols, rows int) (ExecResult, error) {
 	start := time.Now()
 	session, err := c.prepareExecSession(ctx, pty, cols, rows)
 	if err != nil {
@@ -1027,6 +1040,9 @@ func (c *Connection) Exec(ctx context.Context, command string, timeout time.Dura
 	stderr := boundedBuffer{max: maxExecCaptureBytes}
 	session.Stdout = &stdout
 	session.Stderr = &stderr
+	if input != "" {
+		session.Stdin = strings.NewReader(input)
+	}
 	full := command
 	if cwd != "" && cwd != "." {
 		full = "cd -- " + quotePOSIX(cwd) + " && " + command

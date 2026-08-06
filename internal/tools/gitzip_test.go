@@ -92,3 +92,19 @@ func TestRemoteGitZipDoesNotRequestGenericSSHConfirmation(t *testing.T) {
 		t.Fatalf("GitZip requested %d generic confirmations", confirmCalls)
 	}
 }
+
+func TestGitZipSchemaExposesRemotePrivilegeModes(t *testing.T) {
+	schema := gitzipSchema()
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("properties GitZip inválidas")
+	}
+	property, ok := properties["privilege_mode"].(map[string]any)
+	if !ok {
+		t.Fatal("falta privilege_mode en gitzip")
+	}
+	enum, ok := property["enum"].([]string)
+	if !ok || len(enum) != 3 || enum[0] != "auto" || enum[1] != "never" || enum[2] != "required" {
+		t.Fatalf("enum privilege_mode=%#v", property["enum"])
+	}
+}

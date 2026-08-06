@@ -151,3 +151,22 @@ func TestSSHExecTimeoutIsUnlimitedWhenOmitted(t *testing.T) {
 		t.Fatalf("explicit SSH exec timeout=%s", got)
 	}
 }
+
+func TestSSHRemoteSchemaExposesPrivilegeModes(t *testing.T) {
+	schema := sshRemoteSchema()
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("properties SSH inválidas")
+	}
+	property, ok := properties["privilege_mode"].(map[string]any)
+	if !ok {
+		t.Fatal("falta privilege_mode en ssh_remote")
+	}
+	enum, ok := property["enum"].([]string)
+	if !ok || strings.Join(enum, ",") != "auto,never,required" {
+		t.Fatalf("enum privilege_mode=%#v", property["enum"])
+	}
+	if !strings.Contains(property["description"].(string), "exec") {
+		t.Fatalf("la descripción no explica la semántica segura de exec: %#v", property)
+	}
+}

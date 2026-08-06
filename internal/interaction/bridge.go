@@ -22,6 +22,7 @@ const (
 	SecretGeneric        SecretKind = "generic"
 	SecretVaultMaster    SecretKind = "vault_master"
 	SecretRemotePassword SecretKind = "remote_password"
+	SecretSudoPassword   SecretKind = "sudo_password"
 	SecretKeyPassphrase  SecretKind = "key_passphrase"
 
 	ApprovalDeny    ApprovalDecision = "deny"

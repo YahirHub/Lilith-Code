@@ -49,6 +49,7 @@ func init() {
 			"Use gitzip instead of raw zip/tar when packaging a project so ignored files and .git are excluded.",
 			"Set source_path to the exact local or remote folder that should become the archive root; use include_paths/exclude_paths for narrower selection.",
 			"Open an SSH connection with ssh_remote first, then reuse its connection_id for upload/remote_create/remote_extract.",
+			"Remote actions use privilege_mode=auto by default. Lilith preflights protected source/destination paths and uses root, sudo or passwordless doas without placing the privilege password in the command.",
 			"Never set include_protected_env unless the user explicitly requests credentials/configuration secrets in the archive.",
 		},
 		Parameters: gitzipSchema(),
@@ -64,6 +65,7 @@ func gitzipSchema() map[string]any {
 		"output_path": map[string]any{"type": "string", "description": "Optional archive destination. Relative paths are resolved inside source_path."}, "format": map[string]any{"type": "string", "enum": []string{"zip", "tar", "tar.gz"}},
 		"connection_id": map[string]any{"type": "string"}, "remote_path": map[string]any{"type": "string"}, "extract_remote": map[string]any{"type": "boolean"}, "extract_path": map[string]any{"type": "string"},
 		"cleanup_local": map[string]any{"type": "boolean"}, "cleanup_remote_archive": map[string]any{"type": "boolean"},
+		"privilege_mode":        map[string]any{"type": "string", "enum": []string{"auto", "never", "required"}, "description": "Remote actions only. auto uses the SSH account normally and elevates through root/sudo/doas when protected paths require it; never disables elevation; required elevates from the start."},
 		"include_paths":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 200, "description": "Optional source-relative paths/globs to include exclusively, e.g. [\"cmd/\", \"README.md\", \"assets/**/*.png\"]. Empty includes everything."},
 		"exclude_paths":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 200, "description": "Additional source-relative files, folders or gitignore-style globs to omit, e.g. [\"data/\", \"*.log\", \"tmp/cache.db\"]."},
 		"extra_excludes":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 200, "description": "Backward-compatible alias of exclude_paths."},
@@ -105,15 +107,19 @@ func runGitZip(ctx context.Context, args map[string]any, env Env) (string, error
 	extra := mergeStringSlices(stringSliceArg(args, "exclude_paths"), stringSliceArg(args, "extra_excludes"))
 	includes := stringSliceArg(args, "include_paths")
 	format := gitzip.InferFormat(str(args, "format"), str(args, "output_path"), gitzip.FormatZIP)
+	privilegeMode, err := sshremote.ParsePrivilegeMode(str(args, "privilege_mode"))
+	if err != nil {
+		return "", err
+	}
 	switch action {
 	case "create":
 		return createLocalGitZip(ctx, env.Root, source, str(args, "output_path"), format, extra, includes, includeEnv, boolArgOr(args, "overwrite", false), intArgOr(args, "compression_level", -1))
 	case "upload":
-		return uploadGitZip(ctx, args, env, source, format, extra, includes, includeEnv)
+		return uploadGitZip(ctx, args, env, source, format, extra, includes, includeEnv, privilegeMode)
 	case "remote_create":
-		return remoteCreateGitZip(ctx, args, env, source, format, extra, includes, includeEnv)
+		return remoteCreateGitZip(ctx, args, env, source, format, extra, includes, includeEnv, privilegeMode)
 	case "remote_extract":
-		return remoteExtractGitZip(ctx, args, env, source, format)
+		return remoteExtractGitZip(ctx, args, env, source, format, privilegeMode)
 	default:
 		return "", fmt.Errorf("unsupported gitzip action: %s", action)
 	}
@@ -151,7 +157,7 @@ func localArchiveOutput(res gitzip.Result, duration time.Duration) (map[string]a
 	}, nil
 }
 
-func uploadGitZip(ctx context.Context, args map[string]any, env Env, source string, format gitzip.Format, extra, includes []string, includeEnv bool) (string, error) {
+func uploadGitZip(ctx context.Context, args map[string]any, env Env, source string, format gitzip.Format, extra, includes []string, includeEnv bool, privilegeMode sshremote.PrivilegeMode) (string, error) {
 	manager := sshremote.GetManager(env.ConfigDir, env.RequestSecret, env.Confirm)
 	conn, err := manager.Get(requiredArg(args, "connection_id"))
 	if err != nil {
@@ -176,13 +182,15 @@ func uploadGitZip(ctx context.Context, args map[string]any, env Env, source stri
 	if remotePath == "" {
 		remotePath = filepath.Base(localRes.OutputPath)
 	}
-	if err = conn.Upload(localRes.OutputPath, remotePath, boolArgOr(args, "overwrite", false)); err != nil {
+	privilege, err := conn.UploadWithPrivilege(ctx, localRes.OutputPath, remotePath, boolArgOr(args, "overwrite", false), privilegeMode)
+	if err != nil {
 		return "", err
 	}
 	remoteResolved := conn.Resolve(remotePath)
 	uploadedBytes := int64(0)
-	if remoteInfo, statErr := conn.Stat(remoteResolved); statErr == nil {
+	if remoteInfo, statPrivilege, statErr := conn.StatWithPrivilege(ctx, remoteResolved, privilegeMode); statErr == nil {
 		uploadedBytes = remoteInfo.Size
+		privilege = mergeSSHPrivilege(privilege, statPrivilege)
 	}
 	var extraction any
 	if boolArgOr(args, "extract_remote", false) {
@@ -190,13 +198,17 @@ func uploadGitZip(ctx context.Context, args map[string]any, env Env, source stri
 		if extractPath == "" {
 			extractPath = path.Dir(remoteResolved)
 		}
-		extraction, err = extractRemote(ctx, conn, remoteResolved, extractPath, format, boolArgOr(args, "overwrite", false), secondsArg(args, "timeout_seconds", 600))
+		var extractPrivilege sshremote.PrivilegeInfo
+		extraction, extractPrivilege, err = extractRemote(ctx, conn, remoteResolved, extractPath, format, boolArgOr(args, "overwrite", false), secondsArg(args, "timeout_seconds", 600), privilegeMode)
 		if err != nil {
 			return "", err
 		}
+		privilege = mergeSSHPrivilege(privilege, extractPrivilege)
 		if boolArgOr(args, "cleanup_remote_archive", false) {
-			if err = conn.Delete(remoteResolved, false); err != nil {
-				return "", err
+			cleanupPrivilege, deleteErr := conn.DeleteWithPrivilege(ctx, remoteResolved, false, privilegeMode)
+			privilege = mergeSSHPrivilege(privilege, cleanupPrivilege)
+			if deleteErr != nil {
+				return "", deleteErr
 			}
 		}
 	}
@@ -211,6 +223,7 @@ func uploadGitZip(ctx context.Context, args map[string]any, env Env, source stri
 		"uploaded_bytes": uploadedBytes, "local_archive_deleted": boolArgOr(args, "cleanup_local", false),
 		"message": "Gitignore-aware project archive uploaded through the persistent SSH connection.",
 	}
+	addSSHPrivilegeResult(out, privilege)
 	if extraction != nil {
 		out["extraction"] = extraction
 		out["message"] = "Gitignore-aware project archive uploaded and extracted remotely."
@@ -234,10 +247,10 @@ type remoteScanResult struct {
 	ProtectedEnvExcluded int      `json:"protected_env_excluded"`
 }
 
-func scanRemote(ctx context.Context, conn *sshremote.Connection, sourceRoot, outputPath, manifestPath string, extra, includes []string, includeEnv bool) (remoteScanResult, error) {
+func scanRemote(ctx context.Context, conn *sshremote.Connection, sourceRoot, outputPath, manifestPath string, extra, includes []string, includeEnv bool, privilegeMode sshremote.PrivilegeMode) (remoteScanResult, sshremote.PrivilegeInfo, error) {
 	selector, err := gitzip.NewSelector(includes)
 	if err != nil {
-		return remoteScanResult{}, err
+		return remoteScanResult{}, sshremote.PrivilegeInfo{}, err
 	}
 	matcher := gitzip.NewMatcher(extra)
 	for _, candidate := range []string{outputPath, manifestPath} {
@@ -247,10 +260,11 @@ func scanRemote(ctx context.Context, conn *sshremote.Connection, sourceRoot, out
 	}
 	queue := []remoteScanItem{{abs: sourceRoot, rel: "", matcher: matcher}}
 	result := remoteScanResult{}
+	privilege := sshremote.PrivilegeInfo{}
 	for len(queue) > 0 {
 		select {
 		case <-ctx.Done():
-			return result, ctx.Err()
+			return result, privilege, ctx.Err()
 		default:
 		}
 		cur := queue[0]
@@ -258,18 +272,20 @@ func scanRemote(ctx context.Context, conn *sshremote.Connection, sourceRoot, out
 		currentMatcher := cur.matcher
 		for _, name := range gitzip.IgnoreFileNames {
 			ignorePath := path.Join(cur.abs, name)
-			content, _, _, readErr := conn.ReadFile(ignorePath, "utf8", 2<<20)
+			content, _, _, readPrivilege, readErr := conn.ReadFileWithPrivilege(ctx, ignorePath, "utf8", 2<<20, privilegeMode)
+			privilege = mergeSSHPrivilege(privilege, readPrivilege)
 			if readErr != nil {
 				if os.IsNotExist(readErr) {
 					continue
 				}
-				return result, fmt.Errorf("leer ignore remoto %s: %w", ignorePath, readErr)
+				return result, privilege, fmt.Errorf("leer ignore remoto %s: %w", ignorePath, readErr)
 			}
 			currentMatcher = currentMatcher.AddContent(content, cur.rel)
 		}
-		entries, readErr := conn.List(cur.abs)
+		entries, listPrivilege, readErr := conn.ListWithPrivilege(ctx, cur.abs, privilegeMode)
+		privilege = mergeSSHPrivilege(privilege, listPrivilege)
 		if readErr != nil {
-			return result, readErr
+			return result, privilege, readErr
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 		for _, info := range entries {
@@ -311,10 +327,10 @@ func scanRemote(ctx context.Context, conn *sshremote.Connection, sourceRoot, out
 			}
 		}
 	}
-	return result, nil
+	return result, privilege, nil
 }
 
-func remoteCreateGitZip(ctx context.Context, args map[string]any, env Env, source string, format gitzip.Format, extra, includes []string, includeEnv bool) (string, error) {
+func remoteCreateGitZip(ctx context.Context, args map[string]any, env Env, source string, format gitzip.Format, extra, includes []string, includeEnv bool, privilegeMode sshremote.PrivilegeMode) (string, error) {
 	manager := sshremote.GetManager(env.ConfigDir, env.RequestSecret, env.Confirm)
 	conn, err := manager.Get(requiredArg(args, "connection_id"))
 	if err != nil {
@@ -338,20 +354,44 @@ func remoteCreateGitZip(ctx context.Context, args map[string]any, env Env, sourc
 	} else {
 		output = path.Join(sourceRoot, output)
 	}
-	if _, statErr := conn.Stat(output); statErr == nil {
+	operationMode := privilegeMode
+	if operationMode == sshremote.PrivilegeAuto {
+		needsRead, probeErr := conn.NeedsReadPrivilege(ctx, sourceRoot)
+		if probeErr != nil {
+			return "", fmt.Errorf("comprobar lectura de la raíz remota: %w", probeErr)
+		}
+		needsWrite, probeErr := conn.NeedsWritePrivilege(ctx, output)
+		if probeErr != nil {
+			return "", fmt.Errorf("comprobar escritura del archivo remoto: %w", probeErr)
+		}
+		if needsRead || needsWrite {
+			operationMode = sshremote.PrivilegeRequired
+		}
+	}
+	if _, _, statErr := conn.StatWithPrivilege(ctx, output, operationMode); statErr == nil {
 		if !boolArgOr(args, "overwrite", false) {
 			return "", errors.New("el archivo remoto de salida ya existe; usa overwrite=true")
 		}
-		if err = conn.Delete(output, false); err != nil {
+		if _, err = conn.DeleteWithPrivilege(ctx, output, false, operationMode); err != nil {
 			return "", err
 		}
 	} else if !os.IsNotExist(statErr) {
 		return "", fmt.Errorf("comprobar archivo remoto de salida: %w", statErr)
 	}
 	manifest := path.Join("/tmp", fmt.Sprintf("lilith-gitzip-%d.list", time.Now().UnixNano()))
-	scan, err := scanRemote(ctx, conn, sourceRoot, output, manifest, extra, includes, includeEnv)
+	scan, privilege, err := scanRemote(ctx, conn, sourceRoot, output, manifest, extra, includes, includeEnv, operationMode)
 	if err != nil {
 		return "", err
+	}
+	execMode := operationMode
+	if privilegeMode == sshremote.PrivilegeAuto && execMode == sshremote.PrivilegeAuto {
+		// The scan is read-only and may safely discover a protected nested path.
+		// The archive command itself must never be retried after it starts.
+		if privilege.Elevated {
+			execMode = sshremote.PrivilegeRequired
+		} else {
+			execMode = sshremote.PrivilegeNever
+		}
 	}
 	archiveArgs, err := validateArchiveArgs(format, stringSliceArg(args, "archive_args"))
 	if err != nil {
@@ -396,7 +436,8 @@ func remoteCreateGitZip(ctx context.Context, args map[string]any, env Env, sourc
 		return "", err
 	}
 	defer conn.Delete(manifest, false)
-	result, runErr := conn.Exec(ctx, command, secondsArg(args, "timeout_seconds", 600), false, 0, 0)
+	result, commandPrivilege, runErr := conn.ExecWithPrivilege(ctx, command, secondsArg(args, "timeout_seconds", 600), false, 0, 0, execMode)
+	privilege = mergeSSHPrivilege(privilege, commandPrivilege)
 	if runErr != nil {
 		text, _ := jsonOutput(result)
 		return text, runErr
@@ -405,21 +446,24 @@ func remoteCreateGitZip(ctx context.Context, args map[string]any, env Env, sourc
 		detail := strings.TrimSpace(firstNonEmpty(result.Stderr, result.Stdout, fmt.Sprintf("exit %d", result.ExitCode)))
 		return "", fmt.Errorf("comando remoto %s falló: %s", format, detail)
 	}
-	stats, statErr := conn.Stat(output)
+	stats, statPrivilege, statErr := conn.StatWithPrivilege(ctx, output, operationMode)
+	privilege = mergeSSHPrivilege(privilege, statPrivilege)
 	if statErr != nil {
 		return "", statErr
 	}
-	return jsonOutput(map[string]any{
+	out := map[string]any{
 		"ok": true, "action": "remote_create", "connection_id": conn.ID, "format": format,
 		"source_path": sourceRoot, "output_path": output, "archive_bytes": stats.Size,
 		"source_bytes": scan.Bytes, "files": scan.Files, "directories": scan.Directories,
 		"symlinks": scan.Symlinks, "ignored_entries": scan.Ignored,
 		"protected_env_excluded": scan.ProtectedEnvExcluded, "command_result": result,
 		"message": "Remote archive created from an explicit gitignore-aware manifest.",
-	})
+	}
+	addSSHPrivilegeResult(out, privilege)
+	return jsonOutput(out)
 }
 
-func remoteExtractGitZip(ctx context.Context, args map[string]any, env Env, source string, format gitzip.Format) (string, error) {
+func remoteExtractGitZip(ctx context.Context, args map[string]any, env Env, source string, format gitzip.Format, privilegeMode sshremote.PrivilegeMode) (string, error) {
 	manager := sshremote.GetManager(env.ConfigDir, env.RequestSecret, env.Confirm)
 	conn, err := manager.Get(requiredArg(args, "connection_id"))
 	if err != nil {
@@ -435,24 +479,28 @@ func remoteExtractGitZip(ctx context.Context, args map[string]any, env Env, sour
 	} else {
 		destination = conn.Resolve(destination)
 	}
-	result, err := extractRemote(ctx, conn, archive, destination, format, boolArgOr(args, "overwrite", false), secondsArg(args, "timeout_seconds", 600))
+	result, privilege, err := extractRemote(ctx, conn, archive, destination, format, boolArgOr(args, "overwrite", false), secondsArg(args, "timeout_seconds", 600), privilegeMode)
 	if err != nil {
 		return "", err
 	}
 	if boolArgOr(args, "cleanup_remote_archive", false) {
-		if err = conn.Delete(archive, false); err != nil {
-			return "", err
+		cleanupPrivilege, deleteErr := conn.DeleteWithPrivilege(ctx, archive, false, privilegeMode)
+		privilege = mergeSSHPrivilege(privilege, cleanupPrivilege)
+		if deleteErr != nil {
+			return "", deleteErr
 		}
 	}
-	return jsonOutput(map[string]any{
+	out := map[string]any{
 		"ok": true, "action": "remote_extract", "connection_id": conn.ID, "format": format,
 		"archive_path": archive, "extract_path": destination,
 		"archive_deleted": boolArgOr(args, "cleanup_remote_archive", false),
 		"command_result":  result, "message": "Remote archive extracted successfully.",
-	})
+	}
+	addSSHPrivilegeResult(out, privilege)
+	return jsonOutput(out)
 }
 
-func extractRemote(ctx context.Context, conn *sshremote.Connection, archive, destination string, format gitzip.Format, overwrite bool, timeout time.Duration) (sshremote.ExecResult, error) {
+func extractRemote(ctx context.Context, conn *sshremote.Connection, archive, destination string, format gitzip.Format, overwrite bool, timeout time.Duration, privilegeMode sshremote.PrivilegeMode) (sshremote.ExecResult, sshremote.PrivilegeInfo, error) {
 	mkdir := "mkdir -p -- " + shellQuote(destination) + " && "
 	var command string
 	switch format {
@@ -475,17 +523,37 @@ func extractRemote(ctx context.Context, conn *sshremote.Connection, archive, des
 		}
 		command = mkdir + "tar " + keep + "-xf " + shellQuote(archive) + " -C " + shellQuote(destination)
 	default:
-		return sshremote.ExecResult{}, fmt.Errorf("formato remoto no compatible: %s", format)
+		return sshremote.ExecResult{}, sshremote.PrivilegeInfo{}, fmt.Errorf("formato remoto no compatible: %s", format)
 	}
-	result, err := conn.Exec(ctx, command, timeout, false, 0, 0)
+	execMode := privilegeMode
+	if execMode == sshremote.PrivilegeAuto {
+		needsPrivilege, err := conn.NeedsWritePrivilege(ctx, destination)
+		if err != nil {
+			return sshremote.ExecResult{}, sshremote.PrivilegeInfo{}, err
+		}
+		if !needsPrivilege {
+			needsPrivilege, err = conn.NeedsReadPrivilege(ctx, archive)
+			if err != nil {
+				return sshremote.ExecResult{}, sshremote.PrivilegeInfo{}, err
+			}
+		}
+		if needsPrivilege {
+			execMode = sshremote.PrivilegeRequired
+		} else {
+			// Preflight succeeded, so run once as the SSH account. Do not allow an
+			// automatic elevated replay after extraction may have partially started.
+			execMode = sshremote.PrivilegeNever
+		}
+	}
+	result, privilege, err := conn.ExecWithPrivilege(ctx, command, timeout, false, 0, 0, execMode)
 	if err != nil {
-		return result, err
+		return result, privilege, err
 	}
 	if result.ExitCode != 0 {
 		detail := strings.TrimSpace(firstNonEmpty(result.Stderr, result.Stdout, fmt.Sprintf("exit %d", result.ExitCode)))
-		return result, fmt.Errorf("extracción remota falló: %s", detail)
+		return result, privilege, fmt.Errorf("extracción remota falló: %s", detail)
 	}
-	return result, nil
+	return result, privilege, nil
 }
 
 func validateArchiveArgs(format gitzip.Format, args []string) ([]string, error) {
@@ -511,6 +579,17 @@ func validateArchiveArgs(format gitzip.Format, args []string) ([]string, error) 
 }
 
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
+
+func mergeSSHPrivilege(current, next sshremote.PrivilegeInfo) sshremote.PrivilegeInfo {
+	if next.Method == "" {
+		return current
+	}
+	if current.Method == "" || next.Elevated {
+		return next
+	}
+	return current
+}
+
 func remoteRelative(root, candidate string) string {
 	root = strings.TrimSuffix(path.Clean(root), "/")
 	candidate = path.Clean(candidate)

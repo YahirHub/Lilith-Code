@@ -206,6 +206,8 @@ rutas AF_UNIX expuestas por `SSH_AUTH_SOCK` y named pipes; cuando no existe una
 variable configurada, Lilith intenta de forma segura el agente OpenSSH integrado
 en `\\.\pipe\openssh-ssh-agent` sin convertir su ausencia en un error de conexión.
 
+Para rutas remotas protegidas, `ssh_remote` usa `privilege_mode=auto` por defecto. Primero prueba SFTP; ante `permission denied`, prepara el archivo bajo `/tmp` o una ruta escribible y lo instala con UID 0, `sudo` o `doas -n`. La contraseña sudo usa `interaction.SecretSudoPassword`, se envía únicamente por stdin con `sudo -S -p ''` y se mantiene en memoria por conexión; nunca se serializa. `never` desactiva el fallback y `required` eleva desde el inicio. Las operaciones de lectura, descarga, escritura, subida, creación, renombrado, borrado, stat y listado comparten esta capa. Un `exec` arbitrario sólo se eleva cuando se solicita `required`, porque reintentarlo tras un fallo podría duplicar efectos parciales.
+
 ## GitZip local y remoto
 
 La herramienta interna `gitzip` admite `create`, `upload`, `remote_create` y
@@ -231,7 +233,7 @@ Las operaciones remotas reutilizan un `connection_id` abierto por `ssh_remote`.
 La creación TAR remota usa un manifiesto NUL y `tar --no-recursion --null -T`; los
 argumentos adicionales se limitan a una allowlist conservadora. ZIP usa una lista
 explícita de archivos. Ninguna operación remota abre una segunda conexión
-implícita ni almacena credenciales dentro del archivo.
+implícita ni almacena credenciales dentro del archivo. Antes de crear o extraer remotamente, GitZip comprueba acceso de lectura al origen y de escritura al destino; si necesita privilegios, ejecuta el comando completo elevado desde el principio y conserva el mismo `connection_id`.
 
 Dependencias nuevas del runtime:
 
