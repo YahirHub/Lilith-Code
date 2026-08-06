@@ -218,3 +218,13 @@ En pruebas concurrentes, señalizar el estado observado de forma síncrona en la
 - Todo modelo publicado por `/models` de CommandCode debe tener una entrada explícita en `internal/models/catalog.go`; no depender de `DefaultMaxContext` ni de coincidencias parciales para IDs conocidos.
 - Los prefijos de proveedor y sufijos de fecha/preview/free se normalizan, pero la clave normalizada de cada modelo soportado debe resolver de forma exacta.
 - La prueba `TestCommandCodeCatalogHasExplicitContextForPublishedModels` es la lista de regresión del catálogo recibido el 2026-08-05.
+
+## 125 · Ciclo de vida del navegador Chromedp
+
+- El primer `chromedp.Run` de un navegador o target debe ejecutarse sobre el contexto persistente creado por `chromedp.NewContext`; nunca envolver ese primer `Run` en `context.WithTimeout`, porque cancelar el hijo destruye el executor y las siguientes acciones fallan con `context canceled`.
+- Los límites del primer arranque se implementan con `runInitial`, que cancela el contexto persistente únicamente si el arranque realmente excede el tiempo máximo.
+- Los contextos temporales con timeout sólo se usan después de que el navegador o target haya completado su primer `Run`.
+- Una sesión debe sobrevivir a llamadas separadas de herramienta con el mismo `session_id`: como mínimo probar `start -> navigate -> snapshot -> status -> screenshot`.
+- `status` nunca debe ocultar un error CDP ni devolver `tabs: null`; debe exponer `cdp_error`, `attached=false` y una lista vacía cuando la conexión no responda.
+- Los comandos del dominio `Target` deben ejecutarse con el executor del navegador (`chromedp.Targets` o `cdp.WithExecutor(..., state.Browser)`); Network, Runtime y Debugger usan el executor del target.
+- La cancelación del contexto de una llamada puede detener su acción hija, pero nunca debe cancelar el contexto persistente guardado en la sesión.

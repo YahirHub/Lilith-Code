@@ -285,6 +285,7 @@ var (
 	webSearchPattern     = regexp.MustCompile(`(?i)\b(internet|web|online|actualizado|actualizada|reciente|latest|current|news|noticias|hoy|today)\b|última\s+versión|ultima\s+version|latest\s+version`)
 	sshPattern           = regexp.MustCompile(`(?i)\b(ssh|sftp|servidor remoto|servidores remotos|remote server|remote host|b[oó]veda|vault|contrase[nñ]a ssh|clave privada|private key|deploy remoto|despliegue remoto)\b`)
 	archivePattern       = regexp.MustCompile(`(?i)\b(gitzip|zip|tar(?:\.gz)?|archivo comprimido|comprimir|empaquetar|archive|package|subir proyecto|upload project)\b`)
+	browserPattern       = regexp.MustCompile(`(?i)\b(chromedp|chrome|chromium|navegador|browser|devtools|dom|consola (?:del )?navegador|network (?:del )?navegador|p[aá]gina web|iniciar sesi[oó]n|login web|screenshot web|captura web|frontend visual)\b`)
 )
 
 var promptHints = []struct {
@@ -307,6 +308,7 @@ var promptHints = []struct {
 	{webSearchPattern, []string{"web_search"}},
 	{sshPattern, []string{"ssh_remote"}},
 	{archivePattern, []string{"gitzip"}},
+	{browserPattern, []string{"browser"}},
 }
 
 // IsDirectChat reports a pure greeting/acknowledgement: no schemas at all.
@@ -415,7 +417,7 @@ func init() {
 	register(Definition{
 		Name: "tool_search",
 		Description: "Search available tools by keyword and enable them for the next calls. " +
-			"Use this when you need to read, write, append or search project files, inspect/search skills, run commands, or fetch a URL " +
+			"Use this when you need to read, write, append or search project files, inspect/search skills, run commands, control a browser, or fetch a URL " +
 			"and that tool is not loaded yet.",
 		PromptSnippet: "Discover and enable additional tools on demand",
 		Parameters: map[string]any{

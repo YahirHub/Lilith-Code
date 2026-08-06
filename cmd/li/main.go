@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	libbrowser "github.com/lilith/li/internal/browser"
 	"github.com/lilith/li/internal/config"
 	"github.com/lilith/li/internal/interaction"
 	"github.com/lilith/li/internal/logx"
@@ -86,6 +87,7 @@ func runTUI(_ *cobra.Command, _ []string) error {
 
 	interactions := interaction.NewBridge()
 	defer sshremote.ShutdownAll()
+	defer libbrowser.ShutdownAll()
 	// Close the interaction bridge before ShutdownAll runs (defer is LIFO). This
 	// releases any pending in-chat secret or permission widget before the SSH
 	// manager locks the vault and tears down its logical connections.

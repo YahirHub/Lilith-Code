@@ -19,11 +19,12 @@ const (
 	Secret  Kind = "secret"
 	Confirm Kind = "confirm"
 
-	SecretGeneric        SecretKind = "generic"
-	SecretVaultMaster    SecretKind = "vault_master"
-	SecretRemotePassword SecretKind = "remote_password"
-	SecretSudoPassword   SecretKind = "sudo_password"
-	SecretKeyPassphrase  SecretKind = "key_passphrase"
+	SecretGeneric         SecretKind = "generic"
+	SecretVaultMaster     SecretKind = "vault_master"
+	SecretRemotePassword  SecretKind = "remote_password"
+	SecretSudoPassword    SecretKind = "sudo_password"
+	SecretKeyPassphrase   SecretKind = "key_passphrase"
+	SecretBrowserPassword SecretKind = "browser_password"
 
 	ApprovalDeny    ApprovalDecision = "deny"
 	ApprovalOnce    ApprovalDecision = "allow_once"

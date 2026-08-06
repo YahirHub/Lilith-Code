@@ -243,6 +243,46 @@ confirmación genérica adicional. `source_path` permite empaquetar una carpeta
 concreta; `include_paths` selecciona únicamente rutas o patrones determinados y
 `exclude_paths` omite carpetas, archivos o globs adicionales. En operaciones remotas, GitZip comprueba antes si puede leer el origen y escribir en el destino; cuando son rutas protegidas ejecuta la creación, subida o extracción mediante el mismo mecanismo seguro de elevación, sin exigir que el usuario SSH sea `root`.
 
+## Navegador persistente con Chromedp (experimental)
+
+Lilith incluye una herramienta `browser` para controlar navegadores compatibles
+con Chrome DevTools Protocol sin incorporar Chromium dentro del ejecutable. El
+binario de Lilith puede seguir compilándose con `CGO_ENABLED=0`; el navegador se
+detecta en el sistema o se proporciona mediante un endpoint CDP.
+
+La herramienta puede descubrir Chrome, Chromium, Edge, Brave, Vivaldi, Opera,
+Chrome for Testing y Chrome Headless Shell en ubicaciones habituales y entre los
+procesos activos. El candidato recomendado puede guardarse como predeterminado.
+Admite ejecución visible u oculta y tres clases de perfil:
+
+- `temporary`: perfil aislado que se elimina al cerrar la sesión.
+- `persistent`: perfil dedicado de Lilith que conserva cookies e inicios de sesión.
+- `custom`: directorio dedicado indicado expresamente.
+
+Por seguridad, Lilith rechaza perfiles que parezcan ser el perfil personal
+predeterminado del usuario. Las contraseñas de formularios se introducen mediante
+`fill_secret`, usando un popup local enmascarado que no envía el secreto al modelo.
+
+Para ahorrar contexto, el modelo trabaja con snapshots compactos: título, URL,
+texto acotado y elementos interactivos referenciados como `e1`, `e2`, etc. Después
+del primer snapshot puede solicitar `delta=true` para recibir sólo cambios. También
+puede inspeccionar consola, excepciones JavaScript, tráfico de red, cuerpos de
+respuesta, fuentes cargadas, métricas, pestañas y capturas de pantalla. El
+`session_id` mantiene la misma conexión CDP entre llamadas separadas, por lo que
+`start`, `navigate`, `snapshot`, interacción y `screenshot` pueden ejecutarse en
+turnos distintos sin volver a abrir el navegador.
+
+Ejemplos de solicitudes:
+
+```text
+Abre https://example.com en un navegador visible con perfil temporal y analiza la consola y la red.
+Abre el panel con un perfil persistente, inicia sesión y conserva la sesión para la próxima ejecución.
+Prueba el formulario, usa snapshots delta y guarda una captura cuando falle.
+```
+
+Esta primera entrega se marca como experimental hasta completar la prueba integral
+con Go 1.25.12 y un navegador real en Windows/Linux.
+
 ## Comandos útiles
 
 | Comando | Acción |

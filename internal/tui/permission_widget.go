@@ -103,6 +103,8 @@ func secretInputLabel(req *interaction.Request, confirming bool) string {
 		label = "Contraseña sudo del servidor remoto"
 	case interaction.SecretKeyPassphrase:
 		label = "Passphrase de la clave privada SSH"
+	case interaction.SecretBrowserPassword:
+		label = "Contraseña o secreto del sitio web"
 	default:
 		if strings.TrimSpace(req.Title) != "" {
 			label = strings.TrimSpace(req.Title)
