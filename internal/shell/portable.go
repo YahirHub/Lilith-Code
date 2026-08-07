@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -97,8 +98,15 @@ func portableCommandFallback(next interp.ExecHandlerFunc) interp.ExecHandlerFunc
 		if strings.ContainsAny(args[0], `/\\`) {
 			return next(ctx, args)
 		}
-		if _, err := interp.LookPathDir(hc.Dir, hc.Env, args[0]); err == nil {
-			return next(ctx, args)
+		// Windows ships System32\find.exe, whose syntax is unrelated to POSIX
+		// find. In the explicitly portable shell, keep `find` deterministic and
+		// POSIX-like instead of delegating to that incompatible executable. A
+		// caller can still invoke any external find by an explicit path.
+		preferPortable := runtime.GOOS == "windows" && name == "find"
+		if !preferPortable {
+			if _, err := interp.LookPathDir(hc.Dir, hc.Env, args[0]); err == nil {
+				return next(ctx, args)
+			}
 		}
 		handler, ok := portableCommands[name]
 		if !ok {
@@ -237,6 +245,7 @@ func portableRG(ctx context.Context, hc interp.HandlerContext, args []string) er
 	if pattern == "" {
 		return portableUsage(hc, "rg", "missing pattern")
 	}
+	opts.Pattern = pattern
 	if len(targets) == 0 {
 		targets = []string{"."}
 	}

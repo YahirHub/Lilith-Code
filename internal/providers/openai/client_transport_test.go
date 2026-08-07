@@ -103,6 +103,67 @@ func sseResponse(body io.ReadCloser) *http.Response {
 	}
 }
 
+func TestTransientHTTPRecognizesReasoningContentCarryForward400(t *testing.T) {
+	t.Parallel()
+
+	err := errors.New(`HTTP 400: {"error":{"type":"invalid_request_error","message":"Error from provider (Console): Upstream request failed: [invalid_request_error] The ` + "`reasoning_content`" + ` in the thinking mode must be passed back to the API."}}`)
+	if !IsReasoningContentCarryForwardError(err) {
+		t.Fatalf("reasoning_content carry-forward 400 should be recognized: %v", err)
+	}
+	if !isTransientHTTP(err) {
+		t.Fatalf("reasoning_content carry-forward 400 should be transient: %v", err)
+	}
+	ordinary := errors.New(`HTTP 400: {"error":{"message":"invalid model"}}`)
+	if IsReasoningContentCarryForwardError(ordinary) || isTransientHTTP(ordinary) {
+		t.Fatal("ordinary HTTP 400 must not be retried or auto-recovered")
+	}
+}
+
+func TestStreamSilentlyRetriesReasoningContentCarryForward400(t *testing.T) {
+	t.Parallel()
+
+	transport := &sequenceRoundTripper{responses: []func(*http.Request) (*http.Response, error){
+		func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Status:     "400 Bad Request",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"Error from provider (Console): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API."}}`)),
+			}, nil
+		},
+		func(*http.Request) (*http.Response, error) {
+			return sseResponse(io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))), nil
+		},
+	}}
+	client := &Client{HTTP: &http.Client{Transport: transport}}
+
+	chunks := collectChunks(client.Stream(context.Background(), Request{
+		Provider: providers.Provider{ID: "test", BaseURL: "https://provider.test/v1", Auth: providers.AuthNone},
+		Model:    "test",
+		Messages: []Message{{Role: "user", Content: "hola"}},
+		Stream:   true,
+	}))
+
+	var sawOK, sawDone bool
+	for _, chunk := range chunks {
+		if chunk.Err != nil {
+			t.Fatalf("transient reasoning_content 400 leaked as terminal error: %v", chunk.Err)
+		}
+		if chunk.Retry != nil {
+			t.Fatalf("service retry should stay silent in the UI, got retry status: %#v", chunk.Retry)
+		}
+		if chunk.Delta == "ok" {
+			sawOK = true
+		}
+		if chunk.Done {
+			sawDone = true
+		}
+	}
+	if transport.calls != 2 || !sawOK || !sawDone {
+		t.Fatalf("unexpected retry result: calls=%d ok=%v done=%v chunks=%#v", transport.calls, sawOK, sawDone, chunks)
+	}
+}
+
 func TestStreamWaitsForConnectivityAndRetriesWithoutRawTCPError(t *testing.T) {
 	t.Parallel()
 	transport := &sequenceRoundTripper{responses: []func(*http.Request) (*http.Response, error){

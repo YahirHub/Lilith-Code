@@ -103,6 +103,25 @@ func TestClaudeToolMapping(t *testing.T) {
 	}
 }
 
+func TestFrontendBrowserAuditorToolMapping(t *testing.T) {
+	p := newToolPolicy(agents.Agent{Tools: []string{"Read", "Glob", "Grep", "Bash", "Skill", "browser"}}, "build", false)
+	for _, name := range []string{"read_files", "glob", "code_search", "run_terminal_command", "skill_read", "skill_search", "skill_files", "browser"} {
+		def, ok := tools.Get(name)
+		if !ok {
+			t.Fatalf("tool %s is not registered", name)
+		}
+		if !p.visible(name, def) {
+			t.Fatalf("%s should be visible to frontend browser auditor", name)
+		}
+	}
+	for _, name := range []string{"create_file", "write_file", "str_replace", "apply_diff"} {
+		def, _ := tools.Get(name)
+		if p.visible(name, def) {
+			t.Fatalf("%s must stay hidden from frontend browser auditor", name)
+		}
+	}
+}
+
 func TestWorktreeIsolationRequiresRepository(t *testing.T) {
 	fake := &fakeStreamer{}
 	cfg := Config{

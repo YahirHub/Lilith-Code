@@ -398,3 +398,88 @@ func TestNetworkRetryKeepsTurnAliveAndResetsPartialAttempt(t *testing.T) {
 	}
 	m.cancelTurn()
 }
+
+func reasoningCarryForwardProviderError() error {
+	return fmt.Errorf(`HTTP 400: {"error":{"type":"invalid_request_error","message":"Error from provider (Console): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API."}}`)
+}
+
+func TestReasoningCarryForwardErrorContinuesSilentlyAfterToolBoundary(t *testing.T) {
+	m := newInputTestChat(t)
+	m.Resize(100, 30)
+	primeTestRequest(t, m)
+	m.thinking = true
+
+	call := makeToolCall("str_replace", `{"path":"internal/config/config.go","old":"a","new":"b"}`)
+	m.history = []openai.Message{
+		{Role: "user", Content: "corrige la configuración"},
+		{Role: "assistant", ToolCalls: []openai.ToolCall{call}},
+		{Role: "tool", ToolCallID: call.ID, Name: call.Function.Name, Content: "edited internal/config/config.go"},
+	}
+	oldRequestID := m.activeRequestID
+
+	_, cmd := m.Update(activeStreamMsg(m, chatStreamMsg{err: reasoningCarryForwardProviderError()}))
+	if cmd == nil {
+		t.Fatal("el recovery debe iniciar automáticamente una nueva petición")
+	}
+	if m.activeTurnID == 0 || !m.streaming {
+		t.Fatalf("el turno debe permanecer activo: turn=%d streaming=%v", m.activeTurnID, m.streaming)
+	}
+	if m.activeRequestID == oldRequestID {
+		t.Fatalf("el recovery debe crear otro request: old=%d new=%d", oldRequestID, m.activeRequestID)
+	}
+	if !m.reasoningRecoveryUsed {
+		t.Fatal("la recuperación debe quedar marcada hasta que el request tenga éxito")
+	}
+	if len(m.history) != 4 {
+		t.Fatalf("historial inesperado: %#v", m.history)
+	}
+	last := m.history[len(m.history)-1]
+	if last.Role != "user" || last.Content != reasoningCarryForwardRecoveryPrompt {
+		t.Fatalf("faltó la continuación interna: %#v", last)
+	}
+	for _, msg := range m.messages {
+		if msg.Kind == MsgError {
+			t.Fatalf("el primer fallo recuperable no debe llegar a la UI: %#v", msg)
+		}
+		if msg.Kind == MsgUser && msg.Content == reasoningCarryForwardRecoveryPrompt {
+			t.Fatal("la continuación de compatibilidad no debe mostrarse como mensaje del usuario")
+		}
+	}
+}
+
+func TestReasoningCarryForwardRecoveryDoesNotLoopForever(t *testing.T) {
+	m := newInputTestChat(t)
+	m.Resize(100, 30)
+	primeTestRequest(t, m)
+	m.thinking = true
+
+	call := makeToolCall("read_files", `{"paths":["README.md"]}`)
+	m.history = []openai.Message{
+		{Role: "user", Content: "revisa el archivo"},
+		{Role: "assistant", ToolCalls: []openai.ToolCall{call}},
+		{Role: "tool", ToolCallID: call.ID, Name: call.Function.Name, Content: "ok"},
+	}
+
+	_, firstCmd := m.Update(activeStreamMsg(m, chatStreamMsg{err: reasoningCarryForwardProviderError()}))
+	if firstCmd == nil || !m.reasoningRecoveryUsed {
+		t.Fatal("el primer fallo debe activar la recuperación automática")
+	}
+
+	_, secondCmd := m.Update(activeStreamMsg(m, chatStreamMsg{err: reasoningCarryForwardProviderError()}))
+	if secondCmd != nil {
+		t.Fatal("un segundo fallo del request recuperado no debe iniciar un bucle automático")
+	}
+	if m.activeTurnID != 0 || m.streaming {
+		t.Fatalf("el segundo fallo debe cerrar el turno: turn=%d streaming=%v", m.activeTurnID, m.streaming)
+	}
+	foundError := false
+	for _, msg := range m.messages {
+		if msg.Kind == MsgError && strings.Contains(msg.Content, "reasoning_content") {
+			foundError = true
+			break
+		}
+	}
+	if !foundError {
+		t.Fatal("tras fallar también la recuperación, el error final sí debe quedar visible")
+	}
+}

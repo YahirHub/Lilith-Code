@@ -22,11 +22,11 @@ Versión concreta:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh -o install.sh
-sh install.sh 0.3.0
+sh install.sh 0.3.2
 rm install.sh
 ```
 
-También se puede usar `LI_VERSION=v0.3.0` o `LI_REPOSITORY` para un fork.
+También se puede usar `LI_VERSION=v0.3.2` o `LI_REPOSITORY` para un fork.
 
 ## Termux en Android
 
@@ -69,7 +69,7 @@ directorio al `PATH` persistente del usuario y también a la sesión actual.
 Versión concreta:
 
 ```powershell
-$env:LI_VERSION = '0.3.0'
+$env:LI_VERSION = '0.3.2'
 irm https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.ps1 | iex
 ```
 
@@ -85,7 +85,7 @@ install.cmd
 Versión concreta:
 
 ```cmd
-install.cmd 0.3.0
+install.cmd 0.3.2
 ```
 
 ## Primer arranque

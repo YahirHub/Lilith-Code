@@ -116,3 +116,39 @@ func TestBundledTermuxAgentsAreMaterialized(t *testing.T) {
 		}
 	}
 }
+
+func TestBundledFrontendBrowserAuditorIsMaterialized(t *testing.T) {
+	t.Parallel()
+	configDir := filepath.Join(t.TempDir(), ".li")
+	dir := BundledDir(configDir)
+	if dir == "" {
+		t.Fatal("expected bundled agent cache directory")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "frontend-browser-auditor.md"))
+	if err != nil {
+		t.Fatalf("read bundled frontend browser auditor: %v", err)
+	}
+	for _, want := range []string{"name: frontend-browser-auditor", "browser", "frontend-development", "Never edit"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("frontend browser auditor missing %q", want)
+		}
+	}
+	loaded := Load(LoadOptions{BuiltinDir: dir})
+	a := Find(loaded, "frontend-browser-auditor")
+	if a == nil {
+		t.Fatalf("frontend browser auditor not discovered: %#v", loaded)
+	}
+	if a.Model != "inherit" || len(a.Skills) != 1 || a.Skills[0] != "frontend-development" {
+		t.Fatalf("unexpected frontend auditor metadata: %#v", *a)
+	}
+	foundBrowser := false
+	for _, tool := range a.Tools {
+		if tool == "browser" {
+			foundBrowser = true
+			break
+		}
+	}
+	if !foundBrowser {
+		t.Fatalf("frontend auditor must have browser tool: %#v", a.Tools)
+	}
+}

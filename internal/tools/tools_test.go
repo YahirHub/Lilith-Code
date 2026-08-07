@@ -334,3 +334,20 @@ func TestToolSearchMaterializesPortableShell(t *testing.T) {
 		t.Fatalf("portable shell was not materialized: out=%q added=%v", out, added)
 	}
 }
+
+func TestSelectGitHubDockerAndFrontendAuditQueries(t *testing.T) {
+	cases := []struct {
+		query string
+		want  string
+	}{
+		{query: "usa gh para hacer merge del pull request", want: "run_terminal_command"},
+		{query: "revisa docker compose y sus contenedores", want: "run_terminal_command"},
+		{query: "audita frontend y revisa todas las páginas", want: "browser"},
+	}
+	for _, tc := range cases {
+		got := strings.Join(Select(tc.query), ",")
+		if !strings.Contains(got, tc.want) {
+			t.Fatalf("query %q did not expose %s: %q", tc.query, tc.want, got)
+		}
+	}
+}

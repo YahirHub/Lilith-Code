@@ -24,6 +24,7 @@ func init() {
 			"Use profile_mode=persistent only when login state must survive Lilith restarts. Never attach to a user's default personal browser profile.",
 			"Use fill_secret for passwords, tokens and other sensitive form values; never place secrets in type/fill arguments.",
 			"Inspect console and network errors before changing frontend code, and verify the result with a fresh delta snapshot.",
+			"For broad multi-page frontend regression audits, prefer delegating to the isolated frontend-browser-auditor agent when available; keep only actionable findings in the parent context.",
 			"After navigation or reload, call scripts again before search_source because CDP script IDs belong to the current document.",
 			"scripts verifies script_id-to-URL mappings by source hash by default; use verify=false only when a faster unverified inventory is explicitly preferable.",
 		},

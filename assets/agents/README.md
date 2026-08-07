@@ -34,3 +34,4 @@ Built-in platform specialists currently include:
 
 - `termux-specialist`: implementation worker for Android/Termux runtime portability.
 - `termux-auditor`: read-only Android/Termux runtime auditor.
+- `frontend-browser-auditor`: isolated browser regression auditor that inventories real routes, checks DOM/console/network, and returns only actionable failures to the parent.

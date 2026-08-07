@@ -340,7 +340,8 @@ func (c *Client) resolveAPIKey(p providers.Provider) (string, error) {
 	return "", nil
 }
 
-// maxServiceAttempts bounds retries for HTTP 408/429/5xx responses. Pure
+// maxServiceAttempts bounds retries for HTTP 408/429/5xx responses and the
+// provider-specific HTTP 400 reasoning_content carry-forward failure. Pure
 // transport interruptions are different: Stream waits until connectivity
 // returns or the user cancels the turn.
 const maxServiceAttempts = 3
@@ -444,7 +445,23 @@ func isTransientHTTP(err error) bool {
 			return true
 		}
 	}
-	return false
+	return IsReasoningContentCarryForwardError(err)
+}
+
+// IsReasoningContentCarryForwardError recognizes a provider/upstream
+// compatibility failure observed on some OpenAI-compatible thinking gateways.
+// The gateway reports HTTP 400 when a tool continuation reaches an upstream
+// that expected reasoning_content from the prior assistant message. Keep this
+// deliberately narrow so ordinary malformed requests remain terminal.
+func IsReasoningContentCarryForwardError(err error) bool {
+	if err == nil {
+		return false
+	}
+	low := strings.ToLower(err.Error())
+	return strings.Contains(low, "http 400") &&
+		strings.Contains(low, "reasoning_content") &&
+		strings.Contains(low, "thinking mode") &&
+		strings.Contains(low, "must be passed back")
 }
 
 func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {

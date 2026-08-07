@@ -48,6 +48,51 @@ func TestBundledDirMaterializesPonytailDevelopmentSkill(t *testing.T) {
 	}
 }
 
+func TestBundledModularDevelopmentSkillsAreMaterialized(t *testing.T) {
+	t.Parallel()
+	configDir := filepath.Join(t.TempDir(), ".li")
+	dir := BundledDir(configDir)
+	if dir == "" {
+		t.Fatal("expected bundled skill cache directory")
+	}
+
+	cases := []struct {
+		name      string
+		reference string
+		contains  string
+	}{
+		{name: "git-github", reference: "references/history-rewrite-recovery.md", contains: "force-with-lease"},
+		{name: "docker-development", reference: "references/compose.md", contains: "docker compose"},
+		{name: "frontend-development", reference: "references/browser-audit.md", contains: "frontend-browser-auditor"},
+	}
+	loaded := Load(LoadOptions{BuiltinDir: dir})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sk := Find(loaded, tc.name)
+			if sk == nil {
+				t.Fatalf("bundled skill %s not discovered: %#v", tc.name, loaded)
+			}
+			if sk.Source != "builtin" || !sk.UserInvocable || sk.Model != "inherit" {
+				t.Fatalf("unexpected metadata for %s: %#v", tc.name, *sk)
+			}
+			index, err := os.ReadFile(filepath.Join(dir, tc.name, "SKILL.md"))
+			if err != nil {
+				t.Fatalf("read %s index: %v", tc.name, err)
+			}
+			if !strings.Contains(string(index), tc.reference) {
+				t.Fatalf("%s index does not route to %s", tc.name, tc.reference)
+			}
+			ref, err := os.ReadFile(filepath.Join(dir, tc.name, filepath.FromSlash(tc.reference)))
+			if err != nil {
+				t.Fatalf("read %s resource: %v", tc.reference, err)
+			}
+			if !strings.Contains(string(ref), tc.contains) {
+				t.Fatalf("%s resource missing %q", tc.reference, tc.contains)
+			}
+		})
+	}
+}
+
 func TestLoadUserAndProjectSkillsOverrideBuiltinByName(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

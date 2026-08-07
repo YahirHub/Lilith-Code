@@ -121,6 +121,23 @@ func TestRunPortablePrefersNativeExecutableWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestRunPortableUsesPOSIXFindOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows find.exe collision only exists on Windows")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "sample.go"), []byte("package sample\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(context.Background(), Request{Command: `find . -name "*.go"`, Dir: root, Shell: ShellPortable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ExitCode != 0 || !strings.Contains(strings.ReplaceAll(res.Stdout, "\\", "/"), "./sample.go") {
+		t.Fatalf("portable find was not used: %+v", res)
+	}
+}
+
 func TestRunPortableTimeoutStopsInterpreter(t *testing.T) {
 	res, err := Run(context.Background(), Request{
 		Command: `while true; do :; done`,
@@ -210,7 +227,7 @@ func TestRunPortableCopyRejectsDirectoryIntoItself(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.ExitCode != 1 || !strings.Contains(res.Stderr, "inside itself") {
+	if res.ExitCode != 1 || !strings.Contains(res.Stderr, "into itself") {
 		t.Fatalf("result=%+v", res)
 	}
 	if _, err := os.Stat(filepath.Join(root, "src", "nested")); !os.IsNotExist(err) {

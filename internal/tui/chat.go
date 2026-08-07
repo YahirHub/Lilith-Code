@@ -139,8 +139,13 @@ type ChatModel struct {
 	turnAgentMode       planstate.Mode
 	turnPlanHandoff     string
 	turnReasoningEffort string
-	turnDeniedTools     map[string]bool
-	turnSkillHooks      *hooks.Runner
+	// reasoningRecoveryUsed bounds the invisible provider-compatibility
+	// continuation to once per provider request. A successful response resets
+	// it before the next tool boundary, preventing loops while allowing a later
+	// request in the same long turn to recover independently.
+	reasoningRecoveryUsed bool
+	turnDeniedTools       map[string]bool
+	turnSkillHooks        *hooks.Runner
 	// turnGoalManaged snapshots whether this parent turn belongs to an active
 	// durable goal. A completed/paused goal must never terminate an unrelated
 	// later user request at its first tool boundary.
@@ -780,6 +785,7 @@ func (m *ChatModel) beginTurnMode(mode planstate.Mode) error {
 	m.turnModel = active.ModelID
 	m.turnAgentMode = mode
 	m.turnReasoningEffort = ""
+	m.reasoningRecoveryUsed = false
 	m.turnDeniedTools = nil
 	m.turnSkillHooks = nil
 	m.turnGoalManaged = m.goals != nil && m.goals.Active()
@@ -822,10 +828,50 @@ func (m *ChatModel) endTurn() {
 	m.turnAgentMode = ""
 	m.turnPlanHandoff = ""
 	m.turnReasoningEffort = ""
+	m.reasoningRecoveryUsed = false
 	m.turnDeniedTools = nil
 	m.turnSkillHooks = nil
 	m.turnGoalManaged = false
 	m.runningCalls = nil
+}
+
+const reasoningCarryForwardRecoveryPrompt = "<provider_recovery>Continue from the latest tool result and complete the user's request. This is an internal provider compatibility recovery, not a new user instruction. Do not mention this recovery.</provider_recovery>"
+
+// recoverReasoningCarryForward mirrors the user workaround that reliably
+// recovers certain thinking gateways: after a completed tool result, a fresh
+// user boundary makes the upstream accept the continuation even when it could
+// not carry reasoning_content across routes. The synthetic message is protocol
+// history only (never transcript/UI), is attempted once per provider request,
+// and is deliberately limited to a clean post-tool boundary.
+func (m *ChatModel) recoverReasoningCarryForward(err error) uikit.Cmd {
+	if m == nil || !openai.IsReasoningContentCarryForwardError(err) || m.reasoningRecoveryUsed ||
+		m.activeTurnID == 0 || m.turnCtx == nil || m.turnCtx.Err() != nil {
+		return nil
+	}
+	if m.streamBuf.Len() != 0 || m.reasoningBuf.Len() != 0 || len(m.pendingCall) != 0 {
+		return nil
+	}
+	if len(m.history) == 0 || m.history[len(m.history)-1].Role != "tool" {
+		return nil
+	}
+
+	m.reasoningRecoveryUsed = true
+	m.accountGoalRequest()
+	m.finishThinkingPanel()
+
+	// If the user already steered while the failed request was active, that
+	// instruction itself is the safest fresh user boundary. Otherwise inject a
+	// hidden compatibility-only continuation, equivalent to typing "continue".
+	if !m.deliverSteering() {
+		m.appendHistory(openai.Message{Role: "user", Content: reasoningCarryForwardRecoveryPrompt})
+	}
+	m.toolFallback = ""
+	m.thinking = true
+	m.working = false
+	m.assistantActive = -1
+	m.forceLivePersist()
+	m.refreshTranscript(true)
+	return m.runTurn()
 }
 
 func (m *ChatModel) checkpointPartialAssistantHistory() {
@@ -921,6 +967,7 @@ func (m *ChatModel) cancelTurn() string {
 	m.turnModel = ""
 	m.turnAgentMode = ""
 	m.turnPlanHandoff = ""
+	m.reasoningRecoveryUsed = false
 	return notice
 }
 
@@ -2787,6 +2834,9 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			if cmd := m.recoverFromContextOverflow(v.err); cmd != nil {
 				return m, cmd
 			}
+			if cmd := m.recoverReasoningCarryForward(v.err); cmd != nil {
+				return m, cmd
+			}
 			m.accountGoalRequest()
 			m.checkpointPartialAssistantHistory()
 			m.finishThinkingPanel()
@@ -2896,6 +2946,10 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			m.pendingCall = append(m.pendingCall, v.toolCalls...)
 		}
 		if v.done {
+			// A completed provider response proves the compatibility boundary is
+			// healthy again. Permit one fresh recovery after a later tool request in
+			// this same user turn, but never more than once for the same request.
+			m.reasoningRecoveryUsed = false
 			// Este request ya terminó. Las tools pueden tardar, pero ningún chunk
 			// adicional de esta conexión debe volver a aceptarse mientras esperamos.
 			m.activeRequestID = 0
@@ -4712,7 +4766,8 @@ func systemPrompt(activeTools []string, skillsBlock, agentsBlock, todoBlock, mod
 		"create_file is creation-only. The ambiguous legacy tool name `write` is unsupported.",
 		"Treat FILE_EXISTS, OVERWRITE_REQUIRED, USE_CREATE_FILE and WRITE_BLOCKED as policy redirects and follow the result instead of repeating a rejected payload unchanged.",
 		"When todo_write is available, use it for work with three or more meaningful implementation steps and keep its snapshot synchronized with actual progress.",
-		"Use code_search for repository text search; it has a bounded pure-Go fallback, so do not install ripgrep solely to inspect source. run_terminal_command prefers the host shell and can fall back to shell=portable for Bash-compatible syntax, but the portable shell is not a full Linux userland and does not replace external git, go, npm, docker or make executables.",
+		"Use code_search for repository text search; it has a bounded pure-Go fallback, so do not install ripgrep solely to inspect source. run_terminal_command prefers the host shell and can fall back to shell=portable for Bash-compatible syntax, but the portable shell is not a full Linux userland and does not replace external git, gh, go, npm, docker or make executables.",
+		"For frontend work, inspect the real UI before and after changes when a running app is available. For broad multi-page regression checks, delegate to the isolated frontend-browser-auditor agent when present so DOM snapshots, console and network noise stay out of the parent context.",
 		"Before finishing code changes, run relevant build/tests when a safe terminal tool is available; never run destructive commands unless the user explicitly requested that destructive action.",
 		"Preserve project conventions and unrelated content. Make the smallest safe change that satisfies the request.",
 		"Do not stop with `do you want me to continue?` when you can keep working; ask only when genuinely blocked by missing information, credentials, or a destructive ambiguity.",
