@@ -233,6 +233,8 @@ En pruebas concurrentes, señalizar el estado observado de forma síncrona en la
 
 - Slash-command extensions belong behind `internal/moduleapi`; private/company modules must not import `internal/tui` or access `ChatModel` fields directly.
 - Public built-ins are selected from `internal/distribution/builtin.go`. A private downstream distribution should add its own build-tagged file (for example `internal/distribution/company.go` with `//go:build company`) instead of editing the public selector.
+- Public slash capabilities live physically under `modules/core/**`; do not reintroduce a centralized `core.commands` table in `internal/tui/commands.go`. The TUI only adapts `moduleapi.Host` capabilities and materializes the registry.
+- New public user-facing slash functionality should normally be a focused `core.<feature>` module. Shared libraries/services remain under `internal/**` and are reached through small capability interfaces instead of importing `internal/tui` from a module.
 - New company modules should live under new paths such as `modules/company/**`. This keeps `merge upstream/main` low-conflict.
 - Module IDs, commands, aliases and routes are unique. The registry fails closed on collisions, missing required modules or incompatible `moduleapi.APIVersion`; do not bypass that validation.
 - Use `/modules` to inspect linked modules and diagnostics.

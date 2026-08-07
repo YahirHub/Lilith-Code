@@ -12,37 +12,6 @@ import (
 	"github.com/lilith/li/internal/config"
 )
 
-func (m *ChatModel) runMemoryCommand(args string) uikit.Cmd {
-	args = strings.ToLower(strings.TrimSpace(args))
-	settings, _ := config.Load(m.ctx.ConfigDir)
-	switch args {
-	case "on", "enable", "activar":
-		settings.AutoMemoryEnabled = true
-		if err := config.Save(m.ctx.ConfigDir, settings); err != nil {
-			m.AddError("No se pudo activar memoria: " + err.Error())
-			return nil
-		}
-		m.invalidateContextUsage()
-		m.AddSystem("Memoria automática activada.\n" + m.memorySummary())
-		return nil
-	case "off", "disable", "desactivar":
-		settings.AutoMemoryEnabled = false
-		if err := config.Save(m.ctx.ConfigDir, settings); err != nil {
-			m.AddError("No se pudo desactivar memoria: " + err.Error())
-			return nil
-		}
-		m.invalidateContextUsage()
-		m.AddSystem("Memoria automática desactivada.")
-		return nil
-	case "", "status", "show":
-		m.AddSystem(m.memorySummary())
-		return nil
-	default:
-		m.AddSystem("Uso: /memory [on|off|status]")
-		return nil
-	}
-}
-
 func (m *ChatModel) memorySummary() string {
 	settings, _ := config.Load(m.ctx.ConfigDir)
 	state := "OFF"

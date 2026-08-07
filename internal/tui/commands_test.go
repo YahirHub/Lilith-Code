@@ -55,17 +55,32 @@ func TestSkillRowsAreRecognizedAndStyledSeparately(t *testing.T) {
 	}
 }
 
-func TestSlashCommandsAreOwnedByModules(t *testing.T) {
-	for _, row := range Commands() {
-		if strings.TrimSpace(row.ModuleID) == "" {
-			t.Fatalf("/%s no tiene module owner", row.Name)
+func TestSlashCommandsAreOwnedByFeatureModules(t *testing.T) {
+	owners := map[string]string{
+		"help": "core.help", "init": "core.project", "goal": "core.goal",
+		"plan": "core.mode", "build": "core.mode", "compact": "core.compaction",
+		"rewind": "core.rewind", "fork": "core.fork", "memory": "core.memory",
+		"mcp": "core.mcp", "tasks": "core.agents", "subtask": "core.agents",
+		"plugins": "core.plugins", "reload-plugins": "core.plugins", "agents": "core.agents",
+		"login": "core.providers", "providers": "core.providers", "models": "core.providers",
+		"config": "core.config", "clear": "core.session", "history": "core.session",
+		"bash": "core.shell", "exit": "core.session", "modules": "core.modules",
+	}
+	rows := Commands()
+	if len(rows) != len(owners) {
+		t.Fatalf("comandos registrados=%d, esperados=%d: %#v", len(rows), len(owners), rows)
+	}
+	for _, row := range rows {
+		want := owners[row.Name]
+		if want == "" {
+			t.Fatalf("/%s apareció sin módulo esperado: %+v", row.Name, row)
 		}
-	}
-	if cmd := FindCommand("rewind"); cmd == nil || cmd.ModuleID != "core.rewind" {
-		t.Fatalf("/rewind no pertenece a core.rewind: %+v", cmd)
-	}
-	if cmd := FindCommand("modules"); cmd == nil || cmd.ModuleID != "core.modules" {
-		t.Fatalf("/modules no pertenece a core.modules: %+v", cmd)
+		if row.ModuleID != want {
+			t.Fatalf("/%s pertenece a %q; esperado %q", row.Name, row.ModuleID, want)
+		}
+		if row.ModuleID == "core.commands" {
+			t.Fatalf("/%s sigue dependiendo del mega-módulo de compatibilidad", row.Name)
+		}
 	}
 }
 
@@ -90,7 +105,7 @@ func TestModulesCommandShowsRegistry(t *testing.T) {
 		t.Fatal("/modules no produjo salida")
 	}
 	last := m.messages[len(m.messages)-1].Content
-	for _, want := range []string{"core.commands", "core.modules", "core.rewind", "core.skills"} {
+	for _, want := range []string{"core.help", "core.mode", "core.modules", "core.rewind", "core.skills", "core.session"} {
 		if !strings.Contains(last, want) {
 			t.Fatalf("/modules no contiene %s:\n%s", want, last)
 		}

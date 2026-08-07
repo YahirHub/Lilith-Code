@@ -10,19 +10,9 @@ import (
 
 func init() {
 	moduleapi.Register(moduleapi.Definition{
-		ID:          "core.modules",
-		Name:        "Module Registry",
-		Version:     "1",
+		ID: "core.modules", Name: "Module Registry", Version: "1", Source: "builtin", API: moduleapi.APIVersion,
 		Description: "Inspección de módulos enlazados y sus capacidades slash.",
-		Source:      "builtin",
-		API:         moduleapi.APIVersion,
-		Commands: []moduleapi.Command{{
-			Name:        "modules",
-			Order:       150,
-			Usage:       "[id]",
-			Description: "Lista módulos enlazados o muestra el diagnóstico de uno.",
-			Handler:     runModules,
-		}},
+		Commands:    []moduleapi.Command{{Name: "modules", Order: 150, Usage: "[id]", Description: "Lista módulos enlazados o muestra el diagnóstico de uno.", Handler: runModules}},
 	})
 }
 
@@ -45,9 +35,7 @@ func runModules(host moduleapi.Host, args string) {
 	}
 	sort.Slice(statuses, func(i, j int) bool { return statuses[i].ID < statuses[j].ID })
 	var b strings.Builder
-	b.WriteString("Módulos enlazados (Module API ")
-	b.WriteString(strconv.Itoa(moduleapi.APIVersion))
-	b.WriteString("):\n")
+	b.WriteString("Módulos enlazados (Module API " + strconv.Itoa(moduleapi.APIVersion) + "):\n")
 	for _, st := range statuses {
 		state := "✓"
 		if !st.Enabled {
@@ -71,12 +59,7 @@ func runModules(host moduleapi.Host, args string) {
 
 func formatDetail(st moduleapi.Status) string {
 	var b strings.Builder
-	b.WriteString(st.ID + " — " + st.Name + "\n")
-	b.WriteString("versión: " + st.Version + "\n")
-	b.WriteString("source: " + st.Source + "\n")
-	b.WriteString("module API: ")
-	b.WriteString(strconv.Itoa(st.API))
-	b.WriteString("\nestado: ")
+	b.WriteString(st.ID + " — " + st.Name + "\nversión: " + st.Version + "\nsource: " + st.Source + "\nmodule API: " + strconv.Itoa(st.API) + "\nestado: ")
 	if st.Enabled {
 		b.WriteString("enabled")
 	} else {

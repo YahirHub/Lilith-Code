@@ -82,7 +82,6 @@ func init() {
         Description: "Comandos internos de ejemplo.",
         Source:      "company",
         API:         moduleapi.APIVersion,
-        Requires:    []string{"core.commands"},
         Commands: []moduleapi.Command{{
             Name:        "company-hello",
             Description: "Comprueba que la distribución privada está activa.",
@@ -177,15 +176,33 @@ assets/agents/company-*.md       # si necesitas agentes privados embebidos
 Las carpetas nuevas bajo `assets` también suelen producir merges limpios porque
 el repo público no necesita conocerlas.
 
-## Comandos incorporados por el sistema modular
+## Módulos públicos incorporados
 
-- `core.commands`: adapta los slash commands históricos sin cambiar su UX.
-- `core.rewind`: posee `/rewind`.
-- `core.skills`: posee `/skills:*` y `/skill:*`.
-- `core.modules`: posee `/modules [id]`.
+El core público usa la misma arquitectura que una distribución privada. No existe
+ya un mega-módulo `core.commands`; las capacidades slash se registran desde
+`modules/core/**`:
 
-`/modules` es la primera herramienta de diagnóstico cuando una distribución
-privada compila pero un comando no aparece.
+- `core.help`: `/help`;
+- `core.project`: `/init`;
+- `core.goal`: `/goal`;
+- `core.mode`: `/plan`, `/build`;
+- `core.compaction`: `/compact`;
+- `core.rewind`: `/rewind`;
+- `core.fork`: `/fork`;
+- `core.memory`: `/memory`;
+- `core.mcp`: `/mcp`;
+- `core.agents`: `/tasks`, `/subtask`, `/agents`;
+- `core.plugins`: `/plugins`, `/reload-plugins`;
+- `core.providers`: `/login`, `/providers`, `/models`;
+- `core.config`: `/config`;
+- `core.session`: `/clear`, `/history`, `/exit`;
+- `core.shell`: `/bash`;
+- `core.skills`: `/skills:*`, `/skill:*`;
+- `core.modules`: `/modules [id]`.
+
+La TUI sólo materializa el `Registry` y adapta `moduleapi.Host`; no mantiene una
+segunda tabla de comandos. `/modules` es la primera herramienta de diagnóstico
+cuando una distribución privada compila pero un comando no aparece.
 
 ## Qué no hacer
 

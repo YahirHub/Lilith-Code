@@ -26,9 +26,9 @@ type Registry struct {
 	byToken  map[string]int
 }
 
-// NewRegistry builds a registry. reservedTokens are slash names/aliases still
-// owned by the compatibility command layer; a module colliding with one is
-// disabled rather than shadowing existing behavior.
+// NewRegistry builds a registry. reservedTokens are slash names/aliases owned
+// directly by an embedding host; a module colliding with one is disabled rather
+// than shadowing existing behavior.
 func NewRegistry(defs []Definition, reservedTokens []string) *Registry {
 	defs = append([]Definition(nil), defs...)
 	sort.SliceStable(defs, func(i, j int) bool {
@@ -38,7 +38,7 @@ func NewRegistry(defs []Definition, reservedTokens []string) *Registry {
 	reserved := map[string]string{}
 	for _, token := range reservedTokens {
 		if key := normalizeToken(token); key != "" {
-			reserved[key] = "core compatibility command /" + key
+			reserved[key] = "host-reserved slash command /" + key
 		}
 	}
 

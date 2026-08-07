@@ -329,9 +329,10 @@ Validación completada correctamente.
 
 ## Módulos y distribuciones privadas
 
-Lilith incluye un registry de módulos Go estáticos para extender comandos slash
-sin plugins dinámicos ni CGO. `/rewind`, `/skill:*`/`/skills:*` y `/modules` ya
-usan esta arquitectura; los comandos históricos se exponen como el módulo de
+Lilith usa un registry de módulos Go estáticos para sus propios comandos slash y
+para extensiones privadas, sin plugins dinámicos ni CGO. Las capacidades
+públicas viven físicamente en `modules/core/**` (`core.rewind`, `core.skills`,
+`core.providers`, `core.session`, etc.); la TUI ya no inyecta un mega-módulo de
 compatibilidad `core.commands`.
 
 Una empresa puede mantener sus módulos exclusivamente en un repo/branch privado
