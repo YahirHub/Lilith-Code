@@ -3,7 +3,10 @@ package tui
 import (
 	"sort"
 	"strings"
+	"sync"
 
+	_ "github.com/lilith/li/internal/distribution"
+	"github.com/lilith/li/internal/moduleapi"
 	"github.com/lilith/li/internal/tui/uikit"
 
 	planstate "github.com/lilith/li/internal/plan"
@@ -23,11 +26,15 @@ type SlashCommand struct {
 	Usage       string
 	Description string
 	Kind        SlashItemKind
+	Order       int
 	Run         func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd
+	ModuleID    string
 }
 
-// Commands returns the full slash-command list.
-func Commands() []SlashCommand {
+// legacyCommands contains the pre-module command implementations. They are
+// adapted into the core.commands module at registry construction time so the
+// behavior remains unchanged while command discovery/dispatch is modular.
+func legacyCommands() []SlashCommand {
 	return []SlashCommand{
 		{
 			Name: "help", Aliases: []string{"h", "?"},
@@ -92,17 +99,6 @@ func Commands() []SlashCommand {
 			Description: "Resume el historial antiguo, conserva los turnos recientes y libera contexto sin borrar el transcript.",
 			Run: func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd {
 				return chat.runCompactCommand(args)
-			},
-		},
-		{
-			Name:        "rewind",
-			Description: "Restaura código, conversación o ambos al punto anterior a un mensaje del usuario.",
-			Run: func(ctx *AppContext, chat *ChatModel, _ string) uikit.Cmd {
-				if chat != nil && chat.rewindSessionBusy() {
-					chat.AddError("/rewind sólo puede ejecutarse cuando el agente, los comandos directos y las tareas en background están inactivos. Cancela o espera a que terminen y vuelve a intentarlo.")
-					return nil
-				}
-				return switchTo(NewRewindScreen(ctx, chat))
 			},
 		},
 		{
@@ -230,6 +226,80 @@ func Commands() []SlashCommand {
 	}
 }
 
+var (
+	modulesOnce sync.Once
+	modulesReg  *moduleapi.Registry
+)
+
+// commandRegistry owns every slash command exposed by this build. Existing TUI
+// commands are represented as core.commands while separately linked modules
+// contribute commands/routes without editing this file.
+func commandRegistry() *moduleapi.Registry {
+	modulesOnce.Do(func() {
+		legacy := legacyCommands()
+		core := moduleapi.Definition{
+			ID:          "core.commands",
+			Name:        "Core Commands",
+			Version:     "1",
+			Description: "Comandos slash generales de la TUI conservados por la capa de compatibilidad modular.",
+			Source:      "builtin",
+			API:         moduleapi.APIVersion,
+		}
+		for i, row := range legacy {
+			row := row
+			core.Commands = append(core.Commands, moduleapi.Command{
+				Name:        row.Name,
+				Aliases:     append([]string(nil), row.Aliases...),
+				Usage:       row.Usage,
+				Description: row.Description,
+				Order:       (i + 1) * 100,
+				Handler: func(host moduleapi.Host, args string) {
+					h, ok := host.(*moduleHost)
+					if !ok {
+						host.AddError("El comando /" + row.Name + " requiere el host TUI de Lilith.")
+						return
+					}
+					h.addCmd(row.Run(h.ctx, h.chat, args))
+				},
+			})
+		}
+		defs := append([]moduleapi.Definition{core}, moduleapi.Catalog()...)
+		modulesReg = moduleapi.NewRegistry(defs, nil)
+	})
+	return modulesReg
+}
+
+// Commands returns the full slash-command list contributed by enabled modules.
+func Commands() []SlashCommand {
+	reg := commandRegistry()
+	items := reg.Commands()
+	out := make([]SlashCommand, 0, len(items))
+	for _, item := range items {
+		item := item
+		_, moduleID, _ := reg.FindCommand(item.Name)
+		out = append(out, SlashCommand{
+			Name:        item.Name,
+			Aliases:     append([]string(nil), item.Aliases...),
+			Usage:       item.Usage,
+			Description: item.Description,
+			Kind:        SlashItemCommand,
+			Order:       item.Order,
+			ModuleID:    moduleID,
+			Run: func(ctx *AppContext, chat *ChatModel, args string) uikit.Cmd {
+				host := newModuleHost(ctx, chat, reg)
+				item.Handler(host, args)
+				return host.cmd
+			},
+		})
+	}
+	return out
+}
+
+// FindModuleRoute resolves dynamic slash routes such as /skill:<name>.
+func FindModuleRoute(name string) (moduleapi.Route, string, string, bool) {
+	return commandRegistry().MatchRoute(name)
+}
+
 func FindCommand(name string) *SlashCommand {
 	name = strings.ToLower(strings.TrimPrefix(name, "/"))
 	all := Commands()
@@ -268,16 +338,11 @@ func FilterCommands(query string) []SlashCommand {
 // This keeps /login above unrelated commands such as /reload-plugins even
 // when both contain the requested letters in order.
 func slashMatchScore(c SlashCommand, query string) (int, bool) {
-	q := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(query, "/")))
-	q = strings.TrimPrefix(q, "skills:")
-	q = strings.TrimPrefix(q, "skill:")
+	q := slashSearchQuery(query)
 	if q == "" {
 		return 0, true
 	}
 	candidates := append([]string{c.Name}, c.Aliases...)
-	if c.Kind == SlashItemSkill {
-		candidates = append(candidates, "skills:"+c.Name, "skill:"+c.Name)
-	}
 	best := int(^uint(0) >> 1)
 	matched := false
 	for _, candidate := range candidates {
@@ -291,6 +356,14 @@ func slashMatchScore(c SlashCommand, query string) (int, bool) {
 		}
 	}
 	return best, matched
+}
+
+func slashSearchQuery(query string) string {
+	q := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(query, "/")))
+	if _, _, target, ok := FindModuleRoute(q); ok {
+		return strings.ToLower(strings.TrimSpace(target))
+	}
+	return q
 }
 
 func slashCandidateScore(candidate, query string) (int, bool) {
@@ -319,7 +392,7 @@ func slashCandidateScore(candidate, query string) (int, bool) {
 }
 
 func sortSlashRows(rows []SlashCommand, query string) {
-	q := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(query, "/")))
+	q := slashSearchQuery(query)
 	if q == "" {
 		return
 	}

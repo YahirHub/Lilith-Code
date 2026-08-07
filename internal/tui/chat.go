@@ -2324,6 +2324,14 @@ func (m *ChatModel) updateInputPrefixHighlight() {
 		m.textarea.SetPrefixHighlight(length, tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Primary).Bold(true))
 		return
 	}
+	if route, _, _, ok := FindModuleRoute(token); ok {
+		color := m.ctx.Styles.Theme.Primary
+		if strings.EqualFold(route.Kind, "skill") {
+			color = m.ctx.Styles.Theme.Secondary
+		}
+		m.textarea.SetPrefixHighlight(length, tuistyle.NewStyle().Foreground(color).Bold(true))
+		return
+	}
 	if !m.skillNameCacheLoaded {
 		m.refreshSkillNameCache()
 	}
@@ -2579,8 +2587,8 @@ func (m *ChatModel) returnToInteractionBottom() {
 func (m *ChatModel) updatePalette() {
 	// (ver syncInputHeight para el alto de la caja)
 	val := m.textarea.Value()
-	// Aceptamos "/", "/skills:", y cualquier fragmento sin espacios ni saltos.
-	// Los ':' son válidos para permitir el autocompletado de /skills:<nombre>.
+	// Aceptamos cualquier token slash sin espacios ni saltos. Las rutas
+	// dinámicas registradas por módulos pueden usar ':' en su prefijo.
 	if strings.HasPrefix(val, "/") && !strings.Contains(val, "\n") && !strings.Contains(val, " ") {
 		m.paletteOpen = true
 		m.paletteRows = m.buildPalette(val)
@@ -2599,14 +2607,19 @@ func (m *ChatModel) updatePalette() {
 // un espacio. El ranking global prioriza coincidencias exactas y prefijos.
 func (m *ChatModel) buildPalette(query string) []SlashCommand {
 	rows := FilterCommands(query)
-	if !m.skillsEnabled() {
+	route, _, _, routed := FindModuleRoute(query)
+	if routed {
+		// Un namespace dinámico es propiedad de su módulo; no mezclar comandos
+		// exactos no relacionados dentro de ese namespace.
+		rows = nil
+	}
+	showSkills := !routed || strings.EqualFold(route.Kind, "skill")
+	if !m.skillsEnabled() || !showSkills {
 		m.skillNameCache = map[string]struct{}{}
 		m.skillNameCacheLoaded = true
 		return rows
 	}
-	q := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(query, "/")))
-	q = strings.TrimPrefix(q, "skills:")
-	q = strings.TrimPrefix(q, "skill:")
+	q := slashSearchQuery(query)
 	seen := map[string]bool{}
 	for _, row := range rows {
 		seen[strings.ToLower(row.Name)] = true
@@ -2639,7 +2652,7 @@ func (m *ChatModel) buildPalette(query string) []SlashCommand {
 		}
 		rows = append(rows, row)
 	}
-	sortSlashRows(rows, query)
+	sortSlashRows(rows, q)
 	return rows
 }
 
@@ -3672,14 +3685,14 @@ func (m *ChatModel) submit(val string) (uikit.Model, uikit.Cmd) {
 			name = val[:firstSpace]
 			args = strings.TrimSpace(val[firstSpace+1:])
 		}
-		// /skills:<nombre> [args] inyecta la SKILL.md correspondiente antes
-		// del prompt del usuario y arranca el turno. También aceptamos
-		// /skill:<nombre> por comodidad.
+		// Dynamic slash routes are owned by modules. core.skills currently
+		// provides /skills:<nombre> and /skill:<nombre>; private builds can
+		// add their own prefixes without editing ChatModel.
 		lname := strings.ToLower(strings.TrimPrefix(name, "/"))
-		if strings.HasPrefix(lname, "skills:") || strings.HasPrefix(lname, "skill:") {
-			skillName := strings.TrimPrefix(lname, "skills:")
-			skillName = strings.TrimPrefix(skillName, "skill:")
-			return m, m.invokeSkill(skillName, args)
+		if route, _, target, ok := FindModuleRoute(lname); ok {
+			host := newModuleHost(m.ctx, m, commandRegistry())
+			route.Handler(host, target, args)
+			return m, host.cmd
 		}
 		if cmd := FindCommand(name); cmd != nil {
 			return m, cmd.Run(m.ctx, m, args)

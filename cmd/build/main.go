@@ -3,8 +3,9 @@
 // toolchain helper used
 // by the Makefile:
 //
-//	go run ./cmd/build             build all li binaries
-//	go run ./cmd/build build       build all li binaries
+//	go run ./cmd/build                         build public/default binaries
+//	go run ./cmd/build build                   build public/default binaries
+//	go run ./cmd/build build --distribution company  add the company build tag
 //	go run ./cmd/build version     print the release version
 //	go run ./cmd/build check       show optional external tool status
 //	go run ./cmd/build install     install optional external tools
@@ -50,10 +51,11 @@ func main() {
 
 	switch action {
 	case "build":
-		if len(args) != 0 {
-			fatal(fmt.Errorf("build no acepta argumentos: %s", strings.Join(args, " ")))
+		distribution, err := parseBuildDistribution(args)
+		if err != nil {
+			fatal(err)
 		}
-		if err := buildAll(); err != nil {
+		if err := buildAll(distribution); err != nil {
 			fatal(err)
 		}
 	case "version":
@@ -86,6 +88,49 @@ func parseAction(args []string) (string, []string, error) {
 	}
 }
 
+var distributionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+
+func parseBuildDistribution(args []string) (string, error) {
+	distribution := "default"
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--distribution" || arg == "-distribution":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("falta valor para %s", arg)
+			}
+			distribution = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--distribution="):
+			distribution = strings.TrimPrefix(arg, "--distribution=")
+		default:
+			return "", fmt.Errorf("argumento desconocido para build: %s", arg)
+		}
+	}
+	distribution = normalizeDistribution(distribution)
+	if distribution != "default" && !distributionPattern.MatchString(distribution) {
+		return "", fmt.Errorf("distribución inválida %q; usa letras, números, guion o guion bajo", distribution)
+	}
+	return distribution, nil
+}
+
+func normalizeDistribution(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" || value == "public" || value == "main" {
+		return "default"
+	}
+	return value
+}
+
+func buildTags(distribution string) []string {
+	tags := []string{embeddedGrammarBuildTag}
+	distribution = normalizeDistribution(distribution)
+	if distribution != "default" {
+		tags = append(tags, distribution)
+	}
+	return tags
+}
+
 var semanticVersionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
 
 func projectVersion() (string, error) {
@@ -97,7 +142,7 @@ func projectVersion() (string, error) {
 	return version, nil
 }
 
-func buildAll() error {
+func buildAll(distribution string) error {
 	goExe, err := exec.LookPath("go")
 	if err != nil {
 		return fmt.Errorf("no se encontró el ejecutable go en PATH: %w", err)
@@ -120,9 +165,10 @@ func buildAll() error {
 		commit = "none"
 	}
 
-	fmt.Printf("Lilith - build multiplataforma\nProyecto: %s\nVersión: %s (%s)\n\n", root, version, commit)
+	distribution = normalizeDistribution(distribution)
+	fmt.Printf("Lilith - build multiplataforma\nProyecto: %s\nVersión: %s (%s)\nDistribución: %s\n\n", root, version, commit, distribution)
 	for _, t := range targets {
-		if err := buildTarget(goExe, root, dist, version, commit, t); err != nil {
+		if err := buildTarget(goExe, root, dist, version, commit, distribution, t); err != nil {
 			return err
 		}
 	}
@@ -131,7 +177,7 @@ func buildAll() error {
 	return nil
 }
 
-func buildTarget(goExe, root, dist, version, commit string, t target) error {
+func buildTarget(goExe, root, dist, version, commit, distribution string, t target) error {
 	out := filepath.Join(dist, t.Output)
 	label := t.GOOS + "/" + t.GOARCH
 	if t.GOARM != "" {
@@ -142,7 +188,7 @@ func buildTarget(goExe, root, dist, version, commit string, t target) error {
 	ldflags := fmt.Sprintf("-s -w -X main.version=%s -X main.commit=%s", version, commit)
 	args := []string{
 		"build",
-		"-tags=" + embeddedGrammarBuildTag,
+		"-tags=" + strings.Join(buildTags(distribution), ","),
 		"-trimpath",
 		"-buildvcs=false",
 		"-ldflags=" + ldflags,

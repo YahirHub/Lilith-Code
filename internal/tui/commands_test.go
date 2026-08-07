@@ -54,3 +54,54 @@ func TestSkillRowsAreRecognizedAndStyledSeparately(t *testing.T) {
 		t.Fatalf("la skill no aparece en la paleta:\n%s", stripANSI(menu))
 	}
 }
+
+func TestSlashCommandsAreOwnedByModules(t *testing.T) {
+	for _, row := range Commands() {
+		if strings.TrimSpace(row.ModuleID) == "" {
+			t.Fatalf("/%s no tiene module owner", row.Name)
+		}
+	}
+	if cmd := FindCommand("rewind"); cmd == nil || cmd.ModuleID != "core.rewind" {
+		t.Fatalf("/rewind no pertenece a core.rewind: %+v", cmd)
+	}
+	if cmd := FindCommand("modules"); cmd == nil || cmd.ModuleID != "core.modules" {
+		t.Fatalf("/modules no pertenece a core.modules: %+v", cmd)
+	}
+}
+
+func TestSkillSlashPrefixIsOwnedBySkillModule(t *testing.T) {
+	route, moduleID, target, ok := FindModuleRoute("/skill:frontend-development")
+	if !ok || moduleID != "core.skills" || target != "frontend-development" {
+		t.Fatalf("route=%+v module=%q target=%q ok=%v", route, moduleID, target, ok)
+	}
+	if route.Kind != "skill" || route.Handler == nil {
+		t.Fatalf("route skill inválido: %+v", route)
+	}
+}
+
+func TestModulesCommandShowsRegistry(t *testing.T) {
+	m := newInputTestChat(t)
+	cmd := FindCommand("modules")
+	if cmd == nil {
+		t.Fatal("/modules no está registrado")
+	}
+	_ = cmd.Run(m.ctx, m, "")
+	if len(m.messages) == 0 {
+		t.Fatal("/modules no produjo salida")
+	}
+	last := m.messages[len(m.messages)-1].Content
+	for _, want := range []string{"core.commands", "core.modules", "core.rewind", "core.skills"} {
+		if !strings.Contains(last, want) {
+			t.Fatalf("/modules no contiene %s:\n%s", want, last)
+		}
+	}
+}
+
+func TestSlashSearchQueryUsesDynamicModuleRouteTarget(t *testing.T) {
+	if got := slashSearchQuery("/skill:Frontend-Development"); got != "frontend-development" {
+		t.Fatalf("query dinámica=%q", got)
+	}
+	if got := slashSearchQuery("/login"); got != "login" {
+		t.Fatalf("query exacta=%q", got)
+	}
+}

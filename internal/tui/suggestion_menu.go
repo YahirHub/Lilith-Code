@@ -95,7 +95,7 @@ func (s SuggestionMenu) View() string {
 // commands, `skill:<name>` (secondary color) for Agent Skills.
 func labelFor(c SlashCommand) string {
 	if isSkillItem(c) {
-		return "skill:" + strings.TrimPrefix(c.Name, "skills:")
+		return "skill:" + c.Name
 	}
 	return "/" + c.Name
 }
@@ -110,7 +110,7 @@ func descriptionFor(c SlashCommand) string {
 }
 
 func isSkillItem(c SlashCommand) bool {
-	return c.Kind == SlashItemSkill || strings.HasPrefix(c.Name, "skills:") || strings.HasPrefix(c.Name, "skill:")
+	return c.Kind == SlashItemSkill
 }
 
 func clipMenu(s string, max int) string {

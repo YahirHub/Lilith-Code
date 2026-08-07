@@ -120,7 +120,9 @@ go run ./cmd/build build
 
 El builder aplica automáticamente `CGO_ENABLED=0` y `-tags=grammar_set_core`
 para incorporar las gramáticas de inteligencia de código dentro de cada
-binario. Un build directo equivalente es:
+binario público. Para una distribución privada enlazada mediante build tag usa
+`go run ./cmd/build build --distribution company`; el builder añadirá `company`
+sin retirar `grammar_set_core`. Un build directo equivalente es:
 
 ```bash
 CGO_ENABLED=0 go build -tags=grammar_set_core -trimpath -o li ./cmd/li

@@ -228,3 +228,12 @@ En pruebas concurrentes, señalizar el estado observado de forma síncrona en la
 - `status` nunca debe ocultar un error CDP ni devolver `tabs: null`; debe exponer `cdp_error`, `attached=false` y una lista vacía cuando la conexión no responda.
 - Los comandos del dominio `Target` deben ejecutarse con el executor del navegador (`chromedp.Targets` o `cdp.WithExecutor(..., state.Browser)`); Network, Runtime y Debugger usan el executor del target.
 - La cancelación del contexto de una llamada puede detener su acción hija, pero nunca debe cancelar el contexto persistente guardado en la sesión.
+
+## Static module architecture
+
+- Slash-command extensions belong behind `internal/moduleapi`; private/company modules must not import `internal/tui` or access `ChatModel` fields directly.
+- Public built-ins are selected from `internal/distribution/builtin.go`. A private downstream distribution should add its own build-tagged file (for example `internal/distribution/company.go` with `//go:build company`) instead of editing the public selector.
+- New company modules should live under new paths such as `modules/company/**`. This keeps `merge upstream/main` low-conflict.
+- Module IDs, commands, aliases and routes are unique. The registry fails closed on collisions, missing required modules or incompatible `moduleapi.APIVersion`; do not bypass that validation.
+- Use `/modules` to inspect linked modules and diagnostics.
+- `go run ./cmd/build build --distribution company` adds the company build tag while preserving `CGO_ENABLED=0` and the embedded grammar tag.

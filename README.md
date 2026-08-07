@@ -326,3 +326,21 @@ incluidos `internal/subagents` e `internal/tui`, y finalizó con:
 all modules verified
 Validación completada correctamente.
 ```
+
+## Módulos y distribuciones privadas
+
+Lilith incluye un registry de módulos Go estáticos para extender comandos slash
+sin plugins dinámicos ni CGO. `/rewind`, `/skill:*`/`/skills:*` y `/modules` ya
+usan esta arquitectura; los comandos históricos se exponen como el módulo de
+compatibilidad `core.commands`.
+
+Una empresa puede mantener sus módulos exclusivamente en un repo/branch privado
+y compilar con:
+
+```bash
+go run ./cmd/build build --distribution company
+```
+
+Eso añade el build tag `company` además de `grammar_set_core`. El repo público
+no necesita importar ni conocer los paquetes privados. La guía completa está en
+`docs/modules/README.md`.

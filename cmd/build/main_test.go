@@ -83,3 +83,30 @@ func TestTargetsIncludeWindowsCrossCompilation(t *testing.T) {
 		}
 	}
 }
+
+func TestParseBuildDistributionAddsPrivateBuildTag(t *testing.T) {
+	t.Parallel()
+	dist, err := parseBuildDistribution([]string{"--distribution", "company"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dist != "company" {
+		t.Fatalf("distribution=%q", dist)
+	}
+	if got := strings.Join(buildTags(dist), ","); got != "grammar_set_core,company" {
+		t.Fatalf("tags=%q", got)
+	}
+}
+
+func TestParseBuildDistributionKeepsDefaultPublicBuild(t *testing.T) {
+	t.Parallel()
+	for _, args := range [][]string{nil, {"--distribution=main"}, {"--distribution", "public"}} {
+		dist, err := parseBuildDistribution(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dist != "default" || strings.Join(buildTags(dist), ",") != "grammar_set_core" {
+			t.Fatalf("args=%v dist=%q tags=%v", args, dist, buildTags(dist))
+		}
+	}
+}
