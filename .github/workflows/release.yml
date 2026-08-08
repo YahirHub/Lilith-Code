@@ -95,7 +95,7 @@ jobs:
 
       - name: Probar instalador Linux y compilación Termux
         run: |
-          sh -n install.sh
+          sh -n scripts/install.sh
           python3 .github/scripts/test_install_sh.py
 
       - name: Probar selección del instalador PowerShell

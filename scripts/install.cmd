@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set "INSTALLER_URL=https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.ps1"
+set "INSTALLER_URL=https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/scripts/install.ps1"
 set "TMP_PS1=%TEMP%\lilith-install-%RANDOM%-%RANDOM%.ps1"
 
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -UseBasicParsing -Uri '%INSTALLER_URL%' -OutFile '%TMP_PS1%'"

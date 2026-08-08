@@ -60,7 +60,7 @@ func TestTargetsDoNotPublishBrokenTermuxArtifact(t *testing.T) {
 	t.Parallel()
 	for _, target := range targets {
 		if target.GOOS == "android" || strings.Contains(target.Output, "termux") {
-			t.Fatalf("Termux debe compilarse nativamente desde install.sh, target inesperado: %#v", target)
+			t.Fatalf("Termux debe compilarse nativamente desde scripts/install.sh, target inesperado: %#v", target)
 		}
 	}
 }

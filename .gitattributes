@@ -1,2 +1,2 @@
-/test.cmd text eol=crlf
-/test.ps1 text eol=crlf
+/scripts/test.cmd text eol=crlf
+/scripts/test.ps1 text eol=crlf

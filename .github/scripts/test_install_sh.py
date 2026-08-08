@@ -245,7 +245,7 @@ def simulate_linux(installer: Path, repo: Path, root: Path) -> None:
 
 def main() -> None:
     repo = REPO_ROOT
-    installer = repo / "install.sh"
+    installer = repo / "scripts" / "install.sh"
     with tempfile.TemporaryDirectory(prefix="lilith-install-tests-") as tmp_raw:
         root = Path(tmp_raw)
         simulate_termux(installer, repo, root / "termux")

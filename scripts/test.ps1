@@ -4,7 +4,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-Set-Location -LiteralPath $PSScriptRoot
+$repositoryRoot = Split-Path $PSScriptRoot -Parent
+Set-Location -LiteralPath $repositoryRoot
 
 function Test-DnsHost {
     param([Parameter(Mandatory = $true)][string]$HostName)

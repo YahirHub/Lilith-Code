@@ -17,7 +17,7 @@ path_contains() {
 
 need uname
 os="$(uname -s)"
-[ "$os" = "Linux" ] || fail "este instalador soporta Linux y Termux; en Windows usa install.ps1 o install.cmd"
+[ "$os" = "Linux" ] || fail "este instalador soporta Linux y Termux; en Windows usa scripts/install.ps1 o scripts/install.cmd"
 
 is_termux=0
 case "${PREFIX:-}" in

@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-$installer = Join-Path $repositoryRoot 'install.ps1'
+$installer = Join-Path (Join-Path $repositoryRoot 'scripts') 'install.ps1'
 $installer = [System.IO.Path]::GetFullPath($installer)
 
 function Assert-InstallerArchitecture {

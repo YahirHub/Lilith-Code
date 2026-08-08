@@ -319,7 +319,7 @@ pruebas y publicación se encuentran en [`install.md`](./install.md).
 La suite completa se valida con:
 
 ```cmd
-test.cmd
+scripts\test.cmd
 ```
 
 La ejecución más reciente en Windows completó correctamente todos los paquetes,

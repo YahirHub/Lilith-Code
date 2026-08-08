@@ -1,16 +1,20 @@
 # Instalación y referencia técnica de Lilith
 
 Los instaladores se descargan directamente desde la rama `main`. Esto permite
-corregir `install.sh`, `install.ps1` o `install.cmd` sin volver a compilar ni
-publicar los binarios. La configuración, sesiones y credenciales permanecen en
-`~/.li` y no se eliminan durante una actualización.
+corregir `scripts/install.sh`, `scripts/install.ps1` o `scripts/install.cmd` sin
+volver a compilar ni publicar los binarios. La configuración, sesiones y
+credenciales permanecen en `~/.li` y no se eliminan durante una actualización.
+
+Dentro de un checkout, los instaladores y helpers de pruebas viven en
+`scripts/`; el root queda reservado para código, manifests y documentación de
+entrada.
 
 ## Linux
 
 Arquitecturas: AMD64, ARM64 y ARMv7.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/scripts/install.sh | bash
 ```
 
 El instalador descarga el binario del último release, verifica
@@ -21,7 +25,7 @@ normalmente `/usr/local/bin`. No modifica `.bashrc` ni requiere ejecutar
 Versión concreta:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/scripts/install.sh -o install.sh
 sh install.sh 0.3.2
 rm install.sh
 ```
@@ -34,7 +38,7 @@ Compatibilidad oficial inicial: ARM64/AArch64.
 
 ```bash
 pkg install -y curl
-curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/scripts/install.sh | sh
 ```
 
 En Termux no se descarga un binario Android del release. El instalador:
@@ -59,7 +63,7 @@ ruta absoluta de `li` como un comando desconocido.
 Arquitecturas: AMD64 y ARM64.
 
 ```powershell
-irm https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/scripts/install.ps1 | iex
 ```
 
 Se instala en `%LOCALAPPDATA%\Programs\Lilith\bin\li.exe`. El script detecta la
@@ -70,7 +74,7 @@ Versión concreta:
 
 ```powershell
 $env:LI_VERSION = '0.3.2'
-irm https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/scripts/install.ps1 | iex
 ```
 
 ## Windows CMD
@@ -78,7 +82,7 @@ irm https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.ps1 | ie
 Descarga el archivo directamente desde el repositorio y ejecútalo:
 
 ```cmd
-curl.exe -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/install.cmd -o install.cmd
+curl.exe -fsSL https://raw.githubusercontent.com/YahirHub/Lilith-Code/main/scripts/install.cmd -o install.cmd
 install.cmd
 ```
 
@@ -129,20 +133,20 @@ CGO_ENABLED=0 go build -tags=grammar_set_core -trimpath -o li ./cmd/li
 ```
 
 `cmd/build` genera los binarios de release para Linux y Windows. Termux se
-compila en el propio dispositivo mediante `install.sh`.
+compila en el propio dispositivo mediante `scripts/install.sh`.
 
 ## Pruebas locales
 
 Desde CMD o PowerShell en Windows:
 
 ```cmd
-test.cmd
+scripts\test.cmd
 ```
 
 Para ejecutar también `go vet`:
 
 ```cmd
-test.cmd -Vet
+scripts\test.cmd -Vet
 ```
 
 El helper ejecuta estas validaciones:
@@ -157,7 +161,7 @@ No debe ejecutarse `go mod download all`: esa orden recorre módulos que no
 participan en la compilación y puede fallar por dependencias de herramientas o
 tests pertenecientes a terceros.
 
-Si Windows no puede resolver `sum.golang.org`, `test.cmd` prueba temporalmente
+Si Windows no puede resolver `sum.golang.org`, `scripts/test.cmd` prueba temporalmente
 `sum.golang.google.cn`, alias reconocido por Go para la misma base de checksums.
 Nunca desactiva `GOSUMDB` ni cambia la configuración global de Go.
 
@@ -370,4 +374,4 @@ Windows de `internal/tools`, `internal/shell`, `internal/subagents` e
 `internal/tui`. Esto detecta errores de compilación específicos del sistema.
 La ejecución real de Windows PowerShell 5.1, CMD y del runtime `.exe` no puede
 reproducirse en Ubuntu, por lo que los cambios dependientes de esas rutas deben
-validarse además localmente con `test.cmd` en Windows.
+validarse además localmente con `scripts/test.cmd` en Windows.

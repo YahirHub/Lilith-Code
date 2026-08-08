@@ -17,7 +17,7 @@ El proyecto conserva un diseño inspirado en agentes de terminal modernos, pero 
 - `rivo/uniseg` para ancho Unicode.
 - Cobra para la CLI.
 - Binario objetivo con `CGO_ENABLED=0`.
-- Termux ARM64 se instala desde `install.sh`: usa `pkg`, clona sólo el último commit de la rama predeterminada con `--depth 1 --single-branch --no-tags` y compila `cmd/li` nativamente; no se fija tag ni se publica un asset Android no verificado.
+- Termux ARM64 se instala desde `scripts/install.sh`: usa `pkg`, clona sólo el último commit de la rama predeterminada con `--depth 1 --single-branch --no-tags` y compila `cmd/li` nativamente; no se fija tag ni se publica un asset Android no verificado.
 
 No quedan dependencias de Bubble Tea, Bubbles, Lip Gloss, Glamour ni otros módulos Charmbracelet. No deben reintroducirse.
 
@@ -46,6 +46,7 @@ internal/goal/                objetivos persistentes
 internal/todo/                TodoWrite persistente
 internal/subagents/           ejecución de subagentes
 internal/imageocr/            OCR nativo Windows y modelo estructural
+scripts/                      instaladores y helpers de pruebas multiplataforma
 contexto/                     decisiones técnicas numeradas
 AGENTS.md                     instrucciones resumidas para Codex/agentes
 ```
@@ -248,7 +249,7 @@ se compacta el cuerpo rechazado y se devuelve `OVERWRITE_REQUIRED` sin tocar dis
 5. Ejecutar formato, tests, race, vet y builds estáticos/multiplataforma cuando el entorno lo permita.
 6. Documentar el cambio en un MD numerado.
 7. Commit en español con el autor Git `YahirHub <217099863+YahirHub@users.noreply.github.com>`.
-8. Para publicar, cambiar `internal/version/version.go` y ejecutar manualmente el workflow **Publicar release**. Usa un único runner Ubuntu: valida `go mod tidy -diff`, ejecuta pruebas readonly, race/vet y `go mod verify`, compila tests Windows sin ejecutarlos y genera desde Linux los binarios Linux/Windows con `CGO_ENABLED=0`, antes de crear checksums y notas agrupadas. La ejecución nativa de PowerShell 5.1/CMD se valida localmente con `test.cmd` cuando corresponda. Los instaladores se descargan desde la rama `main`; Termux compila desde el código en el dispositivo.
+8. Para publicar, cambiar `internal/version/version.go` y ejecutar manualmente el workflow **Publicar release**. Usa un único runner Ubuntu: valida `go mod tidy -diff`, ejecuta pruebas readonly, race/vet y `go mod verify`, compila tests Windows sin ejecutarlos y genera desde Linux los binarios Linux/Windows con `CGO_ENABLED=0`, antes de crear checksums y notas agrupadas. La ejecución nativa de PowerShell 5.1/CMD se valida localmente con `scripts/test.cmd` cuando corresponda. Los instaladores se descargan desde `scripts/` en la rama `main`; Termux compila desde el código en el dispositivo.
 
 ## 13. Validación objetivo
 
@@ -316,6 +317,8 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `127-corregir-compilacion-search-source.md`
 - `128-verificar-mapeo-scripts-por-contenido.md`
 - `129-shell-portatil-go-y-busqueda-nativa.md`
+- `137-init-knowledge-goal-build.md`
+- `138-scripts-instalacion-pruebas.md`
 
 ## 114 · Búsquedas de terminal acotadas y versión 0.2.2
 
