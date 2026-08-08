@@ -99,14 +99,18 @@ Los modelos nuevos de proveedores custom se guardan en `providers.json`. Los de 
 
 ## 6. Modos Build, Plan y Goal
 
-`Tab` recorre Build → Plan → Goal; `Shift+Tab` recorre al revés. El modo elegido aplica al próximo mensaje, mientras un turno en ejecución conserva su snapshot.
+`Tab` y `Shift+Tab` alternan Goal ↔ Build; Plan se selecciona explícitamente con `/plan` y Tab vuelve de Plan a Build. El modo elegido aplica al próximo mensaje, mientras un turno en ejecución conserva su snapshot.
 
 - **Build:** implementación normal y herramientas mutantes.
 - **Plan:** sólo lectura; puede investigar, preguntar decisiones y entregar un plan. El cambio Plan → Build puede consumir una vez el plan aprobado.
-- **Goal:** el texto introducido se convierte en objetivo persistente, igual que `/goal <objetivo>`, y arranca o reorienta una ejecución autónoma.
-  Goal no aplica límites artificiales de tokens, pasos, turnos o tiempo. Los contadores de tokens/tiempo son sólo diagnósticos; los estados antiguos por presupuesto/cuota se reactivan al cargar. Mientras existe un goal activo, pausado o bloqueado, `create_goal` deja de exponerse al modelo: debe continuar o reanudarlo con `get_goal`/`update_goal`. Repetir exactamente el mismo objetivo activo es idempotente y no reinicia tiempos ni contadores.
+- **Goal:** el texto introducido sustituye el objetivo persistente, vuelve automáticamente al selector Build y arranca o reorienta una ejecución autónoma con herramientas Build.
+  Goal no aplica límites artificiales de tokens, pasos, turnos o tiempo. Los contadores de tokens/tiempo son sólo diagnósticos; los estados antiguos por presupuesto/cuota se reactivan al cargar. `goal_complete` completa con resumen explícito; `/resume` reabre el mismo objetivo completado/pausado/bloqueado/interrumpido. Cerrar Lilith, recuperar una sesión que seguía activa o sufrir un fallo definitivo deja el goal `interrupted` y muestra Continuar. Mientras existe un goal activo, pausado, bloqueado o interrumpido, `create_goal` deja de exponerse al modelo. Repetir exactamente el mismo objetivo activo es idempotente y no reinicia tiempos ni contadores.
 
 Los estados se persisten en la sesión. Goal comparte las capacidades de implementación de Build; Plan conserva su política restrictiva.
+
+`/init [instrucciones adicionales]` siempre ejecuta la inicialización normal y añade esas indicaciones en un bloque de una sola ejecución. No crea Goal ni conserva las indicaciones como estado separado.
+
+Knowledge vive separado de Skills en `assets/knowledge/<namespace>/**`, se indexa sólo con la primera consulta y se expone mediante `knowledge_search`, `knowledge_read` y `knowledge_topics`. El prompt exige consultarlo antes de adivinar sintaxis incierta de plataforma/herramienta. La build pública incorpora el namespace `public`; distribuciones estáticas downstream pueden registrar `company` desde módulos privados. Un dominio con Skill y referencias propias conserva allí una única fuente de verdad: Git/GitHub y Docker/Compose no se replican en Knowledge. Las referencias públicas actuales cubren Windows, Linux, Termux, ADB y arquitectura/desarrollo de Lilith.
 
 ## 7. Chat y ejecución
 

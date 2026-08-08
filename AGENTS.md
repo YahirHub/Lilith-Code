@@ -130,12 +130,12 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 
 ### Agentes primarios
 
-- `Tab`: Build → Plan → Goal → Build.
-- `Shift+Tab`: ciclo inverso.
+- `Tab`/`Shift+Tab`: alternan Goal ↔ Build. Plan se selecciona con `/plan`; desde Plan, Tab vuelve a Build.
 - Build permite implementación normal.
 - Plan es estrictamente de sólo lectura y conserva su handoff aprobado a Build.
-- Goal convierte el texto normal en un objetivo persistente equivalente a `/goal <objetivo>` y puede continuar autónomamente.
-- Goal no tiene presupuestos ni límites artificiales de tokens, pasos, turnos o tiempo. El uso y el tiempo son métricas informativas; sólo se detiene por pausa/cancelación del usuario, `blocked`, `complete`, eliminación del goal o un error real del proveedor en la petición actual. Estados antiguos `budget_limited`/`usage_limited` se migran a `active`.
+- Goal convierte el texto normal en un objetivo persistente equivalente a `/goal <objetivo>`; al enviarlo, el selector vuelve automáticamente a Build y la ejecución autónoma usa sus herramientas.
+- Goal no tiene presupuestos ni límites artificiales de tokens, pasos, turnos o tiempo. El uso y el tiempo son métricas informativas; se detiene por pausa/cancelación del usuario, `blocked`, `complete`, eliminación del goal o un error real. Un cierre de sesión, recuperación de un goal que estaba activo o fallo definitivo lo deja `interrupted`, visible con la acción Continuar. Estados antiguos `budget_limited`/`usage_limited` se migran a `active`.
+- `goal_complete` es la acción explícita del modelo para completar y guardar un resumen; `/resume` reabre estados pausados, bloqueados, interrumpidos o completados sin cambiar el objetivo. En Build, `continue`, `continuar` o `resume` reanudan localmente un goal interrumpido y no se envían como texto literal al proveedor.
 - Un turno ya iniciado conserva el modo que tenía al comenzar; cambiar con Tab sólo afecta al siguiente turno.
 
 ### Compactación de contexto

@@ -56,10 +56,16 @@ func (m *ChatModel) setAgentMode(mode planstate.Mode) bool {
 	return true
 }
 
-var primaryAgentModes = []planstate.Mode{planstate.Build, planstate.Plan, planstate.Goal}
+// Tab is the fast authoring toggle: Goal captures a durable objective and
+// immediately hands execution back to Build. Plan remains explicitly available
+// through /plan without making the common Goal ↔ Build path a three-step cycle.
+var primaryAgentModes = []planstate.Mode{planstate.Build, planstate.Goal}
 
 func (m *ChatModel) cycleAgentMode(delta int) bool {
 	current := m.selectedAgentMode()
+	if current == planstate.Plan {
+		return m.setAgentMode(planstate.Build)
+	}
 	index := 0
 	for i, mode := range primaryAgentModes {
 		if mode == current {
@@ -78,7 +84,7 @@ func (m *ChatModel) syncAgentModePresentation() {
 	switch m.selectedAgentMode() {
 	case planstate.Plan:
 		m.textarea.Prompt = "plan ❯ "
-		m.textarea.Placeholder = "Describe qué quieres planificar…  Tab: Goal"
+		m.textarea.Placeholder = "Describe qué quieres planificar…  Tab: Build"
 		m.textarea.FocusedStyle.Prompt = tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Secondary).Bold(true)
 	case planstate.Goal:
 		m.textarea.Prompt = "goal ❯ "
@@ -86,7 +92,7 @@ func (m *ChatModel) syncAgentModePresentation() {
 		m.textarea.FocusedStyle.Prompt = tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Success).Bold(true)
 	default:
 		m.textarea.Prompt = "build ❯ "
-		m.textarea.Placeholder = "Escribe un mensaje…  Tab: Plan"
+		m.textarea.Placeholder = "Escribe un mensaje…  Tab: Goal"
 		m.textarea.FocusedStyle.Prompt = tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Primary).Bold(true)
 	}
 }
@@ -136,6 +142,7 @@ func (m *ChatModel) toolEnvWithAgentEvents(root string, mode planstate.Mode, eve
 		MemoryDir: m.mainMemoryDir(),
 		Plan:      m.plans,
 		Goal:      m.goals,
+		Knowledge: m.knowledge,
 		AgentMode: mode,
 		Agents:    agentCatalog,
 	}
@@ -148,7 +155,7 @@ func (m *ChatModel) toolEnvWithAgentEvents(root string, mode planstate.Mode, eve
 		cfg := subagents.Config{
 			Client: m.ctx.Client, Providers: m.ctx.Providers, ConfigDir: m.ctx.ConfigDir, Root: root, StoreProject: m.project,
 			ParentProviderID: providerID, ParentModelID: modelID, ParentMode: mode,
-			ParentMessages: parentMessages, ParentToolNames: parentTools, Skills: skillCatalog,
+			ParentMessages: parentMessages, ParentToolNames: parentTools, Skills: skillCatalog, Knowledge: m.knowledge,
 			Agents: agentCatalog, CodeIntel: codeIntel, Depth: 1, Events: events, BackgroundContext: m.sessionCtx, ParentMCP: m.mcpRuntime,
 			PluginHooks: m.loadClaudePluginHooks(),
 		}
@@ -268,7 +275,7 @@ func (m *ChatModel) planWidgetView(_ int) string {
 	}
 	accent := tuistyle.NewStyle().Foreground(m.ctx.Styles.Theme.Secondary).Bold(true)
 	muted := m.ctx.Styles.Muted
-	return accent.Render("PLAN LISTO") + muted.Render(" · Shift+Tab: Build · Tab: Goal · /plan show")
+	return accent.Render("PLAN LISTO") + muted.Render(" · Tab: Build · /plan show")
 }
 
 func isPlanQuestionToolName(name string) bool { return name == "plan_question" }
@@ -302,7 +309,7 @@ func (m *ChatModel) selectToolsForPrompt(text string, mode planstate.Mode) []str
 	}
 	if !tools.IsDirectChat(text) && m.goals != nil {
 		if state := m.goals.Snapshot(); state != nil {
-			for _, name := range []string{"get_goal", "update_goal"} {
+			for _, name := range []string{"get_goal", "update_goal", "goal_complete"} {
 				if _, ok := tools.Get(name); ok {
 					selected = appendUniqueTool(selected, name)
 				}

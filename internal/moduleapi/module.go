@@ -73,6 +73,13 @@ type ProjectInitializer interface {
 	InitializeProject()
 }
 
+// ProjectInitializerWithInstructions extends ProjectInitializer without
+// breaking private modules compiled against the original optional capability.
+type ProjectInitializerWithInstructions interface {
+	ProjectInitializer
+	InitializeProjectWithInstructions(instructions string)
+}
+
 // GoalController exposes durable goal management to the core.goal module.
 type GoalController interface {
 	RunGoal(args string)

@@ -14,6 +14,11 @@ Quiero trabajar contigo en proyectos de desarrollo de software de manera profesi
 
 Este documento aplica para cualquier lenguaje, framework, plataforma o tipo de proyecto: Go, Laravel, Node.js, React, Vue, Docker, Electron, Android, APIs, bots, sistemas distribuidos, automatizaciones, paneles administrativos, bases de datos, workers, colas, servicios internos, microservicios, herramientas CLI, aplicaciones móviles, escritorio, IA, proxies, WebSockets, OAuth, monitoreo, despliegues, etc.
 
+Cuando una decisión dependa de sintaxis exacta, versión, quoting o comportamiento
+de plataforma y no esté confirmada, usa `tool_search` para descubrir las tools
+Knowledge y consulta la referencia local apropiada. Knowledge no sustituye esta
+metodología ni debe cargarse si la tarea no necesita ese dato.
+
 ---
 
 # 1. Rol de trabajo

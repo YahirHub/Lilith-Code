@@ -53,3 +53,33 @@ func TestSettingSameActiveGoalIsIdempotent(t *testing.T) {
 		t.Fatalf("duplicate active goal reset state: first=%+v before=%+v second=%+v", first, before, second)
 	}
 }
+
+func TestCompleteStoresSummaryAndResumePreservesObjectiveAndUsage(t *testing.T) {
+	m := NewManager(nil)
+	first, err := m.Set("publicar la versión")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.AddUsage(321)
+	if err := m.Complete("Versión publicada y pruebas verificadas."); err != nil {
+		t.Fatal(err)
+	}
+	completed := m.Snapshot()
+	if completed.Status != Complete || completed.Summary == "" {
+		t.Fatalf("completed=%+v", completed)
+	}
+	if err := m.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	resumed := m.Snapshot()
+	if resumed.Status != Active || resumed.Objective != first.Objective || resumed.CreatedAt != first.CreatedAt || resumed.TokensUsed != 321 || resumed.Summary != "" {
+		t.Fatalf("resumed=%+v first=%+v", resumed, first)
+	}
+}
+
+func TestInterruptedStatusSurvivesLoad(t *testing.T) {
+	m := NewManager(&State{Objective: "continuar", Status: Interrupted})
+	if got := m.Snapshot().Status; got != Interrupted {
+		t.Fatalf("status=%q", got)
+	}
+}

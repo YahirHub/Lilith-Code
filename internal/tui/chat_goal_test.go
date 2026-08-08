@@ -6,6 +6,7 @@ import (
 
 	ligoal "github.com/lilith/li/internal/goal"
 	planstate "github.com/lilith/li/internal/plan"
+	"github.com/lilith/li/internal/session"
 )
 
 func TestCompletedGoalDoesNotStopLaterUserTurn(t *testing.T) {
@@ -77,31 +78,34 @@ func TestGoalCreatedDuringRunningTurnBindsThatTurn(t *testing.T) {
 	m.endTurn()
 }
 
-func TestTabCyclesBuildPlanGoalAndShiftTabReverses(t *testing.T) {
+func TestTabTogglesBuildGoalAndPlanReturnsToBuild(t *testing.T) {
 	m := newInputTestChat(t)
 	if got := m.selectedAgentMode(); got != planstate.Build {
 		t.Fatalf("modo inicial = %q", got)
 	}
 	m.cycleAgentMode(1)
-	if got := m.selectedAgentMode(); got != planstate.Plan || m.textarea.Prompt != "plan ❯ " {
+	if got := m.selectedAgentMode(); got != planstate.Goal || m.textarea.Prompt != "goal ❯ " {
 		t.Fatalf("primer Tab = %q prompt=%q", got, m.textarea.Prompt)
 	}
 	m.cycleAgentMode(1)
-	if got := m.selectedAgentMode(); got != planstate.Goal || m.textarea.Prompt != "goal ❯ " {
-		t.Fatalf("segundo Tab = %q prompt=%q", got, m.textarea.Prompt)
-	}
-	m.cycleAgentMode(1)
 	if got := m.selectedAgentMode(); got != planstate.Build || m.textarea.Prompt != "build ❯ " {
-		t.Fatalf("tercer Tab = %q prompt=%q", got, m.textarea.Prompt)
+		t.Fatalf("segundo Tab = %q prompt=%q", got, m.textarea.Prompt)
 	}
 	m.cycleAgentMode(-1)
 	if got := m.selectedAgentMode(); got != planstate.Goal {
 		t.Fatalf("Shift+Tab = %q", got)
 	}
+	m.setAgentMode(planstate.Plan)
+	m.cycleAgentMode(1)
+	if got := m.selectedAgentMode(); got != planstate.Build {
+		t.Fatalf("Tab desde Plan = %q", got)
+	}
 }
 
 func TestGoalModeTurnsPlainInputIntoDurableGoal(t *testing.T) {
 	m := newInputTestChat(t)
+	_, _ = m.goals.Set("objetivo anterior")
+	_ = m.goals.UpdateStatus(ligoal.Blocked)
 	m.setAgentMode(planstate.Goal)
 	_, cmd := m.submit("terminar la migración y verificarla")
 	if cmd == nil {
@@ -111,11 +115,26 @@ func TestGoalModeTurnsPlainInputIntoDurableGoal(t *testing.T) {
 	if state == nil || state.Objective != "terminar la migración y verificarla" {
 		t.Fatalf("goal = %#v", state)
 	}
-	if m.activeTurnID == 0 || m.turnAgentMode != planstate.Goal {
+	if m.activeTurnID == 0 || m.turnAgentMode != planstate.Build || m.selectedAgentMode() != planstate.Build {
 		t.Fatalf("turno goal no iniciado: id=%d mode=%q", m.activeTurnID, m.turnAgentMode)
 	}
 	if len(m.messages) == 0 || m.messages[0].Kind != MsgUser {
 		t.Fatalf("la instrucción goal debe permanecer visible en el transcript: %#v", m.messages)
+	}
+	m.endTurn()
+}
+
+func TestBuildMessageNeverReplacesInterruptedGoal(t *testing.T) {
+	m := newInputTestChat(t)
+	_, _ = m.goals.Set("objetivo durable")
+	_ = m.goals.UpdateStatus(ligoal.Interrupted)
+	_, cmd := m.submit("corrige sólo el formato de README")
+	if cmd == nil || m.activeTurnID == 0 {
+		t.Fatal("ordinary Build message did not start")
+	}
+	state := m.goals.Snapshot()
+	if state.Objective != "objetivo durable" || state.Status != ligoal.Interrupted || m.turnGoalManaged {
+		t.Fatalf("Build mutated/bound the goal: state=%+v managed=%v", state, m.turnGoalManaged)
 	}
 	m.endTurn()
 }
@@ -135,7 +154,7 @@ func TestActiveGoalRemovesCreateGoalFromCachedToolSurface(t *testing.T) {
 	if _, err := m.goals.Set("crear el recolector"); err != nil {
 		t.Fatal(err)
 	}
-	m.buildToolCache = []string{"create_goal", "get_goal", "update_goal"}
+	m.buildToolCache = []string{"create_goal", "get_goal", "update_goal", "goal_complete"}
 	got := m.selectToolsForPrompt("implementa y prueba el recolector", planstate.Build)
 	for _, name := range got {
 		if name == "create_goal" {
@@ -145,5 +164,58 @@ func TestActiveGoalRemovesCreateGoalFromCachedToolSurface(t *testing.T) {
 	joined := strings.Join(got, ",")
 	if !strings.Contains(joined, "get_goal") || !strings.Contains(joined, "update_goal") {
 		t.Fatalf("goal status controls missing: %v", got)
+	}
+	if !strings.Contains(joined, "goal_complete") {
+		t.Fatalf("goal_complete missing: %v", got)
+	}
+}
+
+func TestPlainContinueResumesInterruptedGoalWithoutLiteralUserMessage(t *testing.T) {
+	m := newInputTestChat(t)
+	_, _ = m.goals.Set("terminar la migración")
+	_ = m.goals.UpdateStatus(ligoal.Interrupted)
+	beforeHistory := len(m.history)
+	_, cmd := m.submit("continuar")
+	if cmd == nil || m.goals.Snapshot().Status != ligoal.Active || m.turnAgentMode != planstate.Build {
+		t.Fatalf("resume failed: cmd=%v state=%+v mode=%q", cmd != nil, m.goals.Snapshot(), m.turnAgentMode)
+	}
+	for _, msg := range m.history[beforeHistory:] {
+		if msg.Role == "user" && strings.TrimSpace(strings.ToLower(msg.Content)) == "continuar" {
+			t.Fatalf("plain continuation leaked as literal provider message: %#v", m.history)
+		}
+	}
+	m.endTurn()
+}
+
+func TestInterruptedGoalRendersContinueBanner(t *testing.T) {
+	m := newInputTestChat(t)
+	_, _ = m.goals.Set("validar la entrega")
+	_ = m.goals.UpdateStatus(ligoal.Interrupted)
+	m.Resize(90, 28)
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "GOAL INTERRUMPIDO") || !strings.Contains(view, "Continuar") {
+		t.Fatalf("missing goal resume banner:\n%s", view)
+	}
+}
+
+func TestLoadingActiveGoalMarksItInterruptedInsteadOfAutoResuming(t *testing.T) {
+	m := newInputTestChat(t)
+	s := session.New(m.project)
+	s.Title = "goal activo"
+	s.Goal = &ligoal.State{Objective: "terminar entrega", Status: ligoal.Active}
+	s.Plan = &planstate.State{Mode: planstate.Goal}
+	m.LoadSession(s)
+	state := m.goals.Snapshot()
+	if state == nil || state.Status != ligoal.Interrupted || m.activeTurnID != 0 || m.selectedAgentMode() != planstate.Build {
+		t.Fatalf("loaded goal=%+v turn=%d mode=%q", state, m.activeTurnID, m.selectedAgentMode())
+	}
+}
+
+func TestExitMarksIdleActiveGoalInterrupted(t *testing.T) {
+	m := newInputTestChat(t)
+	_, _ = m.goals.Set("guardar estado")
+	_, cmd := m.submit("/exit")
+	if cmd == nil || m.goals.Snapshot().Status != ligoal.Interrupted {
+		t.Fatalf("exit did not interrupt goal: cmd=%v state=%+v", cmd != nil, m.goals.Snapshot())
 	}
 }

@@ -21,21 +21,22 @@ type moduleHost struct {
 }
 
 var (
-	_ moduleapi.Host                = (*moduleHost)(nil)
-	_ moduleapi.SkillInvoker        = (*moduleHost)(nil)
-	_ moduleapi.Submitter           = (*moduleHost)(nil)
-	_ moduleapi.ScreenOpener        = (*moduleHost)(nil)
-	_ moduleapi.RewindState         = (*moduleHost)(nil)
-	_ moduleapi.ProjectInitializer  = (*moduleHost)(nil)
-	_ moduleapi.GoalController      = (*moduleHost)(nil)
-	_ moduleapi.AgentModeController = (*moduleHost)(nil)
-	_ moduleapi.Compactor           = (*moduleHost)(nil)
-	_ moduleapi.SessionForker       = (*moduleHost)(nil)
-	_ moduleapi.MemoryController    = (*moduleHost)(nil)
-	_ moduleapi.MCPController       = (*moduleHost)(nil)
-	_ moduleapi.AgentController     = (*moduleHost)(nil)
-	_ moduleapi.PluginController    = (*moduleHost)(nil)
-	_ moduleapi.SessionController   = (*moduleHost)(nil)
+	_ moduleapi.Host                               = (*moduleHost)(nil)
+	_ moduleapi.SkillInvoker                       = (*moduleHost)(nil)
+	_ moduleapi.Submitter                          = (*moduleHost)(nil)
+	_ moduleapi.ScreenOpener                       = (*moduleHost)(nil)
+	_ moduleapi.RewindState                        = (*moduleHost)(nil)
+	_ moduleapi.ProjectInitializer                 = (*moduleHost)(nil)
+	_ moduleapi.ProjectInitializerWithInstructions = (*moduleHost)(nil)
+	_ moduleapi.GoalController                     = (*moduleHost)(nil)
+	_ moduleapi.AgentModeController                = (*moduleHost)(nil)
+	_ moduleapi.Compactor                          = (*moduleHost)(nil)
+	_ moduleapi.SessionForker                      = (*moduleHost)(nil)
+	_ moduleapi.MemoryController                   = (*moduleHost)(nil)
+	_ moduleapi.MCPController                      = (*moduleHost)(nil)
+	_ moduleapi.AgentController                    = (*moduleHost)(nil)
+	_ moduleapi.PluginController                   = (*moduleHost)(nil)
+	_ moduleapi.SessionController                  = (*moduleHost)(nil)
 )
 
 func newModuleHost(ctx *AppContext, chat *ChatModel, registry *moduleapi.Registry) *moduleHost {
@@ -134,8 +135,12 @@ func (h *moduleHost) ModuleStatuses() []moduleapi.Status {
 }
 
 func (h *moduleHost) InitializeProject() {
+	h.InitializeProjectWithInstructions("")
+}
+
+func (h *moduleHost) InitializeProjectWithInstructions(instructions string) {
 	if h.chat != nil {
-		h.addCmd(h.chat.runInit())
+		h.addCmd(h.chat.runInit(instructions))
 	}
 }
 

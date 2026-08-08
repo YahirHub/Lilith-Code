@@ -26,6 +26,7 @@ import (
 	ligoal "github.com/lilith/li/internal/goal"
 	"github.com/lilith/li/internal/hooks"
 	"github.com/lilith/li/internal/interaction"
+	"github.com/lilith/li/internal/knowledge"
 	"github.com/lilith/li/internal/mcp"
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/providers/openai"
@@ -171,6 +172,7 @@ type ChatModel struct {
 	sess      *session.Session
 	project   string
 	codeIntel *codeintel.Manager
+	knowledge *knowledge.Base
 
 	// /rewind stores a cheap conversation checkpoint at each user boundary and
 	// captures the workspace lazily before the first mutating tool. The mutable
@@ -740,6 +742,7 @@ func NewChat(ctx *AppContext) *ChatModel {
 		rewindTurn:         &rewindTurnState{},
 		project:            project,
 		codeIntel:          codeintel.New(project, ctx.ConfigDir),
+		knowledge:          knowledge.NewBuiltin(),
 		sess:               session.New(project),
 		todos:              litodo.NewManager(nil),
 		plans:              planstate.NewManager(nil),
@@ -1407,6 +1410,7 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 	} else {
 		m.goals = ligoal.NewManager(s.Goal)
 	}
+	recoveredGoalInterrupted := m.markRecoveredGoalInterrupted()
 	m.goalRequestTokens = 0
 	m.syncAgentModePresentation()
 	m.invalidateContextUsage()
@@ -1433,6 +1437,9 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 			}
 			if s.Live.Goal != nil {
 				m.goals = ligoal.NewManager(s.Live.Goal)
+				if m.markRecoveredGoalInterrupted() {
+					recoveredGoalInterrupted = true
+				}
 			}
 			m.restoreTranscriptEntries(s.Live.Entries, true)
 			appendedLiveHistory := false
@@ -1455,7 +1462,7 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 		}
 		repaired := m.repairDanglingToolHistory()
 		m.recoverPendingBackgroundAgentMessages()
-		if recoveredLive || repaired {
+		if recoveredLive || repaired || recoveredGoalInterrupted {
 			// Promote the recovered checkpoint to a stable snapshot immediately;
 			// the stale sidecar is removed and future requests see repaired tool
 			// outputs rather than an incomplete protocol sequence.
@@ -1560,7 +1567,7 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 		m.panelSel = len(panels) - 1
 	}
 	m.recoverPendingBackgroundAgentMessages()
-	if m.repairDanglingToolHistory() {
+	if m.repairDanglingToolHistory() || recoveredGoalInterrupted {
 		m.persist()
 	} else {
 		m.liveBaseMessageCount = len(m.messages)
@@ -2199,7 +2206,7 @@ func indent(s, prefix string) string {
 }
 
 func (m *ChatModel) Init() uikit.Cmd {
-	return uikit.Batch(textarea.Blink, agentEventPump(m.agentEventCh), m.connectMCP(), m.resumeActiveGoalCmd())
+	return uikit.Batch(textarea.Blink, agentEventPump(m.agentEventCh), m.connectMCP())
 }
 
 // visualInputLineCount estima las filas visibles que ocupará el valor dentro
@@ -2469,6 +2476,9 @@ func (m *ChatModel) bottomChromeParts(w, usedTokens, maxTokens int) []string {
 	}
 
 	parts := make([]string, 0, 8)
+	if goal := m.goalResumeView(w); goal != "" {
+		parts = append(parts, goal)
+	}
 	// Keep the pending-question launcher first so its mouse row is deterministic
 	// regardless of TodoWrite/activity/queue widgets below it.
 	if launcher := m.planQuestionLauncherView(w); launcher != "" {
@@ -2867,6 +2877,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			m.thinking = false
 			m.working = false
 			m.assistantActive = -1
+			m.interruptGoalOnFailure()
 			m.endTurn()
 			m.AddError("Error del proveedor: " + v.err.Error())
 			m.persist()
@@ -3099,6 +3110,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			m.thinking = false
 			m.working = false
 			m.runningCalls = nil
+			m.interruptGoalOnFailure()
 			m.endTurn()
 			m.AddError(v.err.Error())
 			m.persist()
@@ -3196,7 +3208,11 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			m.assistantActive = -1
 			m.endTurn()
 			if state := m.goalStatePointer(); state != nil {
-				m.AddSystem("Goal detenido: " + goalStatusLabel(state.Status) + ".")
+				if state.Status == ligoal.Complete && strings.TrimSpace(state.Summary) != "" {
+					m.AddSystem("✓ Goal completado\n\n" + state.Objective + "\n\n" + state.Summary)
+				} else {
+					m.AddSystem("Goal detenido: " + goalStatusLabel(state.Status) + ".")
+				}
 			}
 			m.persist()
 			return m, uikit.Batch(todoMouseCmd, m.chatMouseModeCmd(), m.drainFollowUp())
@@ -3220,6 +3236,9 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			return m, cmd
 		}
 		if handled, cmd := m.handlePlanQuestionMouse(v); handled {
+			return m, cmd
+		}
+		if handled, cmd := m.handleGoalResumeMouse(v); handled {
 			return m, cmd
 		}
 		if handled, cmd := m.handleTodoMouse(v); handled {
@@ -3629,8 +3648,22 @@ func (m *ChatModel) submit(val string) (uikit.Model, uikit.Cmd) {
 	// /exit es una orden de proceso, no un mensaje para el agente. Debe cerrar
 	// inmediatamente incluso si hay streaming, sin quedar atrapado en steering.
 	if strings.EqualFold(strings.TrimSpace(val), "/exit") {
+		interruptedGoal := false
+		if m.goals != nil && m.goals.Active() {
+			_ = m.goals.UpdateStatus(ligoal.Interrupted)
+			interruptedGoal = true
+		}
 		if m.activeTurnID != 0 {
 			m.cancelTurn()
+		}
+		if m.goals != nil {
+			if state := m.goals.Snapshot(); state != nil && state.Status == ligoal.Paused {
+				_ = m.goals.UpdateStatus(ligoal.Interrupted)
+				interruptedGoal = true
+			}
+		}
+		if interruptedGoal {
+			m.persistGoalState()
 		}
 		if m.finalizeRunningAgentPanels("Cancelado al cerrar Lilith.") {
 			m.persist()
@@ -3655,6 +3688,13 @@ func (m *ChatModel) submit(val string) (uikit.Model, uikit.Cmd) {
 			m.beginRewindPoint(trimmedVal)
 		}
 		return m, m.runGoalCommand(args)
+	}
+
+	// A plain continuation word in Build is local lifecycle control for a
+	// resumable goal. It must never become a literal User: continue provider
+	// message because that loses the durable objective semantics.
+	if m.selectedAgentMode() == planstate.Build && m.activeTurnID == 0 && isPlainGoalResume(trimmedVal) && m.goalCanResume() {
+		return m, m.runGoalCommand("resume")
 	}
 
 	// Goal is a first-class primary agent. Plain text entered while selected is
@@ -3783,6 +3823,7 @@ func (m *ChatModel) runTurn() uikit.Cmd {
 	}
 	provider := m.ctx.Providers.FindProvider(m.turnProvider)
 	if provider == nil {
+		m.interruptGoalOnFailure()
 		m.endTurn()
 		m.streaming = false
 		m.thinking = false
@@ -4773,6 +4814,7 @@ func systemPrompt(activeTools []string, skillsBlock, agentsBlock, todoBlock, mod
 	b.WriteString("\n\nTool-use guidelines:\n")
 	for _, rule := range []string{
 		"Use only tool names present in the schemas for this turn; tool_search can discover additional capabilities when needed.",
+		"When exact platform, tool, version, quoting or command syntax is uncertain, use local Knowledge tools before answering or executing; never replace missing evidence with a plausible guess. Knowledge supplies references, while Agent Skills remain separate workflows.",
 		"Never write partial files or placeholders such as `...`, `// rest of code`, `TODO: fill in`, or equivalent; changes must leave real files usable as-is.",
 		"For existing source files, prefer str_replace for precise replacements or apply_diff for unified patches. For str_replace, always send path plus both old and new, or a non-empty edits[] array; old must never be empty. Both tools validate against the current on-disk file; read when you need context or after a mismatch/ambiguity.",
 		"Use write_file for complete generated documents or intentional full-file regeneration; existing targets require overwrite=true. Use append_file for long reports built in bounded sections. Never use shell heredocs for large file content.",

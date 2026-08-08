@@ -171,10 +171,31 @@ modules/company/**
 internal/distribution/company.go
 assets/skills/company-*/**       # si necesitas skills privadas embebidas
 assets/agents/company-*.md       # si necesitas agentes privados embebidos
+modules/company/knowledge/**     # namespace Knowledge privado registrado por init
 ```
 
 Las carpetas nuevas bajo `assets` también suelen producir merges limpios porque
 el repo público no necesita conocerlas.
+
+## Knowledge privada y lazy
+
+Knowledge es una base de referencias de sólo lectura, separada de Agent Skills.
+El core público embebe `assets/knowledge/public/**` y construye su índice sólo al
+primer `knowledge_search` o `knowledge_topics`; `knowledge_read` abre directamente
+un documento acotado.
+
+Una distribución privada puede embeber sus runbooks en un paquete de
+`modules/company/**`, obtener un `fs.FS` con paths relativos y registrarlo en
+`init` mediante `knowledge.MustRegisterNamespace("company", docs)`. Después debe
+importar ese paquete desde el archivo build-tagged de distribución. El registry
+rechaza namespaces inválidos, duplicados y el reemplazo de `public`. Las rutas
+que ve el modelo quedan delimitadas como `company/runbooks/deploy.md`.
+
+Una Skill puede consultar hechos transversales de plataforma en Knowledge, pero
+la frontera se define por propiedad, no por tamaño: workflow, decisiones,
+seguridad y ejemplos del dominio pertenecen a la Skill. Si esa Skill ya incluye
+módulos de referencia —como Git/GitHub o Docker/Compose— no se crea un topic
+Knowledge paralelo. Esto evita dos fuentes de verdad aunque ambas sean lazy.
 
 ## Módulos públicos incorporados
 
@@ -184,7 +205,7 @@ ya un mega-módulo `core.commands`; las capacidades slash se registran desde
 
 - `core.help`: `/help`;
 - `core.project`: `/init`;
-- `core.goal`: `/goal`;
+- `core.goal`: `/goal`, `/resume` (aliases `/continue`, `/continuar`);
 - `core.mode`: `/plan`, `/build`;
 - `core.compaction`: `/compact`;
 - `core.rewind`: `/rewind`;

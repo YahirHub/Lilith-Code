@@ -34,8 +34,8 @@ func TestPublicDistributionLinksFeatureModulesWithoutCompatibilityMegaModule(t *
 			t.Fatalf("falta módulo público %s", id)
 		}
 	}
-	if got := len(reg.Commands()); got != 24 {
-		t.Fatalf("slash commands públicos=%d, esperados=24", got)
+	if got := len(reg.Commands()); got != 25 {
+		t.Fatalf("slash commands públicos=%d, esperados=25", got)
 	}
 	for _, cmd := range reg.Commands() {
 		_, owner, ok := reg.FindCommand(cmd.Name)

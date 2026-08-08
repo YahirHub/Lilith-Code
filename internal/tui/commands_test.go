@@ -57,7 +57,7 @@ func TestSkillRowsAreRecognizedAndStyledSeparately(t *testing.T) {
 
 func TestSlashCommandsAreOwnedByFeatureModules(t *testing.T) {
 	owners := map[string]string{
-		"help": "core.help", "init": "core.project", "goal": "core.goal",
+		"help": "core.help", "init": "core.project", "goal": "core.goal", "resume": "core.goal",
 		"plan": "core.mode", "build": "core.mode", "compact": "core.compaction",
 		"rewind": "core.rewind", "fork": "core.fork", "memory": "core.memory",
 		"mcp": "core.mcp", "tasks": "core.agents", "subtask": "core.agents",

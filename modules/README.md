@@ -22,6 +22,10 @@ archivo `internal/distribution/company.go` protegido con `//go:build company`
 que los importe por side effect. El archivo público
 `internal/distribution/builtin.go` no debe modificarse.
 
+Los módulos privados también pueden registrar referencias Markdown embebidas
+con `internal/knowledge.MustRegisterNamespace("company", fs)`. Knowledge se
+consulta de forma lazy y permanece separado de los workflows de Agent Skills.
+
 Los módulos dependen de `internal/moduleapi`, nunca de `internal/tui`. Las
 operaciones que requieren la TUI se solicitan mediante capacidades opcionales
 del host. Esto mantiene el código empresarial aislado de refactors internos y

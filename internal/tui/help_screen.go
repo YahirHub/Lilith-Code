@@ -101,7 +101,7 @@ func (m *HelpScreen) content(width int) string {
 	b.WriteString(section.Render("Atajos"))
 	b.WriteString("\n\n")
 	shortcuts := [][2]string{
-		{"Tab / Shift+Tab", "Recorrer Build → Plan → Goal para el siguiente turno; Shift+Tab recorre en sentido inverso. Dentro de una pregunta Plan, mueve la opción seleccionada."},
+		{"Tab / Shift+Tab", "Alternar Goal ↔ Build para el siguiente turno. Plan se abre con /plan; desde Plan, Tab vuelve a Build. Dentro de una pregunta Plan, mueve la opción seleccionada."},
 		{"Preguntas Plan", "↑/↓ elegir, 1-9 respuesta rápida, Enter responder, Esc cerrar sin perderlas y ? reabrir las decisiones pendientes."},
 		{"Enter", "Enviar. Durante una tarea agrega una instrucción de steering para la siguiente frontera segura."},
 		{"Alt+Enter", "Agregar un follow-up que se ejecuta después del trabajo actual."},

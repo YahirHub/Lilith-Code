@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/lilith/li/internal/tui/uikit"
+	tuistyle "github.com/lilith/li/internal/tui/uikit/style"
 
 	ligoal "github.com/lilith/li/internal/goal"
 	planstate "github.com/lilith/li/internal/plan"
@@ -34,6 +35,8 @@ func goalStatusLabel(status ligoal.Status) string {
 		return "pausado"
 	case ligoal.Blocked:
 		return "bloqueado"
+	case ligoal.Interrupted:
+		return "interrumpido"
 	case ligoal.Complete:
 		return "completado"
 	default:
@@ -45,7 +48,11 @@ func formatGoalState(s *ligoal.State) string {
 	if s == nil {
 		return "No hay un objetivo persistente. Usa /goal <objetivo>."
 	}
-	return fmt.Sprintf("Goal · %s\n%s\nTokens usados: %d · Tiempo: %s · Sin límites artificiales", goalStatusLabel(s.Status), s.Objective, s.TokensUsed, (time.Duration(s.TimeUsedSeconds) * time.Second).String())
+	result := fmt.Sprintf("Goal · %s\n%s\nTokens usados: %d · Tiempo: %s · Sin límites artificiales", goalStatusLabel(s.Status), s.Objective, s.TokensUsed, (time.Duration(s.TimeUsedSeconds) * time.Second).String())
+	if strings.TrimSpace(s.Summary) != "" {
+		result += "\nResumen: " + s.Summary
+	}
+	return result
 }
 
 // runGoalCommand implements the user-controlled half of Codex-style durable
@@ -78,11 +85,12 @@ func (m *ChatModel) runGoalCommand(args string) uikit.Cmd {
 				m.persistGoalState()
 			}
 			return nil
-		case "resume", "reanudar":
-			if err := mgr.UpdateStatus(ligoal.Active); err != nil {
+		case "resume", "reanudar", "continue", "continuar":
+			if err := mgr.Resume(); err != nil {
 				m.AddError(err.Error())
 				return nil
 			}
+			m.setAgentMode(planstate.Build)
 			m.AddSystem("Goal reanudado.")
 			m.persistGoalState()
 			if m.activeTurnID != 0 {
@@ -92,8 +100,15 @@ func (m *ChatModel) runGoalCommand(args string) uikit.Cmd {
 			}
 			return m.startGoalContinuation("Reanuda el goal persistente y continúa trabajando de forma autónoma hasta completarlo o quedar realmente bloqueado.")
 		case "complete", "completed", "completar":
-			if err := mgr.UpdateStatus(ligoal.Complete); err != nil {
-				m.AddError(err.Error())
+			summary := strings.TrimSpace(strings.TrimPrefix(args, fields[0]))
+			var completeErr error
+			if summary == "" {
+				completeErr = mgr.UpdateStatus(ligoal.Complete)
+			} else {
+				completeErr = mgr.Complete(summary)
+			}
+			if completeErr != nil {
+				m.AddError(completeErr.Error())
 			} else {
 				m.AddSystem("Goal marcado como completado.")
 				m.persistGoalState()
@@ -111,6 +126,9 @@ func (m *ChatModel) runGoalCommand(args string) uikit.Cmd {
 		m.AddError(err.Error())
 		return nil
 	}
+	// Goal is an input mode, not a separate implementation runtime. Once the
+	// objective is durable, every continuation executes with Build tools.
+	m.setAgentMode(planstate.Build)
 	m.invalidateContextUsage()
 	m.persistGoalState()
 	if deprecatedBudget {
@@ -169,10 +187,12 @@ func (m *ChatModel) startGoalContinuation(instruction string) uikit.Cmd {
 		return nil
 	}
 	m.appendHistory(openai.Message{Role: "user", Content: "<goal_runtime_instruction>\n" + strings.TrimSpace(instruction) + "\n</goal_runtime_instruction>"})
-	mode := m.selectedAgentMode()
+	mode := planstate.Build
 	m.activeTools = m.selectToolsForPrompt(m.goals.Snapshot().Objective+"\n"+instruction, mode)
 	if err := m.beginTurnMode(mode); err != nil {
+		_ = m.goals.UpdateStatus(ligoal.Interrupted)
 		m.AddError(err.Error())
+		m.persistGoalState()
 		return nil
 	}
 	if m.turnAgentMode != planstate.Plan {
@@ -189,7 +209,7 @@ func (m *ChatModel) continueGoalAtBoundary() bool {
 	if !m.turnGoalManaged || m.goals == nil || !m.goals.Active() || m.activeTurnID == 0 {
 		return false
 	}
-	m.appendHistory(openai.Message{Role: "user", Content: "<goal_continue>Continue working autonomously toward the active durable goal. Do not stop merely to report progress. Finish the objective, or use update_goal with status=blocked/complete when appropriate.</goal_continue>"})
+	m.appendHistory(openai.Message{Role: "user", Content: "<goal_continue>Continue working autonomously toward the active durable goal. Do not stop merely to report progress. Finish the objective and call goal_complete with a concise summary, or use update_goal with status=blocked when a material user decision prevents progress.</goal_continue>"})
 	m.forceLivePersist()
 	m.thinking = true
 	m.working = false
@@ -224,11 +244,73 @@ func (m *ChatModel) pauseGoalOnInterrupt() {
 	m.goalRequestTokens = 0
 }
 
-func (m *ChatModel) resumeActiveGoalCmd() uikit.Cmd {
-	if m == nil || m.goals == nil || !m.goals.Active() || m.activeTurnID != 0 {
-		return nil
+func (m *ChatModel) interruptGoalOnFailure() {
+	if m == nil || !m.turnGoalManaged || m.goals == nil || !m.goals.Active() {
+		return
 	}
-	return m.startGoalContinuation("La sesión se reanudó con un goal activo. Continúa trabajando autónomamente desde el estado persistido hasta completarlo o quedar realmente bloqueado.")
+	_ = m.goals.UpdateStatus(ligoal.Interrupted)
+	m.goalRequestTokens = 0
+}
+
+func (m *ChatModel) markRecoveredGoalInterrupted() bool {
+	if m == nil || m.goals == nil || !m.goals.Active() {
+		return false
+	}
+	_ = m.goals.UpdateStatus(ligoal.Interrupted)
+	if m.plans != nil {
+		_, _, _ = m.plans.SetMode(planstate.Build)
+		m.syncAgentModePresentation()
+	}
+	m.goalRequestTokens = 0
+	return true
+}
+
+func (m *ChatModel) goalCanResume() bool {
+	state := m.goalStatePointer()
+	if state == nil {
+		return false
+	}
+	switch state.Status {
+	case ligoal.Paused, ligoal.Blocked, ligoal.Interrupted, ligoal.Complete:
+		return true
+	default:
+		return false
+	}
+}
+
+func isPlainGoalResume(text string) bool {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "continue", "continuar", "resume", "reanudar":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *ChatModel) goalResumeView(w int) string {
+	state := m.goalStatePointer()
+	if state == nil || state.Status != ligoal.Interrupted {
+		return ""
+	}
+	width := chatPaddedContentWidth(w)
+	body := "GOAL INTERRUMPIDO · " + truncateOneLine(state.Objective, max(12, width-34)) + "  [ Continuar ]"
+	return tuistyle.NewStyle().Width(width).Padding(0, 1).Foreground(m.ctx.Styles.Theme.Warning).Bold(true).Render(body)
+}
+
+func (m *ChatModel) handleGoalResumeMouse(v uikit.MouseMsg) (bool, uikit.Cmd) {
+	if m == nil || m.ctx == nil || m.userScrolled || m.goalResumeView(m.ctx.Width) == "" || m.planQuestion.open || m.hasPendingPermission() {
+		return false, nil
+	}
+	e, ok := mouseLeftPress(v)
+	if !ok {
+		return false, nil
+	}
+	used, maxCtx := m.contextUsage()
+	y := m.viewportHeightForFrame(m.ctx.Width, m.ctx.Height, used, maxCtx)
+	if e.Y != y {
+		return false, nil
+	}
+	return true, m.runGoalCommand("resume")
 }
 
 func (m *ChatModel) goalPromptBlock() string {

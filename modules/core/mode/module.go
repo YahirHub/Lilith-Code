@@ -49,7 +49,7 @@ func runPlan(host moduleapi.Host, args string) {
 			host.AddSystem("Plan actual:\n\n" + plan)
 		}
 	case "status":
-		host.AddSystem("Agente seleccionado: " + strings.ToUpper(ctl.AgentMode()) + ". Tab recorre Build / Plan / Goal para el siguiente turno.")
+		host.AddSystem("Agente seleccionado: " + strings.ToUpper(ctl.AgentMode()) + ". Tab alterna Goal / Build; /plan abre Plan explícitamente.")
 	case "exit", "off", "build":
 		ctl.SetAgentMode("build")
 		ctl.SyncAgentModeUI()

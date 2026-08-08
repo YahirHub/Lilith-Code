@@ -15,6 +15,7 @@ import (
 	"github.com/lilith/li/internal/codeintel"
 	ligoal "github.com/lilith/li/internal/goal"
 	"github.com/lilith/li/internal/interaction"
+	"github.com/lilith/li/internal/knowledge"
 	planstate "github.com/lilith/li/internal/plan"
 	"github.com/lilith/li/internal/skills"
 	litodo "github.com/lilith/li/internal/todo"
@@ -47,6 +48,9 @@ type Env struct {
 	Plan *planstate.Manager
 	// Goal is the durable Codex-style objective bound to this chat thread.
 	Goal *ligoal.Manager
+	// Knowledge is the process-wide read-only reference base. Its index remains
+	// lazy and independent from project files and Agent Skills.
+	Knowledge *knowledge.Base
 	// MemoryDir is set only when persistent memory is enabled for the current
 	// main/subagent context. Dedicated memory tools are hidden otherwise.
 	MemoryDir string
@@ -417,7 +421,7 @@ func init() {
 	register(Definition{
 		Name: "tool_search",
 		Description: "Search available tools by keyword and enable them for the next calls. " +
-			"Use this when you need to read, write, append or search project files (including search without ripgrep), inspect/search skills, run native or portable-shell commands (including Git/GitHub CLI and Docker when installed), control a browser, or fetch a URL " +
+			"Use this when you need to read, write, append or search project files (including search without ripgrep), inspect/search skills, consult local Knowledge references, run native or portable-shell commands (including Git/GitHub CLI and Docker when installed), control a browser, or fetch a URL " +
 			"and that tool is not loaded yet.",
 		PromptSnippet: "Discover and enable additional tools on demand",
 		Parameters: map[string]any{

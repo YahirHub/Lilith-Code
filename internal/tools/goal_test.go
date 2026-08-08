@@ -40,13 +40,16 @@ func TestCreateGoalBecomesUnavailableWhileGoalIsActive(t *testing.T) {
 	if _, err := mgr.Set("finish the project"); err != nil {
 		t.Fatal(err)
 	}
-	names := FilterAvailable([]string{"create_goal", "get_goal", "update_goal"}, Env{Goal: mgr})
+	names := FilterAvailable([]string{"create_goal", "get_goal", "update_goal", "goal_complete"}, Env{Goal: mgr})
 	joined := strings.Join(names, ",")
 	if strings.Contains(joined, "create_goal") {
 		t.Fatalf("create_goal must be hidden after activation: %v", names)
 	}
 	if !strings.Contains(joined, "get_goal") || !strings.Contains(joined, "update_goal") {
 		t.Fatalf("active goal controls disappeared: %v", names)
+	}
+	if !strings.Contains(joined, "goal_complete") {
+		t.Fatalf("explicit completion action missing: %v", names)
 	}
 	if _, err := Execute(context.Background(), "create_goal", map[string]any{"objective": "finish the project"}, Env{Goal: mgr}); err == nil || !strings.Contains(err.Error(), "tool unavailable") {
 		t.Fatalf("a repeated create_goal call must be rejected, err=%v", err)
@@ -64,5 +67,24 @@ func TestCreateGoalBecomesUnavailableWhileGoalIsActive(t *testing.T) {
 	names = FilterAvailable([]string{"create_goal"}, Env{Goal: mgr})
 	if len(names) != 1 || names[0] != "create_goal" {
 		t.Fatalf("a completed goal should allow a new objective: %v", names)
+	}
+}
+
+func TestGoalCompleteRequiresSummaryAndUpdateGoalCannotComplete(t *testing.T) {
+	mgr := ligoal.NewManager(nil)
+	_, _ = mgr.Set("terminar")
+	env := Env{Goal: mgr}
+	if _, err := Execute(context.Background(), "update_goal", map[string]any{"status": "complete"}, env); err == nil || !strings.Contains(err.Error(), "goal_complete") {
+		t.Fatalf("update_goal accepted completion: %v", err)
+	}
+	if _, err := Execute(context.Background(), "goal_complete", map[string]any{"summary": ""}, env); err == nil {
+		t.Fatal("goal_complete accepted an empty summary")
+	}
+	if _, err := Execute(context.Background(), "goal_complete", map[string]any{"summary": "Implementación y pruebas completas."}, env); err != nil {
+		t.Fatal(err)
+	}
+	state := mgr.Snapshot()
+	if state.Status != ligoal.Complete || state.Summary != "Implementación y pruebas completas." {
+		t.Fatalf("state=%+v", state)
 	}
 }

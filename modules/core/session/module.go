@@ -14,7 +14,7 @@ func init() {
 					host.AddError("El host actual no expone ciclo de vida de sesión.")
 				}
 			}},
-			{Name: "history", Aliases: []string{"chats", "resume", "continue"}, Order: 2000, Description: "Abre el historial de conversaciones del proyecto.", Handler: openHistory},
+			{Name: "history", Aliases: []string{"chats"}, Order: 2000, Description: "Abre el historial de conversaciones del proyecto.", Handler: openHistory},
 			{Name: "exit", Order: 2200, Description: "Cierra Lilith. Es la única salida explícita del proceso.", Handler: func(host moduleapi.Host, _ string) {
 				if ctl, ok := host.(moduleapi.SessionController); ok {
 					ctl.ExitApplication()

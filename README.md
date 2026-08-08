@@ -16,6 +16,7 @@ en Linux, macOS, servidores por SSH y Termux.
 - Historial persistente de conversaciones con búsqueda, reanudación y borrado.
 - Agentes y subagentes para dividir tareas grandes o ejecutar trabajo en paralelo.
 - Skills reutilizables que pueden activarse o desactivarse individualmente.
+- Knowledge local y lazy para consultar sintaxis/plataformas sin inflar cada prompt ni mezclar referencias con Skills.
 - Búsqueda web mediante distintos motores configurables.
 - Modos Build, Plan y Goal para implementar, planificar o mantener un objetivo.
 - Lectura, edición y validación de proyectos en distintos lenguajes.
@@ -292,6 +293,8 @@ con Go 1.25.12 y un navegador real en Windows/Linux.
 | `/history` | Abrir el historial de conversaciones. |
 | `/config` | Administrar preferencias, skills, búsqueda y seguridad. |
 | `/goal` | Crear o revisar el objetivo persistente del proyecto. |
+| `/resume` | Reabrir el Goal pausado, interrumpido o completado sin cambiar su objetivo. |
+| `/init [instrucciones]` | Inicializar `LILITH.md`, opcionalmente con indicaciones válidas sólo para esa ejecución. |
 | `/clear` | Iniciar una conversación limpia. |
 | `/exit` | Cerrar Lilith. |
 
@@ -302,7 +305,7 @@ con Go 1.25.12 y un navegador real en Windows/Linux.
 | `Enter` | Enviar el mensaje. |
 | `Alt+Enter` | Encolar un mensaje para después del trabajo actual. |
 | `Shift+Enter` o `Ctrl+Enter` | Insertar una nueva línea. |
-| `Tab` | Cambiar entre Build, Plan y Goal. |
+| `Tab` | Alternar entre Goal y Build; desde Plan vuelve a Build. |
 | `Esc` | Cancelar la tarea activa o volver a la pantalla anterior. |
 | `Ctrl+C` | Limpiar el texto escrito en el campo de entrada. |
 

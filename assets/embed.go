@@ -18,6 +18,13 @@ var embeddedSkills embed.FS
 //go:embed agents
 var embeddedAgents embed.FS
 
+// embeddedKnowledge contains read-only operational references. Knowledge is
+// deliberately separate from Agent Skills: it supplies facts and exact syntax,
+// while skills continue to describe reusable workflows and behavior.
+//
+//go:embed knowledge
+var embeddedKnowledge embed.FS
+
 // SkillsFS returns the embedded assets/skills tree with "skills" removed from
 // the visible path. The returned filesystem is read-only.
 func SkillsFS() fs.FS {
@@ -31,6 +38,16 @@ func SkillsFS() fs.FS {
 // AgentsFS returns the embedded assets/agents tree with "agents" removed.
 func AgentsFS() fs.FS {
 	sub, err := fs.Sub(embeddedAgents, "agents")
+	if err != nil {
+		panic(err)
+	}
+	return sub
+}
+
+// KnowledgeFS returns the embedded assets/knowledge tree with "knowledge"
+// removed. Its first directory level is the namespace (public by default).
+func KnowledgeFS() fs.FS {
+	sub, err := fs.Sub(embeddedKnowledge, "knowledge")
 	if err != nil {
 		panic(err)
 	}

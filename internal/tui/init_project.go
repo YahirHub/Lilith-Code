@@ -18,7 +18,7 @@ import (
 // runInit mirrors the purpose of Claude/Codex /init while keeping Lilith's
 // native instructions separate: analyze the real repository, then create or
 // improve a concise root LILITH.md instead of blindly generating a template.
-func (m *ChatModel) runInit() uikit.Cmd {
+func (m *ChatModel) runInit(instructions string) uikit.Cmd {
 	if m.activeTurnID != 0 {
 		m.AddError("/init sólo puede ejecutarse cuando el agente está inactivo.")
 		return nil
@@ -34,6 +34,7 @@ func (m *ChatModel) runInit() uikit.Cmd {
 	if existing {
 		state = "Ya existe LILITH.md; léelo primero y mejóralo sin borrar instrucciones manuales útiles."
 	}
+	instructions = strings.TrimSpace(instructions)
 	prompt := fmt.Sprintf(`Initialize this repository for Lilith.
 
 %s
@@ -44,12 +45,20 @@ Create or update exactly this native project-instructions file:
 %s
 
 The resulting LILITH.md must be concise, durable context for future coding-agent sessions, preferably under 200 lines. Include only project-specific information that is useful repeatedly: purpose, architecture/layout, build/test/lint commands, coding conventions, important workflows, generated/vendor areas to avoid, and non-obvious pitfalls. Do not copy large README sections, do not include generic advice, do not invent commands, and do not create CLAUDE.md. If Claude/AGENTS instructions exist, use them as evidence but preserve Lilith-native wording. Verify the final file against the repository before finishing.`, state, filepath.ToSlash(target))
+	if instructions != "" {
+		prompt += "\n\n<additional_init_instructions>\n" + instructions + "\n</additional_init_instructions>\n" +
+			"Apply these one-shot instructions while initializing this project. If they explicitly request related repository work beyond LILITH.md, perform that work too; the exact filename rule above prevents alternate agent-instruction files, not additional work explicitly requested here. These instructions belong only to this /init run: do not create or replace a durable Goal and do not persist them as a separate standing instruction."
+	}
 
-	m.beginRewindPoint("/init")
-	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: "/init", Time: time.Now()})
+	visible := "/init"
+	if instructions != "" {
+		visible += " " + instructions
+	}
+	m.beginRewindPoint(visible)
+	m.messages = append(m.messages, ChatMessage{Kind: MsgUser, Content: visible, Time: time.Now()})
 	m.appendHistory(openai.Message{Role: "user", Content: prompt})
 	m.activeTools = m.selectToolsForPrompt(prompt, planstate.Build)
-	for _, name := range []string{"read_files", "list_directory", "glob", "code_search", "run_terminal_command", "create_file", "write_file", "append_file", "str_replace", "apply_diff", "tool_search"} {
+	for _, name := range []string{"read_files", "list_directory", "glob", "code_search", "run_terminal_command", "create_file", "write_file", "append_file", "str_replace", "apply_diff", "knowledge_search", "knowledge_read", "knowledge_topics", "tool_search"} {
 		if _, ok := tools.Get(name); ok {
 			m.activeTools = appendUniqueTool(m.activeTools, name)
 		}

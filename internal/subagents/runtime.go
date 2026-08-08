@@ -20,6 +20,7 @@ import (
 	"github.com/lilith/li/internal/hooks"
 	"github.com/lilith/li/internal/instructions"
 	"github.com/lilith/li/internal/interaction"
+	"github.com/lilith/li/internal/knowledge"
 	"github.com/lilith/li/internal/mcp"
 	limemory "github.com/lilith/li/internal/memory"
 	planstate "github.com/lilith/li/internal/plan"
@@ -55,6 +56,7 @@ type Config struct {
 	// forked worker to delegate normal isolated subagents.
 	ParentIsFork bool
 	Skills       []skills.Skill
+	Knowledge    *knowledge.Base
 	Agents       []agents.Agent
 	// CodeIntel shares the parent repository index when roots match. Worktree
 	// subagents transparently receive their own persistent index.
@@ -423,7 +425,7 @@ func run(ctx context.Context, cfg Config, req tools.AgentRequest, taskLeaseHeld 
 	}
 
 	var active []string
-	env := tools.Env{Root: cfg.Root, CodeIntel: codeIntel, ConfigDir: cfg.ConfigDir, Skills: cfg.Skills, Todos: localTodos, AgentMode: mode, MemoryDir: memoryDir, RequestSecret: cfg.RequestSecret, Confirm: cfg.Confirm, Approve: cfg.Approve}
+	env := tools.Env{Root: cfg.Root, CodeIntel: codeIntel, ConfigDir: cfg.ConfigDir, Skills: cfg.Skills, Knowledge: cfg.Knowledge, Todos: localTodos, AgentMode: mode, MemoryDir: memoryDir, RequestSecret: cfg.RequestSecret, Confirm: cfg.Confirm, Approve: cfg.Approve}
 	env.DynamicTool = func(toolCtx context.Context, name string, args map[string]any) (string, error) {
 		if cfg.ParentMCP != nil && cfg.ParentMCP.Has(name) {
 			if !policy.allowsDynamic(name, cfg.ParentMCP.IsReadOnly(name)) {

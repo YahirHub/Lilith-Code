@@ -13,10 +13,11 @@ import (
 type Status string
 
 const (
-	Active   Status = "active"
-	Paused   Status = "paused"
-	Blocked  Status = "blocked"
-	Complete Status = "complete"
+	Active      Status = "active"
+	Paused      Status = "paused"
+	Blocked     Status = "blocked"
+	Interrupted Status = "interrupted"
+	Complete    Status = "complete"
 )
 
 const (
@@ -27,6 +28,7 @@ const (
 type State struct {
 	Objective       string `json:"objective"`
 	Status          Status `json:"status"`
+	Summary         string `json:"summary,omitempty"`
 	TokensUsed      int64  `json:"tokensUsed"`
 	TimeUsedSeconds int64  `json:"timeUsedSeconds"`
 	CreatedAt       int64  `json:"createdAt"`
@@ -107,12 +109,57 @@ func (m *Manager) UpdateStatus(status Status) error {
 	}
 	m.accountTimeLocked()
 	m.state.Status = status
+	if status != Complete {
+		m.state.Summary = ""
+	}
 	m.state.UpdatedAt = time.Now().Unix()
 	if status == Active {
 		m.activeSince = time.Now()
 	} else {
 		m.activeSince = time.Time{}
 	}
+	return nil
+}
+
+// Complete marks the active objective satisfied and stores the concise final
+// summary that the TUI can present without parsing model prose.
+func (m *Manager) Complete(summary string) error {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return errors.New("goal completion summary is empty")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state == nil {
+		return errors.New("no active goal")
+	}
+	if m.state.Status != Active {
+		return fmt.Errorf("cannot complete goal with status %q", m.state.Status)
+	}
+	m.accountTimeLocked()
+	m.state.Status = Complete
+	m.state.Summary = summary
+	m.state.UpdatedAt = time.Now().Unix()
+	m.activeSince = time.Time{}
+	return nil
+}
+
+// Resume reopens an existing paused, blocked, interrupted or completed goal
+// without replacing its objective or resetting usage/creation metadata.
+func (m *Manager) Resume() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state == nil {
+		return errors.New("no goal to resume")
+	}
+	if m.state.Status == Active {
+		return nil
+	}
+	m.accountTimeLocked()
+	m.state.Status = Active
+	m.state.Summary = ""
+	m.state.UpdatedAt = time.Now().Unix()
+	m.activeSince = time.Now()
 	return nil
 }
 
@@ -154,15 +201,18 @@ func (m *Manager) PromptBlock() string {
 		return ""
 	}
 	block := fmt.Sprintf("<durable_goal status=%q tokens_used=%q time_used_seconds=%q>\n%s\n</durable_goal>", s.Status, fmt.Sprint(s.TokensUsed), fmt.Sprint(s.TimeUsedSeconds), s.Objective)
+	if strings.TrimSpace(s.Summary) != "" {
+		block += "\n<goal_summary>\n" + s.Summary + "\n</goal_summary>"
+	}
 	if s.Status != Active {
 		return block + "\nThis durable goal is not active. Do not continue it autonomously unless the user resumes it."
 	}
-	return block + "\nContinue working autonomously toward this durable objective without an artificial token, step, turn, or time budget. Use get_goal to inspect it and update_goal with status=complete only when the objective is actually satisfied. If blocked by a material user decision, set status=blocked and explain exactly what is needed."
+	return block + "\nContinue working autonomously toward this durable objective without an artificial token, step, turn, or time budget. Use get_goal to inspect it and goal_complete with a concise final summary only when the objective is actually satisfied. If blocked by a material user decision, use update_goal with status=blocked and explain exactly what is needed."
 }
 
 func validStatus(s Status) bool {
 	switch s {
-	case Active, Paused, Blocked, Complete:
+	case Active, Paused, Blocked, Interrupted, Complete:
 		return true
 	}
 	return false
@@ -174,7 +224,7 @@ func normalizeLoadedStatus(status Status) Status {
 		// Older releases persisted artificial stop states. They are migrated back
 		// to active so an existing goal is not permanently stranded after upgrade.
 		return Active
-	case Active, Paused, Blocked, Complete:
+	case Active, Paused, Blocked, Interrupted, Complete:
 		return status
 	default:
 		return Paused
