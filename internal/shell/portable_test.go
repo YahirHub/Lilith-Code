@@ -50,8 +50,25 @@ func TestRunPortableRejectsUnsupportedHeredocExplicitly(t *testing.T) {
 		Dir:     t.TempDir(),
 		Shell:   ShellPortable,
 	})
-	if err == nil || res.ExitCode != 2 || !strings.Contains(err.Error(), "heredocs are not supported") {
+	if err == nil || res.ExitCode != 2 || !strings.Contains(err.Error(), "unsupported shell feature heredoc") {
 		t.Fatalf("result=%+v err=%v", res, err)
+	}
+}
+
+func TestRunPortableExpandsHomeWithNativeSeparators(t *testing.T) {
+	t.Setenv("PATH", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	res, err := Run(context.Background(), Request{
+		Command: `printf '%s\n' ~/note.md`,
+		Dir:     t.TempDir(),
+		Shell:   ShellPortable,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ExitCode != 0 || strings.TrimSpace(res.Stdout) != filepath.Join(home, "note.md") {
+		t.Fatalf("result=%+v", res)
 	}
 }
 

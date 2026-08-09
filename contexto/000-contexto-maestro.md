@@ -407,8 +407,15 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 
 ## 139 · Shell portátil propia sin mvdan
 
-- `github.com/YahirHub/go-portable-shell v0.1.0` sustituye a `mvdan.cc/sh/v3`; es un módulo de YahirHub escrito desde cero, sin dependencias, sin CGO y con licencia 0BSD.
+- `github.com/YahirHub/go-portable-shell v0.2.1` sustituye a `mvdan.cc/sh/v3`; es un módulo de YahirHub escrito desde cero, sin dependencias, sin CGO y con licencia 0BSD. La integración conserva los heredocs desactivados y reconoce sus errores tipados como sintaxis portable no disponible.
 - El motor aporta lexer, parser, expansión, funciones, condicionales, bucles, `until`, subshells, pipelines, redirecciones, globbing, aritmética, sustitución acotada, `pipefail`, builtins, ejecutables externos, handlers y cancelación.
 - Lilith conserva su toolbox Go mediante la API pública de handlers y la prioridad de ejecutables nativos. La colisión de `find.exe` en Windows continúa resuelta.
 - Heredocs, job control, process substitution, arrays y extensiones no implementadas fallan de forma explícita; no se promete compatibilidad Bash completa.
 - `THIRD_PARTY_NOTICES.md` se elimina porque sólo documentaba la dependencia retirada. El aviso independiente de OCR bajo `internal/imageocr/NOTICE.md` permanece intacto.
+
+## 140 · Actualización del shell portable a v0.2.1
+
+- Lilith fija `github.com/YahirHub/go-portable-shell v0.2.1` con checksum público y sin `replace`.
+- La actualización corrige la expansión de rutas `~/archivo` con separadores nativos en Windows y conserva el handler/toolbox existente.
+- Los heredocs permanecen desactivados; `UnsupportedFeatureError` se traduce a exit code 2 como construcción fuera del subconjunto portable.
+- La integración añade una regresión multiplataforma para rutas home y mantiene verdes suite, race, vet y builds Linux/Windows/Android.

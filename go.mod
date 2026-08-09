@@ -4,7 +4,7 @@ go 1.25.12
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
-	github.com/YahirHub/go-portable-shell v0.1.0
+	github.com/YahirHub/go-portable-shell v0.2.1
 	github.com/chromedp/cdproto v0.0.0-20250403032234-65de8f5d025b
 	github.com/chromedp/chromedp v0.13.7
 	github.com/gdamore/tcell/v2 v2.13.10

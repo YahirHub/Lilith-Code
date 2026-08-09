@@ -1,7 +1,7 @@
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
-github.com/YahirHub/go-portable-shell v0.1.0 h1:yu59zFRjkfPW7Mmkyvpam6T8e2Fd3tcsZAYqPvih0ck=
-github.com/YahirHub/go-portable-shell v0.1.0/go.mod h1:9UKngpXKMyoxygxURI06G7x4hScrQUPq936gN8OcNNk=
+github.com/YahirHub/go-portable-shell v0.2.1 h1:5FeRfpEzi/EzU+IPNmZpRGiz3DvASPKKvDkNzI0pIBY=
+github.com/YahirHub/go-portable-shell v0.2.1/go.mod h1:9UKngpXKMyoxygxURI06G7x4hScrQUPq936gN8OcNNk=
 github.com/chromedp/cdproto v0.0.0-20250403032234-65de8f5d025b h1:jJmiCljLNTaq/O1ju9Bzz2MPpFlmiTn0F7LwCoeDZVw=
 github.com/chromedp/cdproto v0.0.0-20250403032234-65de8f5d025b/go.mod h1:NItd7aLkcfOA/dcMXvl8p1u+lQqioRMq/SqDp71Pb/k=
 github.com/chromedp/chromedp v0.13.7 h1:vt+mslxscyvUr58eC+6DLSeeo74jpV/HI2nWetjv/W4=

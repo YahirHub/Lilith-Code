@@ -80,6 +80,10 @@ func runPortable(ctx context.Context, command, dir string) (stdout, stderr []byt
 	if errors.As(runErr, &syntaxErr) {
 		return stdout, stderr, 2, fmt.Errorf("portable shell syntax error: %w", runErr)
 	}
+	var unsupportedErr *portablesh.UnsupportedFeatureError
+	if errors.As(runErr, &unsupportedErr) {
+		return stdout, stderr, 2, fmt.Errorf("portable shell unsupported feature: %w", runErr)
+	}
 	if status, ok := portablesh.Status(runErr); ok {
 		return stdout, stderr, status, nil
 	}
