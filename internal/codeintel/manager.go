@@ -354,7 +354,7 @@ func (m *Manager) PromptBlock() string {
 	if p.SCIPIndex != "" {
 		b.WriteString(", scip=index.scip")
 	}
-	b.WriteString(". Respect the detected OS, default shell and package manager. Use host-native syntax: PowerShell/CMD on Windows unless a command explicitly needs Bash; Bash/sh on Linux, macOS and Termux. Lilith's portable pure-Go shell is a fallback for Bash-compatible syntax when no POSIX shell exists, not a replacement for external tools such as git, go, npm, docker or make. Never assume sudo or POSIX paths on Windows or Termux. Prefer code_context/code_symbols/code_references before broad file reads; code_search works without ripgrep through its Go fallback; use code_semantic when an LSP server is available and code_validate after edits.")
+	b.WriteString(". Respect the detected OS, default shell and package manager. Use host-native syntax: PowerShell/CMD on Windows unless a command explicitly needs Bash; Bash/sh on Linux, macOS and Termux. Lilith's portable pure-Go shell is a bounded Bash/POSIX-compatible fallback when no POSIX shell exists, not full Bash or a replacement for external tools such as git, go, npm, docker or make. Never assume sudo or POSIX paths on Windows or Termux. Prefer code_context/code_symbols/code_references before broad file reads; code_search works without ripgrep through its Go fallback; use code_semantic when an LSP server is available and code_validate after edits.")
 	return b.String()
 }
 

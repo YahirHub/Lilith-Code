@@ -28,6 +28,33 @@ func TestRunPortableExecutesBashSyntaxAndGoPipeline(t *testing.T) {
 	}
 }
 
+func TestRunPortableSupportsControlFlowFunctionsAndBoundedExtensions(t *testing.T) {
+	t.Setenv("PATH", "")
+	res, err := Run(context.Background(), Request{
+		Command: `value=outer; render() { printf '%s:%s\n' "$1" "$value"; }; if test -n "$value"; then render "$((2 + 3))"; fi; until false; do printf '<%s>\n' "$(printf done)"; break; done`,
+		Dir:     t.TempDir(),
+		Shell:   ShellPortable,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ExitCode != 0 || res.Stdout != "5:outer\n<done>\n" {
+		t.Fatalf("result=%+v", res)
+	}
+}
+
+func TestRunPortableRejectsUnsupportedHeredocExplicitly(t *testing.T) {
+	t.Setenv("PATH", "")
+	res, err := Run(context.Background(), Request{
+		Command: "cat <<EOF\nvalue\nEOF",
+		Dir:     t.TempDir(),
+		Shell:   ShellPortable,
+	})
+	if err == nil || res.ExitCode != 2 || !strings.Contains(err.Error(), "heredocs are not supported") {
+		t.Fatalf("result=%+v err=%v", res, err)
+	}
+}
+
 func TestRunPortableUsesNativeGoSearchFallback(t *testing.T) {
 	t.Setenv("PATH", "")
 	root := t.TempDir()

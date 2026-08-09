@@ -317,8 +317,16 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `127-corregir-compilacion-search-source.md`
 - `128-verificar-mapeo-scripts-por-contenido.md`
 - `129-shell-portatil-go-y-busqueda-nativa.md`
+- `130-corregir-regresiones-shell-portatil.md`
+- `131-reintentar-reasoning-content-transitorio.md`
+- `132-continuacion-automatica-reasoning-content.md`
+- `133-skills-modulares-git-github-docker-frontend.md`
+- `134-corregir-fixture-recovery-reasoning.md`
+- `135-arquitectura-modulos-estaticos-distribuciones.md`
+- `136-migracion-fisica-comandos-a-modulos.md`
 - `137-init-knowledge-goal-build.md`
 - `138-scripts-instalacion-pruebas.md`
+- `139-shell-portatil-propia-sin-mvdan.md`
 
 ## 114 · Búsquedas de terminal acotadas y versión 0.2.2
 
@@ -391,8 +399,16 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 
 ## 129 · Shell portátil Go y búsqueda nativa
 
-- `run_terminal_command` conserva shells nativas como primera opción y usa `portable`, basado en `mvdan.cc/sh/v3`, cuando falta una shell POSIX o cuando se solicita expresamente.
-- La shell embebida aporta sintaxis Bash/POSIX y un toolbox Go acotado, pero no reemplaza Git, Go, npm, Docker, Make ni otros ejecutables externos.
+- `run_terminal_command` conserva shells nativas como primera opción y usa `portable`, basado en `github.com/YahirHub/go-portable-shell`, cuando falta una shell POSIX o cuando se solicita expresamente.
+- La shell embebida aporta un subconjunto Bash/POSIX explícito y un toolbox Go acotado, pero no reemplaza Git, Go, npm, Docker, Make ni otros ejecutables externos. La sintaxis fuera de alcance se rechaza claramente.
 - `code_search` usa ripgrep como acelerador opcional y cambia automáticamente a `internal/textsearch` cuando no está disponible.
 - Prompts, schemas, selección perezosa y `tool_search` explican capacidades y límites para impedir supuestos falsos del agente.
 - Termux deja de instalar ripgrep obligatoriamente; la compilación sigue usando `CGO_ENABLED=0`.
+
+## 139 · Shell portátil propia sin mvdan
+
+- `github.com/YahirHub/go-portable-shell v0.1.0` sustituye a `mvdan.cc/sh/v3`; es un módulo de YahirHub escrito desde cero, sin dependencias, sin CGO y con licencia 0BSD.
+- El motor aporta lexer, parser, expansión, funciones, condicionales, bucles, `until`, subshells, pipelines, redirecciones, globbing, aritmética, sustitución acotada, `pipefail`, builtins, ejecutables externos, handlers y cancelación.
+- Lilith conserva su toolbox Go mediante la API pública de handlers y la prioridad de ejecutables nativos. La colisión de `find.exe` en Windows continúa resuelta.
+- Heredocs, job control, process substitution, arrays y extensiones no implementadas fallan de forma explícita; no se promete compatibilidad Bash completa.
+- `THIRD_PARTY_NOTICES.md` se elimina porque sólo documentaba la dependencia retirada. El aviso independiente de OCR bajo `internal/imageocr/NOTICE.md` permanece intacto.

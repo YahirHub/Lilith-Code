@@ -17,13 +17,11 @@ import (
 	"sync"
 	"time"
 
+	portablesh "github.com/YahirHub/go-portable-shell"
 	"github.com/lilith/li/internal/textsearch"
-	"mvdan.cc/sh/v3/expand"
-	"mvdan.cc/sh/v3/interp"
-	"mvdan.cc/sh/v3/syntax"
 )
 
-const portableShellPath = "embedded:mvdan.cc/sh/v3"
+const portableShellPath = "embedded:github.com/YahirHub/go-portable-shell"
 
 // lockedBuffer is safe for background commands, which may write concurrently.
 type lockedBuffer struct {
@@ -54,70 +52,78 @@ func (b *lockedBuffer) Bytes() []byte {
 }
 
 func runPortable(ctx context.Context, command, dir string) (stdout, stderr []byte, exitCode int, err error) {
-	program, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(command), "<lilith-portable>")
-	if err != nil {
-		return nil, nil, 2, fmt.Errorf("portable shell syntax error: %w", err)
-	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, nil, 1, err
 	}
 	var outBuf, errBuf lockedBuffer
-	runner, err := interp.New(
-		interp.Dir(absDir),
-		interp.Env(expand.ListEnviron(os.Environ()...)),
-		interp.StdIO(strings.NewReader(""), &outBuf, &errBuf),
-		interp.ExecHandlers(portableCommandFallback),
-	)
+	runner, err := portablesh.New(portablesh.Config{
+		Dir:     absDir,
+		Env:     os.Environ(),
+		Stdin:   strings.NewReader(""),
+		Stdout:  &outBuf,
+		Stderr:  &errBuf,
+		Handler: portableCommandFallback,
+	})
 	if err != nil {
 		return nil, nil, 1, err
 	}
-	runErr := runner.Run(ctx, program)
+	runErr := runner.Run(ctx, command)
 	stdout, stderr = outBuf.Bytes(), errBuf.Bytes()
 	if runErr == nil {
 		return stdout, stderr, 0, nil
 	}
-	var status interp.ExitStatus
-	if errors.As(runErr, &status) {
-		return stdout, stderr, int(status), nil
-	}
 	if ctx.Err() != nil {
 		return stdout, stderr, -1, nil
+	}
+	var syntaxErr *portablesh.SyntaxError
+	if errors.As(runErr, &syntaxErr) {
+		return stdout, stderr, 2, fmt.Errorf("portable shell syntax error: %w", runErr)
+	}
+	if status, ok := portablesh.Status(runErr); ok {
+		return stdout, stderr, status, nil
 	}
 	return stdout, stderr, 1, runErr
 }
 
-func portableCommandFallback(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
-	return func(ctx context.Context, args []string) error {
-		if len(args) == 0 {
-			return next(ctx, args)
-		}
-		hc := interp.HandlerCtx(ctx)
-		name := strings.ToLower(filepath.Base(args[0]))
-		name = strings.TrimSuffix(name, ".exe")
-		if strings.ContainsAny(args[0], `/\\`) {
-			return next(ctx, args)
-		}
-		// Windows ships System32\find.exe, whose syntax is unrelated to POSIX
-		// find. In the explicitly portable shell, keep `find` deterministic and
-		// POSIX-like instead of delegating to that incompatible executable. A
-		// caller can still invoke any external find by an explicit path.
-		preferPortable := runtime.GOOS == "windows" && name == "find"
-		if !preferPortable {
-			if _, err := interp.LookPathDir(hc.Dir, hc.Env, args[0]); err == nil {
-				return next(ctx, args)
-			}
-		}
-		handler, ok := portableCommands[name]
-		if !ok {
-			fmt.Fprintf(hc.Stderr, "%s: command not found (portable shell only replaces shell syntax and a curated Go toolbox; install the executable or use a Lilith tool)\n", args[0])
-			return interp.ExitStatus(127)
-		}
-		return handler(ctx, hc, args[1:])
+func portableCommandFallback(ctx context.Context, command portablesh.Command) (bool, error) {
+	args := command.Args
+	if len(args) == 0 || strings.ContainsAny(args[0], `/\\`) {
+		return false, nil
 	}
+	hc := portableHandlerContext{
+		Dir: command.Dir, Env: command.Env,
+		Stdin: command.Stdin, Stdout: command.Stdout, Stderr: command.Stderr,
+	}
+	name := strings.ToLower(filepath.Base(args[0]))
+	name = strings.TrimSuffix(name, ".exe")
+	// Windows ships System32\find.exe, whose syntax is unrelated to POSIX
+	// find. In the explicitly portable shell, keep `find` deterministic and
+	// POSIX-like instead of delegating to that incompatible executable. A
+	// caller can still invoke any external find by an explicit path.
+	preferPortable := runtime.GOOS == "windows" && name == "find"
+	if !preferPortable {
+		if _, err := portablesh.LookPath(hc.Dir, hc.Env, args[0]); err == nil {
+			return false, nil
+		}
+	}
+	handler, ok := portableCommands[name]
+	if !ok {
+		fmt.Fprintf(hc.Stderr, "%s: command not found (portable shell only replaces shell syntax and a curated Go toolbox; install the executable or use a Lilith tool)\n", args[0])
+		return true, portablesh.ExitStatus(127)
+	}
+	return true, handler(ctx, hc, args[1:])
 }
 
-type portableCommand func(context.Context, interp.HandlerContext, []string) error
+type portableHandlerContext struct {
+	Dir    string
+	Env    []string
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
+}
+
+type portableCommand func(context.Context, portableHandlerContext, []string) error
 
 var portableCommands = map[string]portableCommand{
 	"rg":        portableRG,
@@ -138,7 +144,7 @@ var portableCommands = map[string]portableCommand{
 	"sha256sum": portableSHA256,
 }
 
-func portableRG(ctx context.Context, hc interp.HandlerContext, args []string) error {
+func portableRG(ctx context.Context, hc portableHandlerContext, args []string) error {
 	opts := textsearch.Options{Root: hc.Dir, Limit: 100, MaxLine: 500}
 	var pattern string
 	var targets []string
@@ -262,7 +268,7 @@ func portableRG(ctx context.Context, hc interp.HandlerContext, args []string) er
 		res, err := textsearch.Search(ctx, opts)
 		if err != nil {
 			fmt.Fprintf(hc.Stderr, "rg: %v\n", err)
-			return interp.ExitStatus(2)
+			return portablesh.ExitStatus(2)
 		}
 		if res.Text != "" {
 			fmt.Fprintln(hc.Stdout, res.Text)
@@ -274,12 +280,12 @@ func portableRG(ctx context.Context, hc interp.HandlerContext, args []string) er
 		}
 	}
 	if total == 0 {
-		return interp.ExitStatus(1)
+		return portablesh.ExitStatus(1)
 	}
 	return nil
 }
 
-func portableGrep(ctx context.Context, hc interp.HandlerContext, args []string) error {
+func portableGrep(ctx context.Context, hc portableHandlerContext, args []string) error {
 	literal, ignoreCase, recursive := false, false, false
 	contextLines, limit := 0, 100
 	var pattern string
@@ -338,13 +344,13 @@ func portableGrep(ctx context.Context, hc interp.HandlerContext, args []string) 
 		res, err := textsearch.SearchReader(ctx, "(standard input)", hc.Stdin, pattern, literal, ignoreCase, contextLines, limit, 500)
 		if err != nil {
 			fmt.Fprintf(hc.Stderr, "grep: %v\n", err)
-			return interp.ExitStatus(2)
+			return portablesh.ExitStatus(2)
 		}
 		if res.Text != "" {
 			fmt.Fprintln(hc.Stdout, res.Text)
 		}
 		if res.Matches == 0 {
-			return interp.ExitStatus(1)
+			return portablesh.ExitStatus(1)
 		}
 		return nil
 	}
@@ -358,7 +364,7 @@ func portableGrep(ctx context.Context, hc interp.HandlerContext, args []string) 
 		info, err := os.Stat(full)
 		if err != nil {
 			fmt.Fprintf(hc.Stderr, "grep: %s: %v\n", target, err)
-			return interp.ExitStatus(2)
+			return portablesh.ExitStatus(2)
 		}
 		if info.IsDir() && !recursive {
 			fmt.Fprintf(hc.Stderr, "grep: %s: is a directory\n", target)
@@ -367,7 +373,7 @@ func portableGrep(ctx context.Context, hc interp.HandlerContext, args []string) 
 		res, err := textsearch.Search(ctx, textsearch.Options{Root: hc.Dir, Path: full, Pattern: pattern, Literal: literal, IgnoreCase: ignoreCase, Context: contextLines, Limit: remaining, MaxLine: 500, Hidden: true})
 		if err != nil {
 			fmt.Fprintf(hc.Stderr, "grep: %v\n", err)
-			return interp.ExitStatus(2)
+			return portablesh.ExitStatus(2)
 		}
 		if res.Text != "" {
 			fmt.Fprintln(hc.Stdout, res.Text)
@@ -375,12 +381,12 @@ func portableGrep(ctx context.Context, hc interp.HandlerContext, args []string) 
 		total += res.Matches
 	}
 	if total == 0 {
-		return interp.ExitStatus(1)
+		return portablesh.ExitStatus(1)
 	}
 	return nil
 }
 
-func portableFind(ctx context.Context, hc interp.HandlerContext, args []string) error {
+func portableFind(ctx context.Context, hc portableHandlerContext, args []string) error {
 	root := "."
 	namePattern := ""
 	typeFilter := byte(0)
@@ -463,12 +469,12 @@ func portableFind(ctx context.Context, hc interp.HandlerContext, args []string) 
 	})
 	if err != nil {
 		fmt.Fprintf(hc.Stderr, "find: %v\n", err)
-		return interp.ExitStatus(1)
+		return portablesh.ExitStatus(1)
 	}
 	return nil
 }
 
-func portableLS(_ context.Context, hc interp.HandlerContext, args []string) error {
+func portableLS(_ context.Context, hc portableHandlerContext, args []string) error {
 	showAll := false
 	long := false
 	var targets []string
@@ -529,7 +535,7 @@ func portableLS(_ context.Context, hc interp.HandlerContext, args []string) erro
 		}
 	}
 	if status != 0 {
-		return interp.ExitStatus(status)
+		return portablesh.ExitStatus(status)
 	}
 	return nil
 }
@@ -542,7 +548,7 @@ func printLSEntry(w io.Writer, info fs.FileInfo, name string, long bool) {
 	fmt.Fprintln(w, name)
 }
 
-func portableCat(ctx context.Context, hc interp.HandlerContext, args []string) error {
+func portableCat(ctx context.Context, hc portableHandlerContext, args []string) error {
 	if len(args) == 0 {
 		_, err := copyWithContext(ctx, hc.Stdout, hc.Stdin)
 		return portableIOError(hc, "cat", err)
@@ -557,7 +563,7 @@ func portableCat(ctx context.Context, hc interp.HandlerContext, args []string) e
 		f, err := os.Open(resolvePortablePath(hc.Dir, name))
 		if err != nil {
 			fmt.Fprintf(hc.Stderr, "cat: %s: %v\n", name, err)
-			return interp.ExitStatus(1)
+			return portablesh.ExitStatus(1)
 		}
 		_, copyErr := copyWithContext(ctx, hc.Stdout, f)
 		closeErr := f.Close()
@@ -571,7 +577,7 @@ func portableCat(ctx context.Context, hc interp.HandlerContext, args []string) e
 	return nil
 }
 
-func portableHead(ctx context.Context, hc interp.HandlerContext, args []string) error {
+func portableHead(ctx context.Context, hc portableHandlerContext, args []string) error {
 	count, files, err := parseLineCount(args, 10)
 	if err != nil {
 		return portableUsage(hc, "head", err.Error())
@@ -585,7 +591,7 @@ func portableHead(ctx context.Context, hc interp.HandlerContext, args []string) 
 	})
 }
 
-func portableTail(ctx context.Context, hc interp.HandlerContext, args []string) error {
+func portableTail(ctx context.Context, hc portableHandlerContext, args []string) error {
 	count, files, err := parseLineCount(args, 10)
 	if err != nil {
 		return portableUsage(hc, "tail", err.Error())
@@ -628,7 +634,7 @@ func parseLineCount(args []string, defaultCount int) (int, []string, error) {
 	return count, files, nil
 }
 
-func portableLineCommand(ctx context.Context, hc interp.HandlerContext, name string, files []string, selectLines func([]string) []string) error {
+func portableLineCommand(ctx context.Context, hc portableHandlerContext, name string, files []string, selectLines func([]string) []string) error {
 	if len(files) == 0 {
 		files = []string{"-"}
 	}
@@ -639,7 +645,7 @@ func portableLineCommand(ctx context.Context, hc interp.HandlerContext, name str
 			f, err := os.Open(resolvePortablePath(hc.Dir, file))
 			if err != nil {
 				fmt.Fprintf(hc.Stderr, "%s: %s: %v\n", name, file, err)
-				return interp.ExitStatus(1)
+				return portablesh.ExitStatus(1)
 			}
 			r, closer = f, f
 		}
@@ -649,7 +655,7 @@ func portableLineCommand(ctx context.Context, hc interp.HandlerContext, name str
 		}
 		if err != nil {
 			fmt.Fprintf(hc.Stderr, "%s: %v\n", name, err)
-			return interp.ExitStatus(1)
+			return portablesh.ExitStatus(1)
 		}
 		if len(files) > 1 {
 			if i > 0 {
@@ -665,7 +671,7 @@ func portableLineCommand(ctx context.Context, hc interp.HandlerContext, name str
 	return nil
 }
 
-func portableWC(ctx context.Context, hc interp.HandlerContext, args []string) error {
+func portableWC(ctx context.Context, hc portableHandlerContext, args []string) error {
 	showLines, showWords, showBytes := false, false, false
 	var files []string
 	for _, arg := range args {
@@ -699,7 +705,7 @@ func portableWC(ctx context.Context, hc interp.HandlerContext, args []string) er
 			f, err := os.Open(resolvePortablePath(hc.Dir, file))
 			if err != nil {
 				fmt.Fprintf(hc.Stderr, "wc: %s: %v\n", file, err)
-				return interp.ExitStatus(1)
+				return portablesh.ExitStatus(1)
 			}
 			r, closer = f, f
 		}
@@ -712,7 +718,7 @@ func portableWC(ctx context.Context, hc interp.HandlerContext, args []string) er
 				err = errors.New("input exceeds 16 MiB portable limit")
 			}
 			fmt.Fprintf(hc.Stderr, "wc: %s: %v\n", file, err)
-			return interp.ExitStatus(1)
+			return portablesh.ExitStatus(1)
 		}
 		var fields []string
 		if showLines {
@@ -732,7 +738,7 @@ func portableWC(ctx context.Context, hc interp.HandlerContext, args []string) er
 	return nil
 }
 
-func portableMkdir(_ context.Context, hc interp.HandlerContext, args []string) error {
+func portableMkdir(_ context.Context, hc portableHandlerContext, args []string) error {
 	parents := false
 	var paths []string
 	for _, arg := range args {
@@ -758,13 +764,13 @@ func portableMkdir(_ context.Context, hc interp.HandlerContext, args []string) e
 		}
 		if err != nil {
 			fmt.Fprintf(hc.Stderr, "mkdir: %s: %v\n", name, err)
-			return interp.ExitStatus(1)
+			return portablesh.ExitStatus(1)
 		}
 	}
 	return nil
 }
 
-func portableTouch(_ context.Context, hc interp.HandlerContext, args []string) error {
+func portableTouch(_ context.Context, hc portableHandlerContext, args []string) error {
 	if len(args) == 0 {
 		return portableUsage(hc, "touch", "missing operand")
 	}
@@ -777,18 +783,18 @@ func portableTouch(_ context.Context, hc interp.HandlerContext, args []string) e
 		f, err := os.OpenFile(full, os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
 			fmt.Fprintf(hc.Stderr, "touch: %s: %v\n", name, err)
-			return interp.ExitStatus(1)
+			return portablesh.ExitStatus(1)
 		}
 		_ = f.Close()
 		if err := os.Chtimes(full, now, now); err != nil {
 			fmt.Fprintf(hc.Stderr, "touch: %s: %v\n", name, err)
-			return interp.ExitStatus(1)
+			return portablesh.ExitStatus(1)
 		}
 	}
 	return nil
 }
 
-func portableCopy(ctx context.Context, hc interp.HandlerContext, args []string) error {
+func portableCopy(ctx context.Context, hc portableHandlerContext, args []string) error {
 	recursive := false
 	var operands []string
 	for _, arg := range args {
@@ -811,12 +817,12 @@ func portableCopy(ctx context.Context, hc interp.HandlerContext, args []string) 
 	}
 	if err := copyPortablePath(ctx, src, dst, recursive); err != nil {
 		fmt.Fprintf(hc.Stderr, "cp: %v\n", err)
-		return interp.ExitStatus(1)
+		return portablesh.ExitStatus(1)
 	}
 	return nil
 }
 
-func portableMove(ctx context.Context, hc interp.HandlerContext, args []string) error {
+func portableMove(ctx context.Context, hc portableHandlerContext, args []string) error {
 	if len(args) != 2 {
 		return portableUsage(hc, "mv", "requires source and destination")
 	}
@@ -831,20 +837,20 @@ func portableMove(ctx context.Context, hc interp.HandlerContext, args []string) 
 	info, err := os.Stat(src)
 	if err != nil {
 		fmt.Fprintf(hc.Stderr, "mv: %v\n", err)
-		return interp.ExitStatus(1)
+		return portablesh.ExitStatus(1)
 	}
 	if err := copyPortablePath(ctx, src, dst, info.IsDir()); err != nil {
 		fmt.Fprintf(hc.Stderr, "mv: %v\n", err)
-		return interp.ExitStatus(1)
+		return portablesh.ExitStatus(1)
 	}
 	if err := os.RemoveAll(src); err != nil {
 		fmt.Fprintf(hc.Stderr, "mv: %v\n", err)
-		return interp.ExitStatus(1)
+		return portablesh.ExitStatus(1)
 	}
 	return nil
 }
 
-func portableRemove(_ context.Context, hc interp.HandlerContext, args []string) error {
+func portableRemove(_ context.Context, hc portableHandlerContext, args []string) error {
 	recursive, force := false, false
 	var paths []string
 	for _, arg := range args {
@@ -871,11 +877,11 @@ func portableRemove(_ context.Context, hc interp.HandlerContext, args []string) 
 				continue
 			}
 			fmt.Fprintf(hc.Stderr, "rm: %s: %v\n", name, err)
-			return interp.ExitStatus(1)
+			return portablesh.ExitStatus(1)
 		}
 		if info.IsDir() && !recursive {
 			fmt.Fprintf(hc.Stderr, "rm: %s: is a directory\n", name)
-			return interp.ExitStatus(1)
+			return portablesh.ExitStatus(1)
 		}
 		if recursive {
 			err = os.RemoveAll(full)
@@ -884,13 +890,13 @@ func portableRemove(_ context.Context, hc interp.HandlerContext, args []string) 
 		}
 		if err != nil && !force {
 			fmt.Fprintf(hc.Stderr, "rm: %s: %v\n", name, err)
-			return interp.ExitStatus(1)
+			return portablesh.ExitStatus(1)
 		}
 	}
 	return nil
 }
 
-func portableChmod(_ context.Context, hc interp.HandlerContext, args []string) error {
+func portableChmod(_ context.Context, hc portableHandlerContext, args []string) error {
 	if len(args) < 2 {
 		return portableUsage(hc, "chmod", "requires MODE and FILE")
 	}
@@ -901,13 +907,13 @@ func portableChmod(_ context.Context, hc interp.HandlerContext, args []string) e
 	for _, name := range args[1:] {
 		if err := os.Chmod(resolvePortablePath(hc.Dir, name), fs.FileMode(mode)); err != nil {
 			fmt.Fprintf(hc.Stderr, "chmod: %s: %v\n", name, err)
-			return interp.ExitStatus(1)
+			return portablesh.ExitStatus(1)
 		}
 	}
 	return nil
 }
 
-func portableSHA256(ctx context.Context, hc interp.HandlerContext, args []string) error {
+func portableSHA256(ctx context.Context, hc portableHandlerContext, args []string) error {
 	if len(args) == 0 {
 		data, err := readAllLimited(ctx, hc.Stdin, 64<<20)
 		if err != nil {
@@ -915,7 +921,7 @@ func portableSHA256(ctx context.Context, hc interp.HandlerContext, args []string
 		}
 		if len(data) > 64<<20 {
 			fmt.Fprintln(hc.Stderr, "sha256sum: standard input exceeds portable 64 MiB limit")
-			return interp.ExitStatus(1)
+			return portablesh.ExitStatus(1)
 		}
 		fmt.Fprintf(hc.Stdout, "%x  -\n", sha256.Sum256(data))
 		return nil
@@ -924,7 +930,7 @@ func portableSHA256(ctx context.Context, hc interp.HandlerContext, args []string
 		f, err := os.Open(resolvePortablePath(hc.Dir, name))
 		if err != nil {
 			fmt.Fprintf(hc.Stderr, "sha256sum: %s: %v\n", name, err)
-			return interp.ExitStatus(1)
+			return portablesh.ExitStatus(1)
 		}
 		h := sha256.New()
 		_, copyErr := copyWithContext(ctx, h, f)
@@ -937,17 +943,17 @@ func portableSHA256(ctx context.Context, hc interp.HandlerContext, args []string
 	return nil
 }
 
-func portableUsage(hc interp.HandlerContext, name, message string) error {
+func portableUsage(hc portableHandlerContext, name, message string) error {
 	fmt.Fprintf(hc.Stderr, "%s: %s\n", name, message)
-	return interp.ExitStatus(2)
+	return portablesh.ExitStatus(2)
 }
 
-func portableIOError(hc interp.HandlerContext, name string, err error) error {
+func portableIOError(hc portableHandlerContext, name string, err error) error {
 	if err == nil {
 		return nil
 	}
 	fmt.Fprintf(hc.Stderr, "%s: %v\n", name, err)
-	return interp.ExitStatus(1)
+	return portablesh.ExitStatus(1)
 }
 
 func resolvePortablePath(dir, name string) string {

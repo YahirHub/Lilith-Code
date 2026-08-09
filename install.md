@@ -324,15 +324,20 @@ En Windows, el modo automático usa PowerShell para comandos neutrales, CMD para
 sintaxis CMD y Bash/sh para sintaxis POSIX cuando está disponible. En Linux,
 macOS y Termux se prefiere Bash y se usa `sh` como respaldo. Cuando no existe
 una shell POSIX compatible, Lilith usa como último recurso `portable`, un
-intérprete Bash/POSIX embebido y escrito en Go. También puede elegirse de forma
-explícita con `shell=portable`.
+intérprete embebido del subconjunto Bash/POSIX que Lilith necesita, escrito en
+Go puro y mantenido en
+[`YahirHub/go-portable-shell`](https://github.com/YahirHub/go-portable-shell).
+También puede elegirse de forma explícita con `shell=portable`.
 
-La shell portátil conserva variables, pipes, redirecciones, sustituciones,
-condicionales y bucles, y aporta fallbacks Go para `rg`, `grep`, `find`, `ls`,
-`cat`, `head`, `tail`, `wc`, `mkdir`, `touch`, `cp`, `mv`, `rm`, `chmod` y
-`sha256sum`. No es una distribución Linux: Git, Go, npm, Docker, Make y otros
-programas siguen necesitando su ejecutable en `PATH`. Si existe un comando
-nativo con el mismo nombre, la shell portátil lo prioriza sobre el fallback.
+La shell portátil conserva variables, funciones, pipes, redirecciones,
+sustituciones de comandos, aritmética, condicionales, bucles, `until`, globbing,
+`pipefail` y estados de salida tipados. Lilith agrega fallbacks Go para `rg`,
+`grep`, `find`, `ls`, `cat`, `head`, `tail`, `wc`, `mkdir`, `touch`, `cp`, `mv`,
+`rm`, `chmod` y `sha256sum`. No es Bash completo ni una distribución Linux:
+heredocs, job control, process substitution, arrays y extensiones no soportadas
+fallan de forma explícita; Git, Go, npm, Docker, Make y otros programas siguen
+necesitando su ejecutable en `PATH`. Si existe un comando nativo con el mismo
+nombre, la shell portátil lo prioriza sobre el fallback.
 
 PowerShell se configura como UTF-8 sin BOM antes de ejecutar el comando para
 conservar acentos y emojis. La sentencia solicitada permanece al final para no
