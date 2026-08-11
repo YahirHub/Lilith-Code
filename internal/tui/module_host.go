@@ -37,6 +37,7 @@ var (
 	_ moduleapi.AgentController                    = (*moduleHost)(nil)
 	_ moduleapi.PluginController                   = (*moduleHost)(nil)
 	_ moduleapi.SessionController                  = (*moduleHost)(nil)
+	_ moduleapi.SessionTransferController          = (*moduleHost)(nil)
 )
 
 func newModuleHost(ctx *AppContext, chat *ChatModel, registry *moduleapi.Registry) *moduleHost {
@@ -274,6 +275,24 @@ func (h *moduleHost) ClearConversation() {
 	}
 	h.chat.Clear()
 	h.addCmd(uikit.DisableMouse)
+}
+
+func (h *moduleHost) ExportConversation(path string) (string, error) {
+	if h.chat == nil {
+		return "", fmt.Errorf("no hay una conversación activa")
+	}
+	return h.chat.exportConversation(path)
+}
+
+func (h *moduleHost) ImportConversation(path string) (string, error) {
+	if h.chat == nil {
+		return "", fmt.Errorf("no hay una conversación activa")
+	}
+	message, err := h.chat.importConversation(path)
+	if err == nil {
+		h.addCmd(h.chat.connectMCP())
+	}
+	return message, err
 }
 
 func (h *moduleHost) ExitApplication() {

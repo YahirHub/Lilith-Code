@@ -171,6 +171,14 @@ Fuera de Git, se usa un manifiesto con blobs SHA-256. Se excluyen `.git`, `.lili
 
 Después de elegir el destino, `/fork` captura el estado actual y crea una sesión independiente con nuevo ID y `ForkedFrom`. Se rechaza mientras haya un turno, comando directo o subagente background activo. Para Git materializa un worktree separado en el commit del snapshot; en fallback reconstruye una copia independiente desde los blobs. Lilith cambia al nuevo directorio y reconecta MCP. La sesión original, sus archivos y su historial de rewind permanecen intactos; el fork no hereda checkpoints antiguos.
 
+### Transferencia portable de conversaciones
+
+- `/export nombredechat.jsonl` serializa un formato JSONL versionado con historial protocolario, transcript restaurable, compactaciones y estados Todo/Plan/Goal.
+- El export no contiene `Session.ProjectPath`, `ForkedFrom.ProjectPath`, sidecars live ni un ID de sesión que pueda sobrescribir otra conversación. El contenido histórico visible de mensajes/herramientas se conserva; los campos protocolarios internos se normalizan cuando sea necesario para seguir siendo válidos al reanudar el chat.
+- `/import nombredechat.jsonl` genera siempre un ID local nuevo, persiste la conversación bajo el proyecto receptor y fija `ProjectPath` al `cwd` desde el que se ejecutó el comando. El archivo importado no puede imponer la ruta del equipo de origen.
+- Al importar se reanclan code-intel/MCP al proyecto actual. Un Goal que estaba activo se recupera mediante la semántica normal de `LoadSession` y pasa a estado interrumpido/reanudable.
+- Export/import se bloquean durante un turno foreground o una compactación activa.
+
 ## 10. OCR estructural
 
 `extract_image_text` permite a modelos sin visión procesar capturas y documentos sin subir la imagen:
@@ -329,6 +337,7 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `139-shell-portatil-propia-sin-mvdan.md`
 - `140-actualizar-shell-portable-v0-2-1.md`
 - `141-perfiles-navegador-y-cookies-json.md`
+- `142-export-import-sesiones-jsonl.md`
 
 ## 114 · Búsquedas de terminal acotadas y versión 0.2.2
 

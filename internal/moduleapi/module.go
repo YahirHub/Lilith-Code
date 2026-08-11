@@ -134,6 +134,13 @@ type SessionController interface {
 	ExitApplication()
 }
 
+// SessionTransferController exposes portable JSONL conversation handoff without
+// leaking ChatModel or session.Store internals into core.session.
+type SessionTransferController interface {
+	ExportConversation(path string) (string, error)
+	ImportConversation(path string) (string, error)
+}
+
 // CommandHandler handles an exact slash command. The Host collects any UI
 // command produced by operations such as OpenScreen/InvokeSkill/Submit.
 type CommandHandler func(host Host, args string)

@@ -64,6 +64,7 @@ func TestSlashCommandsAreOwnedByFeatureModules(t *testing.T) {
 		"plugins": "core.plugins", "reload-plugins": "core.plugins", "agents": "core.agents",
 		"login": "core.providers", "providers": "core.providers", "models": "core.providers",
 		"config": "core.config", "clear": "core.session", "history": "core.session",
+		"export": "core.session", "import": "core.session",
 		"bash": "core.shell", "exit": "core.session", "modules": "core.modules",
 	}
 	rows := Commands()

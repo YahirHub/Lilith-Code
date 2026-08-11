@@ -319,6 +319,8 @@ con Go 1.25.12 y un navegador real en Windows/Linux.
 | `/login` | Conectar o cambiar el proveedor. |
 | `/models` | Elegir otro modelo. |
 | `/history` | Abrir el historial de conversaciones. |
+| `/export nombredechat.jsonl` | Exportar el chat y su progreso a un JSONL portable. |
+| `/import nombredechat.jsonl` | Importar un chat y continuar usando el directorio actual como proyecto. |
 | `/config` | Administrar preferencias, skills, búsqueda y seguridad. |
 | `/goal` | Crear o revisar el objetivo persistente del proyecto. |
 | `/resume` | Reabrir el Goal pausado, interrumpido o completado sin cambiar su objetivo. |

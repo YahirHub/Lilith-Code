@@ -1245,7 +1245,7 @@ func (m *ChatModel) appendHistory(msgs ...openai.Message) {
 	if len(msgs) == 0 {
 		return
 	}
-	m.history = append(m.history, msgs...)
+	m.history = append(m.history, openai.SanitizeMessages(msgs)...)
 	m.invalidateContextUsage()
 }
 
@@ -1393,7 +1393,7 @@ func (m *ChatModel) LoadSession(s *session.Session) {
 	m.sess = s
 	m.project = filepath.Clean(s.ProjectPath)
 	m.clearActiveRewindPoint()
-	m.history = s.Messages
+	m.history = openai.SanitizeMessages(s.Messages)
 	m.todoExpanded = false
 	if m.todos == nil {
 		m.todos = litodo.NewManager(s.Todo)

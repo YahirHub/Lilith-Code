@@ -34,8 +34,13 @@ func TestPublicDistributionLinksFeatureModulesWithoutCompatibilityMegaModule(t *
 			t.Fatalf("falta módulo público %s", id)
 		}
 	}
-	if got := len(reg.Commands()); got != 25 {
-		t.Fatalf("slash commands públicos=%d, esperados=25", got)
+	if got := len(reg.Commands()); got != 27 {
+		t.Fatalf("slash commands públicos=%d, esperados=27", got)
+	}
+	for _, name := range []string{"export", "import"} {
+		if _, owner, ok := reg.FindCommand(name); !ok || owner != "core.session" {
+			t.Fatalf("/%s debe pertenecer a core.session: ok=%v owner=%q", name, ok, owner)
+		}
 	}
 	for _, cmd := range reg.Commands() {
 		_, owner, ok := reg.FindCommand(cmd.Name)

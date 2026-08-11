@@ -162,6 +162,9 @@ Lilith (`li`) es un agente de programación interactivo para terminal, escrito e
 - Tras elegir el destino, `/fork` crea una sesión con ID y procedencia nuevos y una copia independiente del workspace: worktree Git cuando sea posible, copia por blobs en fallback. Sólo se permite sin trabajo foreground/background activo. No compartir slices/estados mutables ni copiar el historial de rewind de la sesión origen.
 - Un fork exitoso cambia el proyecto activo a la copia; la conversación y el workspace originales permanecen intactos.
 - Los checkpoints se limitan y podan por sesión. No eliminar refs Git de un punto aún vigente ni reutilizar snapshots de otra ruta/proyecto.
+- `/export <archivo.jsonl>` y `/import <archivo.jsonl>` pertenecen a `core.session`. El formato portable conserva historial protocolario, transcript, compactaciones y estados Todo/Plan/Goal, pero nunca serializa `Session.ProjectPath`, `ForkedFrom.ProjectPath`, un ID de sesión reutilizable ni sidecars live.
+- `/import` siempre crea un ID local nuevo y fija `Session.ProjectPath` al directorio de trabajo actual desde el que se ejecuta la importación. El archivo de origen jamás puede cambiar el workspace activo del equipo receptor.
+- Exportar/importar se rechaza mientras exista un turno foreground/compactación activa para no crear un handoff protocolariamente inconsistente.
 
 ### Layout del chat
 

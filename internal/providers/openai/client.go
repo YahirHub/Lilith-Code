@@ -465,6 +465,7 @@ func IsReasoningContentCarryForwardError(err error) bool {
 }
 
 func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
+	req.Messages = SanitizeMessages(req.Messages)
 	if IsCodexProvider(req.Provider) {
 		return c.streamCodex(ctx, req, out)
 	}
@@ -552,7 +553,7 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 				thinkingActive = false
 			}
 			if len(choice.Message.ToolCalls) > 0 {
-				out.send(Chunk{ToolCalls: choice.Message.ToolCalls})
+				out.send(Chunk{ToolCalls: SanitizeToolCalls(choice.Message.ToolCalls)})
 			}
 		}
 		return nil
@@ -641,7 +642,7 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 		out.send(Chunk{ThinkingDone: true})
 	}
 	if len(pendingOrder) > 0 {
-		out.send(Chunk{ToolCalls: snapshotCalls(pending, pendingOrder)})
+		out.send(Chunk{ToolCalls: SanitizeToolCalls(snapshotCalls(pending, pendingOrder))})
 	}
 	return nil
 }

@@ -109,6 +109,7 @@ func (c *Client) streamCodex(ctx context.Context, req Request, out *countingSink
 // buildCodexPayload transforma Messages/Tools estilo chat/completions al
 // esquema Responses.
 func buildCodexPayload(req Request) ([]byte, error) {
+	req.Messages = SanitizeMessages(req.Messages)
 	var instructions strings.Builder
 	input := make([]map[string]any, 0, len(req.Messages))
 
@@ -527,7 +528,7 @@ func parseCodexSSE(ctx context.Context, body io.ReadCloser, idle time.Duration, 
 	}
 
 	if len(order) > 0 {
-		out.send(Chunk{ToolCalls: snapshotCodex(pending, order)})
+		out.send(Chunk{ToolCalls: SanitizeToolCalls(snapshotCodex(pending, order))})
 	}
 	return nil
 }
