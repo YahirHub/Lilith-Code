@@ -306,6 +306,7 @@ func parseCodexSSE(ctx context.Context, body io.ReadCloser, idle time.Duration, 
 	// es un reintento server-side: hay que marcar el anterior como abandonado
 	// para que la TUI colapse su panel "escribiendo…".
 	doneIdx := map[int]bool{}
+	terminalSeen := false
 
 	getPendingIdx := func(idx int) *ToolCall {
 		if tc, ok := pending[idx]; ok {
@@ -343,6 +344,7 @@ func parseCodexSSE(ctx context.Context, body io.ReadCloser, idle time.Duration, 
 		}
 		payload := bytes.TrimSpace(line[5:])
 		if bytes.Equal(payload, []byte("[DONE]")) {
+			terminalSeen = true
 			return errSSEDone
 		}
 		var ev struct {
@@ -519,12 +521,16 @@ func parseCodexSSE(ctx context.Context, body io.ReadCloser, idle time.Duration, 
 		case "response.incomplete":
 			return errors.New("respuesta Codex incompleta")
 		case "response.completed":
-			// Nada más que emitir; el bucle terminará y el llamador enviará Done.
+			terminalSeen = true
+			return errSSEDone
 		}
 		return nil
 	})
 	if err != nil && !errors.Is(err, errSSEDone) {
 		return err
+	}
+	if !terminalSeen {
+		return io.ErrUnexpectedEOF
 	}
 
 	if len(order) > 0 {

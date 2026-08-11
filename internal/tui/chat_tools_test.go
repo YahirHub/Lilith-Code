@@ -289,3 +289,29 @@ func TestCompleteJSONBool(t *testing.T) {
 		t.Fatal("partial boolean must not be considered complete")
 	}
 }
+
+func TestTextStreamingShowsRespondingUntilProviderCompletes(t *testing.T) {
+	ctx := &AppContext{Styles: NewStyles(DefaultTheme())}
+	m := NewChat(ctx)
+	m.Resize(100, 30)
+	primeTestRequest(t, m)
+	m.thinking = true
+
+	_, _ = m.Update(activeStreamMsg(m, chatStreamMsg{delta: "Respuesta parcial"}))
+
+	if m.thinking || m.working || !m.responding {
+		t.Fatalf("texto en streaming debe quedar respondiendo: thinking=%v responding=%v working=%v", m.thinking, m.responding, m.working)
+	}
+	if !strings.Contains(stripANSI(m.View()), "Respondiendo") {
+		t.Fatal("el indicador Respondiendo debe permanecer visible mientras el request textual siga abierto")
+	}
+	_, tick := m.Update(thinkingTickMsg{frame: 1})
+	if tick == nil {
+		t.Fatal("el shimmer debe seguir vivo mientras responding=true")
+	}
+
+	_, _ = m.Update(activeStreamMsg(m, chatStreamMsg{done: true}))
+	if m.responding || m.thinking || m.working || m.streaming {
+		t.Fatalf("la finalización debe limpiar toda actividad: streaming=%v thinking=%v responding=%v working=%v", m.streaming, m.thinking, m.responding, m.working)
+	}
+}

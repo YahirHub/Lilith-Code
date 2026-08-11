@@ -36,6 +36,14 @@ var workingPalette = []string{
 	"#047857", "#059669",
 }
 
+// respondingPalette usa azules/cyan para distinguir el streaming textual de
+// una espera de razonamiento y de la ejecución local de herramientas.
+var respondingPalette = []string{
+	"#0ea5e9", "#38bdf8", "#7dd3fc", "#bae6fd",
+	"#7dd3fc", "#38bdf8", "#0ea5e9", "#0284c7",
+	"#0369a1", "#0284c7",
+}
+
 func renderShimmer(frame int, label string, palette []string) string {
 	spin := thinkingSpinner[frame%len(thinkingSpinner)]
 	spinStyled := tuistyle.NewStyle().Foreground(tuistyle.Color(palette[frame%len(palette)])).Render(spin)
@@ -59,6 +67,12 @@ func RenderThinking(frame int) string {
 // que el CLI está ejecutando herramientas activamente.
 func RenderWorking(frame int) string {
 	return renderShimmer(frame, "Trabajando", workingPalette)
+}
+
+// RenderResponding indica que el proveedor ya está entregando la respuesta
+// textual, pero el request aún no ha alcanzado su frontera terminal.
+func RenderResponding(frame int) string {
+	return renderShimmer(frame, "Respondiendo", respondingPalette)
 }
 
 // RenderCompacting distinguishes the one-off context summarization request from

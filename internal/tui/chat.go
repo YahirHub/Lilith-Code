@@ -236,6 +236,10 @@ type ChatModel struct {
 
 	thinkingFrame int
 	thinking      bool
+	// responding remains true while the provider is streaming final textual
+	// output. It keeps liveness visible after the first token, when "Pensando"
+	// is no longer semantically accurate but the request has not finished yet.
+	responding bool
 	// working indica que hay un lote de herramientas ejecutándose. Se
 	// pinta con un shimmer verde ("Trabajando…") para distinguirlo del
 	// estado "Pensando…" (esperando tokens del modelo). Cuando ambos son
@@ -803,6 +807,7 @@ func (m *ChatModel) beginTurnMode(mode planstate.Mode) error {
 	}
 	m.turnCtx, m.cancel = context.WithCancel(context.Background())
 	m.streaming = true
+	m.responding = false
 	return nil
 }
 
@@ -836,6 +841,7 @@ func (m *ChatModel) endTurn() {
 	m.turnSkillHooks = nil
 	m.turnGoalManaged = false
 	m.runningCalls = nil
+	m.responding = false
 }
 
 const reasoningCarryForwardRecoveryPrompt = "<provider_recovery>Continue from the latest tool result and complete the user's request. This is an internal provider compatibility recovery, not a new user instruction. Do not mention this recovery.</provider_recovery>"
@@ -870,6 +876,7 @@ func (m *ChatModel) recoverReasoningCarryForward(err error) uikit.Cmd {
 	}
 	m.toolFallback = ""
 	m.thinking = true
+	m.responding = false
 	m.working = false
 	m.assistantActive = -1
 	m.forceLivePersist()
@@ -912,8 +919,9 @@ func (m *ChatModel) cancelTurn() string {
 	m.turnGoalManaged = false
 	// Mantener streaming=true sólo hasta refrescar el transcript permite reutilizar
 	// el prefijo cacheado de conversaciones largas. El indicador ya desaparece
-	// porque thinking/working se limpian inmediatamente.
+	// porque thinking/responding/working se limpian inmediatamente.
 	m.thinking = false
+	m.responding = false
 	m.working = false
 	m.assistantActive = -1
 
@@ -1672,6 +1680,7 @@ func (m *ChatModel) resetProviderAttemptForRetry() {
 	m.assistantActive = -1
 	m.networkNoticeIndex = -1
 	m.thinking = true
+	m.responding = false
 	m.working = false
 	m.invalidateTranscriptCache()
 }
@@ -1767,6 +1776,7 @@ func (m *ChatModel) Clear() {
 	m.resetAgentSessionContext()
 	m.streaming = false
 	m.thinking = false
+	m.responding = false
 	m.working = false
 	m.messages = nil
 	m.history = nil
@@ -2434,7 +2444,7 @@ func truncateOneLine(text string, maxRunes int) string {
 // Esa zona sólo permanece visible cuando el transcript está al fondo; al leer
 // historial se desplaza fuera junto con el input y el resto del chrome.
 func (m *ChatModel) pinnedActivityView(w int) string {
-	if !(m.thinking || m.working) {
+	if !(m.thinking || m.responding || m.working) {
 		return ""
 	}
 	var body string
@@ -2442,6 +2452,8 @@ func (m *ChatModel) pinnedActivityView(w int) string {
 		body = RenderCompacting(m.thinkingFrame)
 	} else if m.working {
 		body = RenderWorking(m.thinkingFrame)
+	} else if m.responding {
+		body = RenderResponding(m.thinkingFrame)
 	} else {
 		body = RenderThinking(m.thinkingFrame)
 	}
@@ -2682,7 +2694,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 		return m, nil
 
 	case thinkingTickMsg:
-		if !m.thinking && !m.working {
+		if !m.thinking && !m.responding && !m.working {
 			return m, nil
 		}
 		m.thinkingFrame = v.frame
@@ -2801,6 +2813,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 		}
 		m.streaming = false
 		m.thinking = false
+		m.responding = false
 		m.working = false
 		if v.err != nil {
 			if !errors.Is(v.err, context.Canceled) {
@@ -2843,6 +2856,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			if v.retry.Recovered {
 				m.clearNetworkNotice()
 				m.thinking = true
+				m.responding = false
 				m.working = false
 			} else {
 				m.showNetworkRetry(*v.retry)
@@ -2875,6 +2889,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			}
 			m.streaming = false
 			m.thinking = false
+			m.responding = false
 			m.working = false
 			m.assistantActive = -1
 			m.interruptGoalOnFailure()
@@ -2919,6 +2934,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			// tool call, "Trabajando" tiene prioridad.
 			if !m.working {
 				m.thinking = true
+				m.responding = false
 			}
 			if cmd := m.refreshTranscriptStreaming(true); cmd != nil {
 				refreshCmd = cmd
@@ -2956,6 +2972,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			// eso dejaba varios segundos con ambos flags en false y el indicador
 			// desaparecía exactamente mientras el panel decía "running".
 			m.thinking = false
+			m.responding = false
 			m.working = true
 			if v.partial {
 				if cmd := m.refreshTranscriptStreaming(true); cmd != nil {
@@ -2970,6 +2987,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			m.pendingCall = append(m.pendingCall, v.toolCalls...)
 		}
 		if v.done {
+			m.responding = false
 			// A completed provider response proves the compatibility boundary is
 			// healthy again. Permit one fresh recovery after a later tool request in
 			// this same user turn, but never more than once for the same request.
@@ -3058,6 +3076,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			if m.deliverSteering() {
 				m.forceLivePersist()
 				m.thinking = true
+				m.responding = false
 				m.working = false
 				m.assistantActive = -1
 				return m, m.runTurn()
@@ -3080,6 +3099,9 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 		if v.delta != "" {
 			m.finishThinkingPanel()
 			m.thinking = false
+			if !m.working {
+				m.responding = true
+			}
 			m.streamBuf.WriteString(v.delta)
 			last := m.ensureAssistantMessage()
 			m.messages[last].Content = m.streamBuf.String()
@@ -3108,6 +3130,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 		if v.err != nil {
 			m.streaming = false
 			m.thinking = false
+			m.responding = false
 			m.working = false
 			m.runningCalls = nil
 			m.interruptGoalOnFailure()
@@ -3180,6 +3203,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			m.toolFallback = ""
 			m.streaming = false
 			m.thinking = false
+			m.responding = false
 			m.working = false
 			m.assistantActive = -1
 			if v.planCompleted && m.plans != nil {
@@ -3204,6 +3228,7 @@ func (m *ChatModel) Update(msg uikit.Msg) (uikit.Model, uikit.Cmd) {
 			m.toolFallback = ""
 			m.streaming = false
 			m.thinking = false
+			m.responding = false
 			m.working = false
 			m.assistantActive = -1
 			m.endTurn()
@@ -3827,6 +3852,7 @@ func (m *ChatModel) runTurn() uikit.Cmd {
 		m.endTurn()
 		m.streaming = false
 		m.thinking = false
+		m.responding = false
 		m.working = false
 		m.AddError("No hay un proveedor activo. Usa /login o /providers.")
 		return nil
@@ -3851,6 +3877,7 @@ func (m *ChatModel) runTurn() uikit.Cmd {
 	m.networkNoticeIndex = -1
 	m.streaming = true
 	m.thinking = true
+	m.responding = false
 	m.working = false
 
 	m.thinkingFrame = 0
@@ -4207,6 +4234,7 @@ func (m *ChatModel) interceptExistingCreateCall(call openai.ToolCall) (uikit.Cmd
 	}
 	m.toolFallback = result
 	m.thinking = false
+	m.responding = false
 	m.working = true
 	m.refreshTranscript(true)
 	m.forceLivePersist()
@@ -4509,6 +4537,7 @@ func (m *ChatModel) invokeAgentDefinitionWithOptions(a agents.Agent, prompt, vis
 	runCtx := m.turnCtx
 	m.streaming = true
 	m.thinking = false
+	m.responding = false
 	m.working = true
 	m.userScrolled = false
 	m.persistTurnStart()

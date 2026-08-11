@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/lilith/li/internal/providers"
@@ -65,6 +66,14 @@ type Client struct {
 	// the watchdog (useful for specialized providers/tests).
 	StreamIdleTimeout time.Duration
 
+	// PartialResponseIdleTimeout detects a subtler failure mode: the transport
+	// remains alive (often through SSE keepalive comments) after the model already
+	// emitted visible/semantic output, but no further text, reasoning or tool-call
+	// progress arrives. Zero uses the production default; a negative value disables
+	// this watchdog. It intentionally arms only after the first semantic chunk so
+	// long initial model thinking is not mistaken for a stalled partial response.
+	PartialResponseIdleTimeout time.Duration
+
 	// ConnectivityProbe is optional and primarily useful to embedders/tests. The
 	// production fallback probes the selected provider first and then public
 	// connectivity endpoints to distinguish an offline machine from a provider
@@ -74,7 +83,10 @@ type Client struct {
 	NetworkRetryMaxDelay time.Duration
 }
 
-const defaultStreamIdleTimeout = 4 * time.Minute
+const (
+	defaultStreamIdleTimeout          = 4 * time.Minute
+	defaultPartialResponseIdleTimeout = 90 * time.Second
+)
 
 // NewClient returns a streaming-safe client. A global http.Client timeout is
 // intentionally avoided because it kills healthy long responses. Instead the
@@ -101,9 +113,10 @@ func NewClient(dir string) *Client {
 	transport.ExpectContinueTimeout = time.Second
 
 	return &Client{
-		HTTP:              &http.Client{Transport: transport},
-		Dir:               dir,
-		StreamIdleTimeout: defaultStreamIdleTimeout,
+		HTTP:                       &http.Client{Transport: transport},
+		Dir:                        dir,
+		StreamIdleTimeout:          defaultStreamIdleTimeout,
+		PartialResponseIdleTimeout: defaultPartialResponseIdleTimeout,
 	}
 }
 
@@ -112,6 +125,13 @@ func (c *Client) streamIdleTimeout() time.Duration {
 		return defaultStreamIdleTimeout
 	}
 	return c.StreamIdleTimeout
+}
+
+func (c *Client) partialResponseIdleTimeout() time.Duration {
+	if c == nil || c.PartialResponseIdleTimeout == 0 {
+		return defaultPartialResponseIdleTimeout
+	}
+	return c.PartialResponseIdleTimeout
 }
 
 type chatChoice struct {
@@ -359,8 +379,8 @@ func (c *Client) Stream(ctx context.Context, req Request) <-chan Chunk {
 		serviceAttempts := 0
 		networkAttempts := 0
 		for {
-			counter := &countingSink{ctx: ctx, out: out}
-			err := c.do(ctx, req, counter)
+			counter := &countingSink{out: out}
+			err := c.doWithPartialResponseWatchdog(ctx, req, counter)
 			if err == nil {
 				sendChunk(ctx, out, Chunk{Done: true})
 				return
@@ -371,14 +391,14 @@ func (c *Client) Stream(ctx context.Context, req Request) <-chan Chunk {
 			}
 
 			if isNetworkFailure(err) {
-				if counter.n > 0 {
+				if counter.count() > 0 {
 					networkAttempts = 0
 				}
 				networkAttempts++
 				if c != nil && c.HTTP != nil {
 					c.HTTP.CloseIdleConnections()
 				}
-				if waitErr := c.waitForConnectivity(ctx, req.Provider, networkAttempts, counter.n > 0, out); waitErr != nil {
+				if waitErr := c.waitForConnectivity(ctx, req.Provider, networkAttempts, counter.count() > 0, out); waitErr != nil {
 					sendChunk(ctx, out, Chunk{Err: waitErr})
 					return
 				}
@@ -389,7 +409,7 @@ func (c *Client) Stream(ctx context.Context, req Request) <-chan Chunk {
 				continue
 			}
 
-			if counter.n == 0 && isTransientHTTP(err) && serviceAttempts < maxServiceAttempts-1 {
+			if counter.count() == 0 && isTransientHTTP(err) && serviceAttempts < maxServiceAttempts-1 {
 				networkAttempts = 0
 				serviceAttempts++
 				delay := time.Duration(serviceAttempts) * time.Second
@@ -418,9 +438,17 @@ func (c *Client) Stream(ctx context.Context, req Request) <-chan Chunk {
 // countingSink counts semantic chunks emitted by one provider attempt. Retry
 // status chunks bypass it so Reset reflects only incomplete model output.
 type countingSink struct {
-	ctx context.Context
-	out chan<- Chunk
-	n   int
+	ctx      context.Context
+	out      chan<- Chunk
+	activity chan<- struct{}
+	n        atomic.Int64
+}
+
+func (s *countingSink) count() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.n.Load()
 }
 
 func (s *countingSink) send(ch Chunk) {
@@ -430,8 +458,79 @@ func (s *countingSink) send(ch Chunk) {
 	}
 	select {
 	case s.out <- ch:
-		s.n++
+		s.n.Add(1)
+		if s.activity != nil {
+			select {
+			case s.activity <- struct{}{}:
+			default:
+			}
+		}
 	case <-ctx.Done():
+	}
+}
+
+func (c *Client) doWithPartialResponseWatchdog(ctx context.Context, req Request, out *countingSink) error {
+	idle := c.partialResponseIdleTimeout()
+	if idle < 0 {
+		out.ctx = ctx
+		return c.do(ctx, req, out)
+	}
+
+	attemptCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	activity := make(chan struct{}, 1)
+	out.ctx = attemptCtx
+	out.activity = activity
+	result := make(chan error, 1)
+	go func() {
+		result <- c.do(attemptCtx, req, out)
+	}()
+
+	var timer *time.Timer
+	var timeout <-chan time.Time
+	reset := func() {
+		if idle <= 0 {
+			return
+		}
+		if timer == nil {
+			timer = time.NewTimer(idle)
+			timeout = timer.C
+			return
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(idle)
+	}
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
+
+	for {
+		select {
+		case err := <-result:
+			return err
+		case <-activity:
+			// The watchdog starts only after c.do emitted a semantic chunk.
+			// Raw SSE keepalives never reach countingSink and therefore cannot
+			// keep a half-dead partial response alive forever.
+			reset()
+		case <-timeout:
+			cancel()
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("respuesta del modelo sin actividad durante %s", idle.Round(time.Second))
+		case <-ctx.Done():
+			cancel()
+			return ctx.Err()
+		}
 	}
 }
 
@@ -564,12 +663,14 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 	var parser reasoningStreamParser
 	thinkingActive := false
 	structuredSeen := false
+	terminalSeen := false
 	err = scanResponseLines(ctx, resp.Body, c.streamIdleTimeout(), func(line []byte) error {
 		if len(line) == 0 || !bytes.HasPrefix(line, []byte("data:")) {
 			return nil
 		}
 		payload := bytes.TrimSpace(line[5:])
 		if bytes.Equal(payload, []byte("[DONE]")) {
+			terminalSeen = true
 			return errSSEDone
 		}
 		var raw chatResponse
@@ -586,6 +687,10 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 			return nil
 		}
 		choice := raw.Choices[0]
+		finished := strings.TrimSpace(choice.FinishReason) != ""
+		if finished {
+			terminalSeen = true
+		}
 		reasoning := visibleReasoning(choice.Delta.ReasoningContent, choice.Delta.Reasoning, choice.Delta.Thinking, choice.Delta.Analysis, choice.Delta.Thought, choice.Delta.ReasoningDetails)
 		if reasoning != "" {
 			select {
@@ -629,10 +734,16 @@ func (c *Client) do(ctx context.Context, req Request, out *countingSink) error {
 				return err
 			}
 		}
+		if finished {
+			return errSSEDone
+		}
 		return nil
 	})
 	if err != nil && !errors.Is(err, errSSEDone) {
 		return err
+	}
+	if !terminalSeen {
+		return io.ErrUnexpectedEOF
 	}
 
 	if err := emitReasoningPieces(ctx, out, parser.Flush(), structuredSeen, &thinkingActive); err != nil {

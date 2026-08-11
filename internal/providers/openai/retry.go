@@ -261,7 +261,7 @@ func isNetworkFailure(err error) bool {
 		"connection reset", "connection refused", "network is unreachable",
 		"network unreachable", "no route to host", "broken pipe", "no such host",
 		"temporary failure in name resolution", "server misbehaving",
-		"stream sin actividad", "unexpected eof", "connection closed",
+		"stream sin actividad", "respuesta del modelo sin actividad", "unexpected eof", "connection closed",
 		"use of closed network connection", "i/o timeout", "dial tcp", "dial udp",
 		"transport connection broken", "client connection lost", "server sent goaway",
 		"stream error:", "tls: use of closed connection", "connection timed out",
