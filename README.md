@@ -254,15 +254,42 @@ detecta en el sistema o se proporciona mediante un endpoint CDP.
 La herramienta puede descubrir Chrome, Chromium, Edge, Brave, Vivaldi, Opera,
 Chrome for Testing y Chrome Headless Shell en ubicaciones habituales y entre los
 procesos activos. El candidato recomendado puede guardarse como predeterminado.
-Admite ejecución visible u oculta y tres clases de perfil:
+Admite ejecución visible u oculta y cuatro clases de perfil:
 
 - `temporary`: perfil aislado que se elimina al cerrar la sesión.
 - `persistent`: perfil dedicado de Lilith que conserva cookies e inicios de sesión.
 - `custom`: directorio dedicado indicado expresamente.
+- `existing`: perfil local ya existente seleccionado mediante `profile_id` o
+  `user_data_dir` + `profile_directory` cuando ese navegador expone una sesión CDP
+  reutilizable.
 
-Por seguridad, Lilith rechaza perfiles que parezcan ser el perfil personal
-predeterminado del usuario. Las contraseñas de formularios se introducen mediante
-`fill_secret`, usando un popup local enmascarado que no envía el secreto al modelo.
+`browser action=profiles` descubre los perfiles locales sin leer contraseñas,
+cookies ni datos de cuentas. Los perfiles personales no se relanzan a la fuerza:
+Chrome moderno restringe el remote debugging sobre su directorio de datos normal,
+y un perfil que ya esté abierto puede además estar bloqueado por el propio
+navegador. Lilith sólo se adjunta cuando encuentra un `DevToolsActivePort` local
+activo y la selección del perfil fue explícita. En Chrome 144+ el flujo de Remote
+Debugging puede mostrar un diálogo local que el usuario debe aprobar al iniciar la
+conexión; Lilith usa el WebSocket directo y no depende de `/json/version`. Si un mismo `User Data` contiene varios perfiles, Lilith sólo marca como adjuntable el último perfil usado; no pretende
+forzar por CDP otro perfil hermano que Chrome no haya expuesto.
+
+Para reutilizar un login sin controlar el perfil personal, `browser` también puede
+importar un archivo JSON de cookies exportado por el usuario. `cookie_path` puede
+pasarse directamente a `start` —las cookies se aplican antes de navegar a `url`—
+o utilizarse después con `action=import_cookies`. Se aceptan arrays JSON habituales
+de extensiones de exportación y objetos con un campo `cookies`; se preservan
+atributos como dominio/URL, `hostOnly`, ruta, `Secure`, `HttpOnly`, `SameSite` y
+expiración; también se respetan las reglas de prefijo `__Secure-` y `__Host-`.
+El archivo se procesa localmente: los valores de las cookies no se incluyen en los
+argumentos del modelo, logs ni respuesta de la herramienta, que sólo informa
+cuántas entradas se importaron u omitieron. Las cookies particionadas se omiten en
+vez de perder silenciosamente su aislamiento.
+
+La combinación recomendada para autenticación reutilizable es un perfil
+`persistent` de Lilith más `cookie_path`: después de la primera importación, ese
+perfil conserva el estado entre ejecuciones sin depender del perfil personal de
+Chrome. Las contraseñas de formularios se introducen mediante `fill_secret`, usando
+un popup local enmascarado que no envía el secreto al modelo.
 
 Para ahorrar contexto, el modelo trabaja con snapshots compactos: título, URL,
 texto acotado y elementos interactivos referenciados como `e1`, `e2`, etc. Después
@@ -277,7 +304,8 @@ Ejemplos de solicitudes:
 
 ```text
 Abre https://example.com en un navegador visible con perfil temporal y analiza la consola y la red.
-Abre el panel con un perfil persistente, inicia sesión y conserva la sesión para la próxima ejecución.
+Lista mis perfiles de Chrome disponibles y dime cuáles pueden adjuntarse mediante CDP.
+Abre el panel con un perfil persistente e importa ~/Downloads/cookies.json antes de navegar.
 Prueba el formulario, usa snapshots delta y guarda una captura cuando falle.
 ```
 

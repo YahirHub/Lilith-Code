@@ -339,3 +339,19 @@ func TestBrowserIntegrationStartAndSnapshot(t *testing.T) {
 		t.Fatalf("screenshot no fue generado correctamente: info=%v err=%v", info, err)
 	}
 }
+
+func TestExistingProfileNeverLaunchesWithoutReusableCDP(t *testing.T) {
+	manager := &Manager{configDir: t.TempDir(), sessions: map[string]*Session{}}
+	_, err := manager.Start(context.Background(), StartOptions{
+		SessionID:   "existing-no-cdp",
+		Executable:  filepath.Join(t.TempDir(), "browser-that-must-not-run"),
+		ProfileMode: ProfileExisting,
+		UserDataDir: t.TempDir(),
+	})
+	if err == nil {
+		t.Fatal("profile_mode=existing no debe relanzar un perfil sin CDP")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "cdp") {
+		t.Fatalf("error poco accionable para perfil existing sin CDP: %v", err)
+	}
+}

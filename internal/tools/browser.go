@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,12 +17,14 @@ func init() {
 	register(Definition{
 		Name: "browser",
 		Description: "Open and persistently control Chrome, Chromium, Edge, Brave or another CDP-compatible browser. " +
-			"Discover installed/running browsers, use isolated temporary or persistent profiles, navigate, inspect compact DOM snapshots, interact with forms, debug console/network/JavaScript, manage tabs and capture screenshots. " +
+			"Discover installed/running browsers and local profiles, use isolated temporary/persistent profiles or an explicitly selected existing CDP profile, import exported cookies JSON locally, navigate, inspect compact DOM snapshots, interact with forms, debug console/network/JavaScript, manage tabs and capture screenshots. " +
 			"Use fill_secret for passwords so secrets never enter model-visible tool arguments.",
 		PromptSnippet: "Persistent token-efficient browser automation and DevTools debugging",
 		PromptGuidelines: []string{
 			"Prefer browser snapshot with delta=true after the first snapshot; interact by returned refs instead of repeatedly requesting full HTML.",
-			"Use profile_mode=persistent only when login state must survive Lilith restarts. Never attach to a user's default personal browser profile.",
+			"Prefer profile_mode=persistent when login state must survive Lilith restarts; cookie_path can seed that isolated profile from an exported JSON without exposing cookie values to the model.",
+			"Use action=profiles before profile_mode=existing. Attach to an existing personal profile only when the user explicitly wants it and the browser exposes a reusable CDP endpoint.",
+			"Cookie JSON must stay file-backed: pass cookie_path only; never read, echo, summarize or place cookie values in model-visible arguments or output.",
 			"Use fill_secret for passwords, tokens and other sensitive form values; never place secrets in type/fill arguments.",
 			"Inspect console and network errors before changing frontend code, and verify the result with a fresh delta snapshot.",
 			"For broad multi-page frontend regression audits, prefer delegating to the isolated frontend-browser-auditor agent when available; keep only actionable findings in the parent context.",
@@ -39,51 +42,54 @@ func init() {
 
 func browserParameters() map[string]any {
 	actions := []string{
-		"discover", "get_default", "set_default", "start", "list_sessions", "status", "close", "close_all",
+		"discover", "profiles", "get_default", "set_default", "start", "list_sessions", "status", "close", "close_all",
 		"navigate", "back", "forward", "reload", "snapshot", "text", "html", "click", "type", "fill", "fill_secret",
 		"select", "key", "wait", "evaluate", "screenshot", "console", "network", "response_body",
-		"tabs", "new_tab", "switch_tab", "close_tab", "scripts", "search_source", "performance",
+		"tabs", "new_tab", "switch_tab", "close_tab", "scripts", "search_source", "performance", "import_cookies",
 	}
 	properties := map[string]any{
-		"action":         map[string]any{"type": "string", "enum": actions},
-		"session_id":     map[string]any{"type": "string", "description": "Stable logical browser session ID."},
-		"candidate_id":   map[string]any{"type": "string"},
-		"executable":     map[string]any{"type": "string", "description": "Explicit Chrome/Chromium-compatible executable."},
-		"remote_url":     map[string]any{"type": "string", "description": "Explicit CDP HTTP or WebSocket endpoint."},
-		"headless":       map[string]any{"type": "boolean", "description": "true for hidden operation; false for a visible browser window."},
-		"profile_mode":   map[string]any{"type": "string", "enum": []string{"temporary", "persistent", "custom"}},
-		"profile_name":   map[string]any{"type": "string", "description": "Dedicated Lilith profile name for persistent mode."},
-		"user_data_dir":  map[string]any{"type": "string", "description": "Dedicated non-default profile directory for custom mode."},
-		"url":            map[string]any{"type": "string"},
-		"tab_id":         map[string]any{"type": "string"},
-		"ref":            map[string]any{"type": "string", "description": "Compact element reference from snapshot, e.g. e4."},
-		"selector":       map[string]any{"type": "string", "description": "CSS selector; prefer ref from snapshot."},
-		"value":          map[string]any{"type": "string", "description": "Non-secret value. Use fill_secret for sensitive data."},
-		"append":         map[string]any{"type": "boolean"},
-		"key":            map[string]any{"type": "string"},
-		"expression":     map[string]any{"type": "string"},
-		"path":           map[string]any{"type": "string", "description": "Screenshot output path, relative to the project when not absolute."},
-		"full_page":      map[string]any{"type": "boolean"},
-		"quality":        map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
-		"delta":          map[string]any{"type": "boolean"},
-		"max_text":       map[string]any{"type": "integer", "minimum": 500, "maximum": 50000},
-		"max_elements":   map[string]any{"type": "integer", "minimum": 1, "maximum": 500},
-		"max_bytes":      map[string]any{"type": "integer", "minimum": 100, "maximum": 1000000},
-		"limit":          map[string]any{"type": "integer", "minimum": 1, "maximum": 1000},
-		"clear":          map[string]any{"type": "boolean"},
-		"errors_only":    map[string]any{"type": "boolean"},
-		"request_id":     map[string]any{"type": "string"},
-		"script_id":      map[string]any{"type": "string", "description": "Ephemeral CDP script ID returned by scripts for the active tab and current document. Refresh scripts after navigation or reload."},
-		"query":          map[string]any{"type": "string"},
-		"case_sensitive": map[string]any{"type": "boolean"},
-		"verify":         map[string]any{"type": "boolean", "description": "For scripts, verify script_id-to-URL mappings against the SHA-256 hash of the current source. Defaults to true."},
-		"timeout_ms":     map[string]any{"type": "integer", "minimum": 0, "maximum": 120000},
-		"secret_label":   map[string]any{"type": "string", "description": "Human-readable account/site label shown only in the local secret prompt."},
+		"action":            map[string]any{"type": "string", "enum": actions},
+		"session_id":        map[string]any{"type": "string", "description": "Stable logical browser session ID."},
+		"candidate_id":      map[string]any{"type": "string"},
+		"executable":        map[string]any{"type": "string", "description": "Explicit Chrome/Chromium-compatible executable."},
+		"remote_url":        map[string]any{"type": "string", "description": "Explicit CDP HTTP or WebSocket endpoint."},
+		"headless":          map[string]any{"type": "boolean", "description": "true for hidden operation; false for a visible browser window."},
+		"profile_mode":      map[string]any{"type": "string", "enum": []string{"temporary", "persistent", "custom", "existing"}},
+		"profile_name":      map[string]any{"type": "string", "description": "Dedicated Lilith profile name for persistent mode."},
+		"profile_id":        map[string]any{"type": "string", "description": "Existing browser profile ID returned by action=profiles."},
+		"profile_directory": map[string]any{"type": "string", "description": "Chromium profile subdirectory such as Default or Profile 1."},
+		"user_data_dir":     map[string]any{"type": "string", "description": "Browser user data directory. For existing mode this may be a discovered browser data root."},
+		"cookie_path":       map[string]any{"type": "string", "description": "Path to an exported cookies JSON file. Values are read locally and never returned to the model."},
+		"url":               map[string]any{"type": "string"},
+		"tab_id":            map[string]any{"type": "string"},
+		"ref":               map[string]any{"type": "string", "description": "Compact element reference from snapshot, e.g. e4."},
+		"selector":          map[string]any{"type": "string", "description": "CSS selector; prefer ref from snapshot."},
+		"value":             map[string]any{"type": "string", "description": "Non-secret value. Use fill_secret for sensitive data."},
+		"append":            map[string]any{"type": "boolean"},
+		"key":               map[string]any{"type": "string"},
+		"expression":        map[string]any{"type": "string"},
+		"path":              map[string]any{"type": "string", "description": "Screenshot output path, relative to the project when not absolute."},
+		"full_page":         map[string]any{"type": "boolean"},
+		"quality":           map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
+		"delta":             map[string]any{"type": "boolean"},
+		"max_text":          map[string]any{"type": "integer", "minimum": 500, "maximum": 50000},
+		"max_elements":      map[string]any{"type": "integer", "minimum": 1, "maximum": 500},
+		"max_bytes":         map[string]any{"type": "integer", "minimum": 100, "maximum": 1000000},
+		"limit":             map[string]any{"type": "integer", "minimum": 1, "maximum": 1000},
+		"clear":             map[string]any{"type": "boolean"},
+		"errors_only":       map[string]any{"type": "boolean"},
+		"request_id":        map[string]any{"type": "string"},
+		"script_id":         map[string]any{"type": "string", "description": "Ephemeral CDP script ID returned by scripts for the active tab and current document. Refresh scripts after navigation or reload."},
+		"query":             map[string]any{"type": "string"},
+		"case_sensitive":    map[string]any{"type": "boolean"},
+		"verify":            map[string]any{"type": "boolean", "description": "For scripts, verify script_id-to-URL mappings against the SHA-256 hash of the current source. Defaults to true."},
+		"timeout_ms":        map[string]any{"type": "integer", "minimum": 0, "maximum": 120000},
+		"secret_label":      map[string]any{"type": "string", "description": "Human-readable account/site label shown only in the local secret prompt."},
 	}
 	sessionActions := []string{
 		"status", "close", "navigate", "back", "forward", "reload", "snapshot", "text", "html", "click", "type", "fill", "fill_secret",
 		"select", "key", "wait", "evaluate", "screenshot", "console", "network", "response_body", "tabs", "new_tab", "switch_tab", "close_tab",
-		"scripts", "search_source", "performance",
+		"scripts", "search_source", "performance", "import_cookies",
 	}
 	return map[string]any{
 		"type": "object", "properties": properties, "required": []string{"action"},
@@ -97,6 +103,7 @@ func browserParameters() map[string]any {
 			browserCondition([]string{"response_body"}, []string{"request_id"}),
 			browserCondition([]string{"switch_tab"}, []string{"tab_id"}),
 			browserCondition([]string{"search_source"}, []string{"script_id", "query"}),
+			browserCondition([]string{"import_cookies"}, []string{"cookie_path"}),
 		},
 	}
 }
@@ -125,6 +132,9 @@ func runBrowser(ctx context.Context, args map[string]any, env Env) (string, erro
 			"action": "discover", "candidates": candidates, "count": len(candidates), "default": cfg,
 			"recommendation": browserRecommendation(candidates),
 		})
+	case "profiles":
+		profiles := libbrowser.DiscoverProfiles(ctx)
+		return jsonOutput(map[string]any{"action": action, "profiles": profiles, "count": len(profiles)})
 	case "get_default":
 		cfg, err := libbrowser.LoadConfig(env.ConfigDir)
 		if err != nil {
@@ -139,7 +149,8 @@ func runBrowser(ctx context.Context, args map[string]any, env Env) (string, erro
 		}
 		cfg, err := manager.SetDefault(ctx,
 			str(args, "candidate_id"), str(args, "executable"), str(args, "remote_url"), headless,
-			libbrowser.ProfileMode(str(args, "profile_mode")), str(args, "profile_name"), str(args, "user_data_dir"),
+			libbrowser.ProfileMode(str(args, "profile_mode")), str(args, "profile_name"), str(args, "profile_id"),
+			str(args, "profile_directory"), str(args, "user_data_dir"),
 		)
 		if err != nil {
 			return "", err
@@ -151,20 +162,51 @@ func runBrowser(ctx context.Context, args map[string]any, env Env) (string, erro
 		if _, ok := args["headless"]; ok {
 			headless = boolArgOr(args, "headless", true)
 		}
+		startURL := str(args, "url")
+		cookiePath := resolveBrowserImportPath(str(args, "cookie_path"), env.Root)
 		opts := libbrowser.StartOptions{
 			SessionID: str(args, "session_id"), CandidateID: str(args, "candidate_id"),
 			Executable: str(args, "executable"), RemoteURL: str(args, "remote_url"), Headless: headless,
 			ProfileMode: libbrowser.ProfileMode(str(args, "profile_mode")), ProfileName: str(args, "profile_name"),
-			UserDataDir: str(args, "user_data_dir"), StartURL: str(args, "url"),
+			ProfileID: str(args, "profile_id"), ProfileDirectory: str(args, "profile_directory"),
+			UserDataDir: str(args, "user_data_dir"), StartURL: startURL,
+		}
+		if cookiePath != "" {
+			opts.StartURL = ""
 		}
 		info, err := manager.StartDefault(ctx, opts)
 		if err != nil {
 			return "", err
 		}
-		return jsonOutput(map[string]any{
+		var cookieReport any
+		if cookiePath != "" {
+			session, sessionErr := manager.Session(info.ID)
+			if sessionErr != nil {
+				_ = manager.Close(info.ID)
+				return "", sessionErr
+			}
+			report, importErr := session.ImportCookies(ctx, cookiePath, startURL)
+			if importErr != nil {
+				_ = manager.Close(info.ID)
+				return "", importErr
+			}
+			cookieReport = report
+			if startURL != "" {
+				if navErr := session.Navigate(ctx, startURL); navErr != nil {
+					_ = manager.Close(info.ID)
+					return "", navErr
+				}
+			}
+			info = session.Info()
+		}
+		out := map[string]any{
 			"ok": true, "action": action, "session": info,
 			"next": "Usa snapshot con session_id; después interactúa con refs y solicita delta=true para ahorrar tokens.",
-		})
+		}
+		if cookieReport != nil {
+			out["cookies"] = cookieReport
+		}
+		return jsonOutput(out)
 	case "list_sessions":
 		values := manager.List()
 		return jsonOutput(map[string]any{"action": action, "sessions": values, "count": len(values)})
@@ -357,6 +399,13 @@ func runBrowser(ctx context.Context, args map[string]any, env Env) (string, erro
 			return "", err
 		}
 		return jsonOutput(map[string]any{"action": action, "body": body, "truncated": truncated})
+	case "import_cookies":
+		path := resolveBrowserImportPath(str(args, "cookie_path"), env.Root)
+		report, err := session.ImportCookies(ctx, path, str(args, "url"))
+		if err != nil {
+			return "", err
+		}
+		return jsonOutput(map[string]any{"ok": true, "action": action, "cookies": report})
 	case "tabs":
 		values, err := session.Tabs(ctx)
 		if err != nil {
@@ -433,4 +482,23 @@ func browserRecommendation(candidates []libbrowser.Candidate) map[string]any {
 		"executable": best.Executable, "remote_url": best.RemoteURL, "safe_to_attach": best.SafeToAttach,
 		"reason": best.Reason,
 	}
+}
+
+func resolveBrowserImportPath(value, projectRoot string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if value == "~" || strings.HasPrefix(value, "~/") || strings.HasPrefix(value, "~\\") {
+		if home, err := os.UserHomeDir(); err == nil {
+			if value == "~" {
+				return home
+			}
+			return filepath.Join(home, value[2:])
+		}
+	}
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value)
+	}
+	return filepath.Clean(filepath.Join(projectRoot, value))
 }

@@ -898,8 +898,10 @@ type holdStreamer struct {
 
 func (s *holdStreamer) Stream(_ context.Context, _ openai.Request) <-chan openai.Chunk {
 	ch := make(chan openai.Chunk, 2)
+	// Signal the observed Stream boundary synchronously so the test does not
+	// depend on a worker goroutine being scheduled within a tiny timeout.
+	s.once.Do(func() { close(s.started) })
 	go func() {
-		s.once.Do(func() { close(s.started) })
 		<-s.release
 		ch <- openai.Chunk{Delta: "resumed"}
 		close(ch)
@@ -931,9 +933,12 @@ func TestConcurrentResumeOfSameTaskIsRejected(t *testing.T) {
 	}()
 	select {
 	case <-streamer.started:
-	case <-time.After(2 * time.Second):
+	case err := <-firstDone:
 		close(streamer.release)
-		t.Fatal("first resume did not start")
+		t.Fatalf("first resume exited before stream: %v", err)
+	case <-time.After(5 * time.Second):
+		close(streamer.release)
+		t.Fatal("first resume did not reach stream")
 	}
 	_, err := Run(context.Background(), cfg, tools.AgentRequest{Agent: agents.Agent{Name: "worker"}, TaskID: child.ID, Prompt: "second"})
 	if err == nil || !strings.Contains(err.Error(), "already running") {
@@ -972,11 +977,22 @@ func TestConcurrentBackgroundResumeIsRejectedBeforeDetach(t *testing.T) {
 	if !first.Background || first.TaskID != child.ID {
 		t.Fatalf("first=%#v", first)
 	}
-	select {
-	case <-streamer.started:
-	case <-time.After(2 * time.Second):
-		close(streamer.release)
-		t.Fatal("first background resume did not start")
+	startDeadline := time.NewTimer(5 * time.Second)
+	defer startDeadline.Stop()
+	started := false
+	for !started {
+		select {
+		case <-streamer.started:
+			started = true
+		case event := <-events:
+			if IsTerminalEvent(event.Kind) {
+				close(streamer.release)
+				t.Fatalf("first background resume ended before stream: %#v", event)
+			}
+		case <-startDeadline.C:
+			close(streamer.release)
+			t.Fatal("first background resume did not reach stream")
+		}
 	}
 	if _, err := StartBackground(cfg, tools.AgentRequest{Agent: agents.Agent{Name: "worker"}, TaskID: child.ID, Prompt: "second"}); err == nil || !strings.Contains(err.Error(), "already running") {
 		close(streamer.release)
@@ -985,7 +1001,7 @@ func TestConcurrentBackgroundResumeIsRejectedBeforeDetach(t *testing.T) {
 	close(streamer.release)
 
 	terminal := 0
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(5 * time.Second)
 	for terminal == 0 {
 		select {
 		case event := <-events:

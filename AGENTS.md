@@ -203,6 +203,7 @@ En pruebas concurrentes, señalizar el estado observado de forma síncrona en la
 
 - Autor Git local: `YahirHub <217099863+YahirHub@users.noreply.github.com>`.
 - Commits en español, detallados y sin mencionar IA.
+- Si una implementación nueva necesita correcciones antes de quedar aceptada, reescribir/amendar ese commit y dejar un único commit limpio de la funcionalidad. No registrar commits ni MD de `contexto/` dedicados a errores transitorios de esa misma implementación.
 - Cada cambio importante debe añadir o actualizar un MD numerado en `contexto/`.
 - No inventar URLs, repositorios, resultados de pruebas ni compatibilidad no ejecutada.
 - Entregar el proyecto completo con `.git` cuando el usuario trabaje reemplazando su copia mediante ZIP.
@@ -229,6 +230,10 @@ En pruebas concurrentes, señalizar el estado observado de forma síncrona en la
 - `status` nunca debe ocultar un error CDP ni devolver `tabs: null`; debe exponer `cdp_error`, `attached=false` y una lista vacía cuando la conexión no responda.
 - Los comandos del dominio `Target` deben ejecutarse con el executor del navegador (`chromedp.Targets` o `cdp.WithExecutor(..., state.Browser)`); Network, Runtime y Debugger usan el executor del target.
 - La cancelación del contexto de una llamada puede detener su acción hija, pero nunca debe cancelar el contexto persistente guardado en la sesión.
+- `browser action=profiles` puede enumerar nombres/directorios de perfiles locales, pero no debe leer ni exponer cookies, contraseñas, tokens, `user_name` u otros datos de cuenta durante el descubrimiento.
+- `profile_mode=existing` sólo reutiliza un perfil personal cuando la selección fue explícita y existe un `DevToolsActivePort` local activo; usar el WebSocket completo directamente y no depender de `/json/version`, porque el flujo de aprobación de Chrome moderno puede ser WebSocket-only. No relanzar ni modificar a la fuerza el `User Data` personal para sortear las restricciones de Chrome.
+- La importación de cookies es file-backed: el modelo sólo pasa `cookie_path`; valores y contenido completo del JSON permanecen locales y nunca deben aparecer en argumentos visibles, logs, transcript, errores o respuesta. El resultado se limita a contadores.
+- Las cookies particionadas no se aplanan a cookies normales. Si el formato no puede conservar su semántica de aislamiento, se omiten explícitamente.
 
 ## Static module architecture
 

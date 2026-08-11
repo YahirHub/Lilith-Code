@@ -11,6 +11,7 @@ const (
 	ProfileTemporary  ProfileMode = "temporary"
 	ProfilePersistent ProfileMode = "persistent"
 	ProfileCustom     ProfileMode = "custom"
+	ProfileExisting   ProfileMode = "existing"
 )
 
 type Candidate struct {
@@ -36,36 +37,42 @@ type Config struct {
 	Headless           bool        `json:"headless"`
 	ProfileMode        ProfileMode `json:"profile_mode"`
 	ProfileName        string      `json:"profile_name,omitempty"`
+	ProfileID          string      `json:"profile_id,omitempty"`
+	ProfileDirectory   string      `json:"profile_directory,omitempty"`
 	UserDataDir        string      `json:"user_data_dir,omitempty"`
 }
 
 type StartOptions struct {
-	SessionID   string
-	CandidateID string
-	Executable  string
-	RemoteURL   string
-	Headless    bool
-	ProfileMode ProfileMode
-	ProfileName string
-	UserDataDir string
-	StartURL    string
+	SessionID        string
+	CandidateID      string
+	Executable       string
+	RemoteURL        string
+	Headless         bool
+	ProfileMode      ProfileMode
+	ProfileName      string
+	ProfileID        string
+	ProfileDirectory string
+	UserDataDir      string
+	StartURL         string
 }
 
 type SessionInfo struct {
-	ID             string      `json:"session_id"`
-	Browser        string      `json:"browser"`
-	Executable     string      `json:"executable,omitempty"`
-	RemoteURL      string      `json:"remote_url,omitempty"`
-	Headless       bool        `json:"headless"`
-	ProfileMode    ProfileMode `json:"profile_mode"`
-	UserDataDir    string      `json:"user_data_dir,omitempty"`
-	CurrentTabID   string      `json:"current_tab_id,omitempty"`
-	TabCount       int         `json:"tab_count"`
-	StartedAt      time.Time   `json:"started_at"`
-	LastActivity   time.Time   `json:"last_activity"`
-	Attached       bool        `json:"attached"`
-	RemoteAttached bool        `json:"remote_attached,omitempty"`
-	TemporaryData  bool        `json:"temporary_profile"`
+	ID               string      `json:"session_id"`
+	Browser          string      `json:"browser"`
+	Executable       string      `json:"executable,omitempty"`
+	RemoteURL        string      `json:"remote_url,omitempty"`
+	Headless         bool        `json:"headless"`
+	ProfileMode      ProfileMode `json:"profile_mode"`
+	ProfileID        string      `json:"profile_id,omitempty"`
+	ProfileDirectory string      `json:"profile_directory,omitempty"`
+	UserDataDir      string      `json:"user_data_dir,omitempty"`
+	CurrentTabID     string      `json:"current_tab_id,omitempty"`
+	TabCount         int         `json:"tab_count"`
+	StartedAt        time.Time   `json:"started_at"`
+	LastActivity     time.Time   `json:"last_activity"`
+	Attached         bool        `json:"attached"`
+	RemoteAttached   bool        `json:"remote_attached,omitempty"`
+	TemporaryData    bool        `json:"temporary_profile"`
 }
 
 type TabInfo struct {

@@ -130,6 +130,32 @@ func (m *Manager) Start(ctx context.Context, opts StartOptions) (SessionInfo, er
 		return SessionInfo{}, fmt.Errorf("ya existe una sesión de navegador con session_id %q", id)
 	}
 
+	if strings.TrimSpace(opts.ProfileID) != "" {
+		profile, err := resolveProfileID(ctx, opts.ProfileID)
+		if err != nil {
+			return SessionInfo{}, err
+		}
+		if !profile.CanAttach || profile.remoteURL == "" {
+			return SessionInfo{}, errors.New("el profile_id seleccionado no corresponde al perfil activo que Chrome expone por Remote Debugging; vuelve a ejecutar action=profiles y elige uno con can_attach=true")
+		}
+		opts.ProfileMode = ProfileExisting
+		opts.UserDataDir = profile.UserDataDir
+		opts.ProfileDirectory = profile.ProfileDirectory
+		// profile_id is authoritative: never let an unrelated explicit/default
+		// remote URL make the session appear attached to a different profile.
+		opts.RemoteURL = profile.remoteURL
+	}
+	if opts.ProfileMode == ProfileExisting && strings.TrimSpace(opts.ProfileID) == "" && strings.TrimSpace(opts.UserDataDir) != "" {
+		if strings.TrimSpace(opts.ProfileDirectory) != "" && !profileDirectoryIsActive(opts.UserDataDir, opts.ProfileDirectory) {
+			return SessionInfo{}, errors.New("profile_directory no corresponde al último perfil usado de ese User Data; usa action=profiles y selecciona un profile_id con can_attach=true")
+		}
+		if strings.TrimSpace(opts.RemoteURL) == "" {
+			if endpoint := liveExistingProfileEndpoint(ctx, opts.UserDataDir); endpoint != "" {
+				opts.RemoteURL = endpoint
+			}
+		}
+	}
+
 	if strings.TrimSpace(opts.CandidateID) != "" && strings.TrimSpace(opts.Executable) == "" && strings.TrimSpace(opts.RemoteURL) == "" {
 		executable, remoteURL, err := resolveCandidate(ctx, opts.CandidateID)
 		if err != nil {
@@ -138,6 +164,9 @@ func (m *Manager) Start(ctx context.Context, opts StartOptions) (SessionInfo, er
 		opts.Executable = executable
 		opts.RemoteURL = remoteURL
 	}
+	if opts.ProfileMode == ProfileExisting && strings.TrimSpace(opts.RemoteURL) == "" {
+		return SessionInfo{}, errors.New("el perfil existente seleccionado no expone una sesión CDP reutilizable; habilita Remote Debugging en ese navegador o importa un JSON de cookies en un perfil persistente de Lilith")
+	}
 
 	var allocCtx context.Context
 	var allocStop context.CancelFunc
@@ -145,11 +174,19 @@ func (m *Manager) Start(ctx context.Context, opts StartOptions) (SessionInfo, er
 	remoteAttached := false
 
 	if strings.TrimSpace(opts.RemoteURL) != "" {
+		userDataDir = strings.TrimSpace(opts.UserDataDir)
 		wsURL, err := ResolveRemoteWebSocket(ctx, opts.RemoteURL)
 		if err != nil {
 			return SessionInfo{}, err
 		}
-		allocCtx, allocStop = chromedp.NewRemoteAllocator(context.Background(), wsURL)
+		remoteOptions := []chromedp.RemoteAllocatorOption{}
+		if strings.Contains(wsURL, "/devtools/browser/") {
+			// ResolveRemoteWebSocket already returned the complete browser
+			// WebSocket URL. Avoid legacy /json/version URL rewriting so the
+			// permission-based Chrome 144+ endpoint can be used directly.
+			remoteOptions = append(remoteOptions, chromedp.NoModifyURL)
+		}
+		allocCtx, allocStop = chromedp.NewRemoteAllocator(context.Background(), wsURL, remoteOptions...)
 		remoteURL = opts.RemoteURL
 		remoteAttached = true
 	} else {
@@ -177,7 +214,7 @@ func (m *Manager) Start(ctx context.Context, opts StartOptions) (SessionInfo, er
 		if err != nil {
 			return SessionInfo{}, err
 		}
-		allocatorOptions := execAllocatorOptions(executable, userDataDir, opts.Headless)
+		allocatorOptions := execAllocatorOptions(executable, userDataDir, opts.ProfileDirectory, opts.Headless)
 		allocCtx, allocStop = chromedp.NewExecAllocator(context.Background(), allocatorOptions...)
 	}
 
@@ -200,10 +237,19 @@ func (m *Manager) Start(ctx context.Context, opts StartOptions) (SessionInfo, er
 		name = "Navegador CDP remoto"
 	}
 	now := time.Now()
+	infoRemoteURL, infoUserDataDir := remoteURL, userDataDir
+	if opts.ProfileMode == ProfileExisting {
+		// An existing personal profile may contain the OS username in its path
+		// and its WebSocket endpoint acts as a local control capability. Keep
+		// both inside the runtime instead of returning them to the model.
+		infoRemoteURL = ""
+		infoUserDataDir = ""
+	}
 	s := &Session{
 		info: SessionInfo{
-			ID: id, Browser: name, Executable: executable, RemoteURL: remoteURL,
-			Headless: opts.Headless, ProfileMode: opts.ProfileMode, UserDataDir: userDataDir,
+			ID: id, Browser: name, Executable: executable, RemoteURL: infoRemoteURL,
+			Headless: opts.Headless, ProfileMode: opts.ProfileMode, ProfileID: opts.ProfileID,
+			ProfileDirectory: opts.ProfileDirectory, UserDataDir: infoUserDataDir,
 			StartedAt: now, LastActivity: now, Attached: true, RemoteAttached: remoteAttached, TemporaryData: tempDir != "",
 		},
 		allocCtx: allocCtx, allocStop: allocStop, browserCtx: browserCtx, stop: stop,
@@ -302,7 +348,7 @@ func runTargetCommand(request, persistent context.Context, timeout time.Duration
 	return command(cdp.WithExecutor(opCtx, state.Target))
 }
 
-func execAllocatorOptions(executable, userDataDir string, headless bool) []chromedp.ExecAllocatorOption {
+func execAllocatorOptions(executable, userDataDir, profileDirectory string, headless bool) []chromedp.ExecAllocatorOption {
 	options := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
 	options = append(options,
 		chromedp.ExecPath(executable),
@@ -317,6 +363,9 @@ func execAllocatorOptions(executable, userDataDir string, headless bool) []chrom
 		chromedp.Flag("disable-background-networking", false),
 		chromedp.WSURLReadTimeout(45*time.Second),
 	)
+	if strings.TrimSpace(profileDirectory) != "" {
+		options = append(options, chromedp.Flag("profile-directory", profileDirectory))
+	}
 	// Do not set remote-debugging-port here. Chromedp automatically appends
 	// --remote-debugging-port=0 when the option is absent. Passing the integer
 	// 0 to chromedp.Flag is invalid because allocator flags only accept string
@@ -343,6 +392,8 @@ func (m *Manager) prepareProfile(opts StartOptions) (string, string, error) {
 			return "", "", err
 		}
 		return dir, "", nil
+	case ProfileExisting:
+		return "", "", errors.New("profile_mode=existing sólo puede adjuntarse a una sesión CDP existente")
 	case ProfileCustom:
 		dir := filepath.Clean(strings.TrimSpace(opts.UserDataDir))
 		if dir == "" || dir == "." {
@@ -384,7 +435,7 @@ func resolveCandidate(ctx context.Context, candidateID string) (string, string, 
 	return "", "", fmt.Errorf("candidate_id no encontrado: %s", candidateID)
 }
 
-func (m *Manager) SetDefault(ctx context.Context, candidateID, executable, remoteURL string, headless bool, mode ProfileMode, profileName, userDataDir string) (Config, error) {
+func (m *Manager) SetDefault(ctx context.Context, candidateID, executable, remoteURL string, headless bool, mode ProfileMode, profileName, profileID, profileDirectory, userDataDir string) (Config, error) {
 	cfg, err := LoadConfig(m.configDir)
 	if err != nil {
 		return Config{}, err
@@ -395,6 +446,18 @@ func (m *Manager) SetDefault(ctx context.Context, candidateID, executable, remot
 		if err != nil {
 			return Config{}, err
 		}
+	}
+	profileID = strings.TrimSpace(profileID)
+	if profileID != "" {
+		profile, profileErr := resolveProfileID(ctx, profileID)
+		if profileErr != nil {
+			return Config{}, profileErr
+		}
+		mode = ProfileExisting
+		profileDirectory = profile.ProfileDirectory
+		// profile_id is sufficient to resolve the source on start. Do not
+		// persist the personal User Data path in browser.json.
+		userDataDir = ""
 	}
 	if mode == "" {
 		mode = cfg.ProfileMode
@@ -408,6 +471,8 @@ func (m *Manager) SetDefault(ctx context.Context, candidateID, executable, remot
 	cfg.Headless = headless
 	cfg.ProfileMode = mode
 	cfg.ProfileName = profileName
+	cfg.ProfileID = profileID
+	cfg.ProfileDirectory = profileDirectory
 	cfg.UserDataDir = userDataDir
 	if err := SaveConfig(m.configDir, cfg); err != nil {
 		return Config{}, err
@@ -430,6 +495,12 @@ func (m *Manager) StartDefault(ctx context.Context, overrides StartOptions) (Ses
 	}
 	if overrides.ProfileName == "" {
 		overrides.ProfileName = cfg.ProfileName
+	}
+	if overrides.ProfileID == "" {
+		overrides.ProfileID = cfg.ProfileID
+	}
+	if overrides.ProfileDirectory == "" {
+		overrides.ProfileDirectory = cfg.ProfileDirectory
 	}
 	if overrides.UserDataDir == "" {
 		overrides.UserDataDir = cfg.UserDataDir

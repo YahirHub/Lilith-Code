@@ -327,6 +327,8 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - `137-init-knowledge-goal-build.md`
 - `138-scripts-instalacion-pruebas.md`
 - `139-shell-portatil-propia-sin-mvdan.md`
+- `140-actualizar-shell-portable-v0-2-1.md`
+- `141-perfiles-navegador-y-cookies-json.md`
 
 ## 114 · Búsquedas de terminal acotadas y versión 0.2.2
 
@@ -419,3 +421,13 @@ El entorno de entrega puede usar stubs locales sólo para comprobar la arquitect
 - La actualización corrige la expansión de rutas `~/archivo` con separadores nativos en Windows y conserva el handler/toolbox existente.
 - Los heredocs permanecen desactivados; `UnsupportedFeatureError` se traduce a exit code 2 como construcción fuera del subconjunto portable.
 - La integración añade una regresión multiplataforma para rutas home y mantiene verdes suite, race, vet y builds Linux/Windows/Android.
+
+
+## 141 · Perfiles existentes de navegador y cookies JSON
+
+- `browser action=profiles` descubre perfiles Chromium locales mediante sus directorios y `Local State`, pero deliberadamente no devuelve `user_name`, cookies, contraseñas ni datos de cuenta.
+- `profile_mode=existing` acepta `profile_id` o `user_data_dir` + `profile_directory`. Lilith sólo se adjunta a un perfil personal explícitamente seleccionado cuando existe un `DevToolsActivePort` local activo; usa su WebSocket directo —incluido el flujo de aprobación de Chrome moderno— y no depende de `/json/version`. Si el root contiene varios perfiles, sólo considera adjuntable el último usado y no fuerza el relanzamiento del `User Data` predeterminado. Cuando se usa `profile_id`, la ruta raíz y el WebSocket permanecen internos y no se devuelven ni persisten en la configuración.
+- `cookie_path` permite importar un JSON exportado directamente durante `start`, antes de navegar, o sobre una sesión existente con `action=import_cookies`.
+- El parser acepta arrays JSON y wrappers con `cookies`, normaliza campos comunes de extensiones, conserva `hostOnly`, `Secure`, `HttpOnly`, `SameSite`, expiración y las reglas `__Secure-`/`__Host-`, limita tamaño/cantidad y omite entradas incompatibles. Las cookies particionadas no se convierten silenciosamente en cookies normales.
+- Los valores permanecen file-backed dentro del runtime local. La salida del tool sólo devuelve contadores `imported`/`skipped`; no devuelve valores, dominios ni el contenido del archivo.
+- Para sesiones autenticadas repetibles se prefiere `profile_mode=persistent` + importación inicial de cookies: después el perfil aislado de Lilith conserva su propio estado sin depender del perfil personal del navegador.
